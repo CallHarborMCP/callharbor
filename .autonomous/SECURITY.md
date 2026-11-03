@@ -1,0 +1,11 @@
+# Security contract
+
+- Admin and user roles enforced server side at every boundary; multi-admin; per-user data/credentials/recordings. Admin cross-user reads explicitly authorized and security-audited.
+- Built-in local accounts with modern password KDF (Argon2id or audited equivalent), secure password/session reset, anti-brute-force controls, secure cookies, CSRF protections. Optional external OIDC issuer allowlist, validation of id-token signature, issuer, audience, nonce, state, stable `(issuer, sub)` identity linking, no blind account takeover on email match.
+- MCP OAuth 2.1 authorization server: Authorization Code + PKCE S256, discovery, protected resource metadata, scopes, client identification, appropriate registration/metadata handling, refresh-token rotation/revocation, protected redirect URI validation, consent. Use mature maintained libraries; no custom crypto. Demonstrate ChatGPT remote MCP authorization end-to-end against test client; do not claim real UI connection tested unless tested.
+- At-rest encryption of user telco/AI API keys, appropriate protection of recordings, secret key supplied on persistent file or environment with safe backup/rotation instructions. Never commit secrets, tokens, call audio or PII fixtures.
+- Telnyx Ed25519 signed webhook verification based on original raw body with timestamps/replay window; fail closed; dedupe events. Media WebSocket authenticate/correlate with issued session token; no anonymous stream hijack.
+- SSRF-safe configurable gateway endpoint/webhook URLs: private IP allowed for self-hosted endpoints only by deliberate admin-approved policy; redirection, DNS rebinding and cross-tenant network access considered. Redact headers/logs.
+- Outbound guardrails: account owner grants, E.164, allow/deny lists, configurable limits/duration/concurrency and explicit approvals if configured, rate limits, idempotency. No accidental automatic launch by UI previews or tests.
+- Secure media stream and download requests, range support, short-lived access where needed. No publicly guessable recording links. Access events audited.
+- Safe Docker defaults, nonroot, least privileges, no docker socket. Threat modeling and automated negative tests mandatory.

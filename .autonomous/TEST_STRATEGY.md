@@ -1,0 +1,28 @@
+# Test strategy — full autonomy, zero live Telnyx calls in CI
+
+Tests may never call live Telnyx endpoints or incur call charges in CI; user will conduct their own real telephone acceptance calls later. CI must never claim live Telnyx was verified. Automated compatibility aims to be as close as independently possible to production interfaces.
+
+## Test levels
+1. Unit/property/race tests: Go core/state machine, timestamp/codec/DTMF/media queue, segment parser, user authorization, database migration/recovery, webhook signature/replay/idempotency, final/partial recordings, retention/backup. UI unit/component tests and a11y lint.
+2. Contract: **official Telnyx OpenAPI** schema, e.g. Prism for request/response shapes. Pin known working schema revision and regularly check upstream drift; do not silently let upstream changes bypass CI. Test SDK/client using captured realistic sanitized fixtures and raw signed Telnyx webhook fixtures from official examples/reference projects.
+3. Independently implemented media harness (CI Docker profile): fake Telnyx Call Control server, signed event delivery, WSS client producing documented `connected/start/media/stop` audio frames, timestamps, jitter/loss/reorder, interruptions and hangups. Use established open-source reference fixtures/harness patterns from `team-telnyx/telnyx-openclaw-voice-call` and `team-telnyx/realtime-ai-demo`; DO NOT embed OpenClaw in production. Fake realtime server reproduces OpenAI-compatible audio event protocol and emits deterministically varied prebuilt audio; no LLM inference.
+4. Full Docker E2E: build and run **production** Go+React image with SQLite/persistent volumes, fake Call Control/media and fake Realtime WebSocket on same isolated Docker network. Perform an actual `make_call` via OAuth-protected remote MCP and assert observed real HTTP requests, WebSocket frames, bilateral decoded audio, turn interruption, truncation/clearing, recording playback/range/seek, transcript, final result, cleanup. CI asserts independent test server observations, not merely mock service returns.
+5. Fault injection: adversarial webhook order/duplicate/replay, corrupted audio, dropped frames, runaway buffers, long silence, token expiration, provider disconnect, hung call billing, crash/restart, disk full, concurrent calls and retention/deletion, rate limiting and cross-user access.
+6. Performance: repeated container benchmark idle, single call, multiple concurrent calls; document actual RAM peak/steady-state, CPU, per-call latency, disk and recording file size with raw evidence. No arbitrary fixed RAM threshold; regressions require explanation and optimization.
+7. OAuth/MCP conformance: OAuth metadata/discovery, PKCE, invalid redirect/issuer/audience, token revocation, CSRF, consent; endpoint actual MCP client; mobile/desktop web E2E.
+
+## No heavyweight AI in test suite
+Do not deploy CPU STT/LLM/TTS on Hetzner or in GitHub Actions for standard gates. Use real audio fixtures and a deterministic realtime protocol emulator, not AI quality testing. All test dependencies can run locally via Docker Compose test profile, ideally entirely on a GitHub Actions runner.
+
+## Release evidence and honesty
+The v1 gate must show real automated contract/E2E evidence, recording media test, security boundary and OAuth results, CI green and release artifacts. The separate status `Live Telnyx tested` MUST remain false unless an actual permitted billable call was conducted; such a live call is not required for autonomous release. Do not invent a sandbox or promise impossible verification.
+
+## Tendo-style test proof requirements
+- `tests_prove_behavior_not_presence`: 200/OK alone does not prove persistence/authorization. Test response schema AND real SQLite/app state; tests cannot mock the exact behavior under test.
+- Every confirmed defect gets a failing regression BEFORE implementation where feasible, and pass-after proof. Important failures require adversarial invalid/unauthorized/concurrent/reordered cases, not just happy paths.
+- One canonical deterministic clock and unique isolated fixtures per integration/E2E run; never sleep until a real time of day or rely on external Telnyx/billable AI services. Fake Telnyx/OpenAI-compatible protocol boundaries, not the production application under test.
+- The official Telnyx API schema and MCP/OAuth/OpenAPI are checked for schema validity and generated-client drift; Go/TS generated code matches contracts. Existing working tests may not be removed/replaced by fake-green snapshots.
+- Full browser Playwright journey against real production Go image and SQLite: first-run, login/OIDC, user profiles, OAuth MCP call, no-answer/answered/interrupted calls, transcript/recording warning, in-browser WAV seek, history, admin/tenant isolation; 320,360,390,768,1024,1440px, themes, long strings, errors, keyboard and accessibility.
+- Test the RELEASE artifact, not a mockup: real screenshots have viewport assertions; screenshot updates are independent reviewed changes. Cover blank/populated/busy/failed states, security and retention/deletion. No hidden skip flags or flaky rerun-to-green.
+- Every new code layer must add its actual product tests to standard project commands/`scripts/verify-local.sh` in the introducing PR; required CI runs those commands. A release requires the real backend + frontend + contract/media/E2E harness, representative failure injection, production Docker build, backup/restore and actual CI evidence. Bootstrap-only tests CANNOT satisfy V1 DoD.
+- Run the production rate, response/TTFT and memory benchmarks under deterministic bounded load and capture real measurements with resource/host details. Never invent numbers or claim live Telnyx compatibility from mocks.
