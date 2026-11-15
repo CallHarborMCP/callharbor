@@ -3,6 +3,7 @@
 set -Eeuo pipefail
 cd "$(dirname "$0")/.."
 bash -n scripts/autonomous-loop.sh scripts/install-autonomous-service.sh scripts/verify-release-artifacts.sh
+bash scripts/autonomy-test.sh
 sha256sum -c .autonomous/LOCKED_SHA256SUMS
 [[ ! -e .autonomous/STATE.md ]] || { echo 'No STATE.md: GitHub Issues are the backlog' >&2; exit 1; }
 if [[ -f go.mod ]]; then
