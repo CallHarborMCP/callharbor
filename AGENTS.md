@@ -16,7 +16,7 @@ For product changes also read: `.autonomous/PRODUCT_SCOPE.md`, `.autonomous/ARCH
 
 ## Engineering workflow
 
-Only Issues carrying exact `release` label are agent-owned **after the owner-controlled label cutover**. GitHub first-claim-wins and open PRs protect concurrently working contributors; no status/priority/area label is required. No Issue title, milestone, version or historical body marker grants ownership by itself. Protected `main` is PR-only. Fix defects with behavioral regression tests, run all required verification, obtain independent review, merge only green required CI, then verify main and close the Issue with evidence. Renovate/security/CI/patch maintenance is permanent and does not require a separate work scheduler. Do not touch an unrelated or another worker's claimed Issue/PR.
+Only Issues carrying exact `release` label are agent-owned **after the owner-controlled label cutover**. GitHub first-claim-wins, open PRs and required `status:idle` / `status:in-progress` / `status:blocked` lifecycle coordinate independent workers; `release` alone determines ownership. No priority or area label is required. No Issue title, milestone, version or historical body marker grants ownership by itself. Protected `main` is PR-only. Fix defects with behavioral regression tests, run all required verification, obtain independent review, merge only green required CI, then verify main and close the Issue with evidence. Renovate/security/CI/patch maintenance is permanent and does not require a separate work scheduler. Do not touch an unrelated or another worker's claimed Issue/PR.
 
 ## Runtime and governance safety
 
