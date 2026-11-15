@@ -20,7 +20,7 @@ Dependency updates use [Renovate](https://github.com/apps/renovate). `renovate.j
 - Test strategy: `.autonomous/TEST_STRATEGY.md`
 - Release gate: `.autonomous/DEFINITION_OF_DONE.md`
 - Planned future features: `.autonomous/ROADMAP.md`
-- Work items, state and dependencies: GitHub Issues under milestone `v1.0.0` with `agent:callharbor` label and `<!-- callharbor-managed:v1 -->` marker (NOT STATE.md); community issues are ignored
+- Autonomous work ownership: **only** GitHub Issues with the `release` label; no milestone, status or category label is required. Claims and PRs track progress (not STATE.md); unrelated community Issues are ignored. Renovate PRs are handled independently.
 - Autonomous workflow: `AGENTS.md`, `.autonomous/FLOW.md`
 
 At v1.0.0, replace this bootstrap README with a complete polished product README: what it does, true captured screenshots of the running release GUI committed under `docs/assets/screenshots/` and embedded inline, feature overview, one-command Docker Compose quickstart, prerequisites, first admin, roles, Telnyx and realtime gateway setup, OAuth MCP/ChatGPT connection, call/recording workflow, security/retention, upgrades, backup/restore, troubleshooting, development/testing, architecture, known limits, licensing, verified release image and supporting documentation links. No generic placeholders, mockups, generated marketing illustrations falsely presented as screenshots, broken images or screenshots captured from a nonfunctional static design.

@@ -1,19 +1,19 @@
 # CallHarbor permanent autonomous engineering — owner operations
 
-The implementation and governance PR **must not start or enable any service**, change live Issue labels, or modify the host's current systemd units.
+Repository changes and CI **must not start or enable any service** or modify the host's current systemd units. A separate, explicitly owner-authorized one-time Issue label migration may be performed while the service is stopped.
 
 ## Current status
 
 The controller becomes usable **only after the owner explicitly prepares and activates it**. Until that point it is inert repository code. Product work remains subject to the full V1 locked contract (Realtime WS **and** GPT-Live WS).
 
-## Manual cutover (future owner action, never CI or migration generator)
+## Manual service cutover (future owner action, never CI or migration generator)
 
 1. Ensure no legacy process or independent contributor is currently working on the affected Issues. Check existing claims, unfinished PRs, CI, and host processes. Arrange a coordinated transition if another worker uses legacy ownership rules.
 2. Update the canonical checkout to a clean, green `main`. Run the full local tests and verify required main CI.
 3. Before any future `--prepare`, the installer checks for independently running local controllers/agents and requires green `required.yml` push CI for the **exact current `main` commit**. It does not accept success recorded on an older commit. Remote worker claims must still be checked separately.
 4. Run `bash scripts/install-autonomy-service.sh --check`. This only inspects state and prints eligible legacy Issues; it does not change labels or unit files.
-5. **Only when consciously ready:** run `bash scripts/install-autonomy-service.sh --prepare`. This creates a user unit without enabling or starting it and adds `release` to verifiably managed legacy open Issues while preserving historical metadata.
-6. Inspect the migrated Issues, unit file, status labels, runner adapter and actual work-selection result. Ensure no incompatible legacy worker is active.
+5. **Only when consciously ready:** run `bash scripts/install-autonomy-service.sh --prepare`. This creates a user unit without enabling or starting it. The existing V1 backlog may already have been explicitly migrated to `release`; the installer's legacy-label migration remains an idempotent fallback.
+6. Inspect owned Issues, unit file, claims, runner adapter and actual work-selection result. Only `release` is required; no status label is needed. Ensure no incompatible legacy worker is active.
 7. **Separate activation:** `systemctl --user enable --now callharbor-autonomous.service`. This command is intentionally not used by the generator, tests, PR or installer.
 8. Check `systemctl --user status callharbor-autonomous.service` and `journalctl --user -u callharbor-autonomous.service --since today`.
 9. For a prepared but inactive migration, `bash scripts/install-autonomy-service.sh --rollback` restores the backed-up unit and removes only new ownership labels recorded in the backup. Rollback refuses changed unit contents. If the service was explicitly activated later, stop/disable it by deliberate owner action before rollback.
