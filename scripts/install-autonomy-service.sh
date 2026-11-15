@@ -25,6 +25,16 @@ printf 'Current unit active=%s enabled=%s\n' "${state_active:-unknown}" "${state
 [[ "$state_active" != active && "$state_active" != activating && "$state_active" != reloading ]] || { echo 'Existing service running; stop only as a separate owner action' >&2; exit 2; }
 [[ "$state_enabled" != enabled && "$state_enabled" != linked && "$state_enabled" != alias ]] || { echo 'Existing unit auto-starts; refuse to overwrite' >&2; exit 2; }
 
+# Cutover precautions are relevant only to the future owner-triggered --prepare.
+# --check remains read-only, while --rollback must work even if CI later turns red.
+if [[ "$MODE" == --prepare ]]; then
+  python3 "$ROOT/scripts/autonomy-cutover-check.py" processes --checkout "$ROOT"
+  CI_JSON="$(gh api -X GET "repos/$REPO/actions/workflows/required.yml/runs?branch=main&event=push&per_page=100")" || {
+    echo 'Cannot verify required main CI before cutover' >&2; exit 2;
+  }
+  printf '%s\n' "$CI_JSON" | python3 "$ROOT/scripts/autonomy-cutover-check.py" ci --sha "$REMOTE_SHA"
+fi
+
 # Read full eligible backlog without altering anything. No reliance on a guessed count.
 TEMP="$(mktemp)"; trap 'rm -f "$TEMP"' EXIT
 gh api --paginate --slurp -X GET "repos/$REPO/issues?state=all&per_page=100" > "$TEMP"

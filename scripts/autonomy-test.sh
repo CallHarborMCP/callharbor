@@ -6,4 +6,6 @@ for f in "$ROOT/scripts/autonomy-controller.sh" "$ROOT/scripts/agent-runner-open
   bash -n "$f"
 done
 python3 "$ROOT/scripts/test-autonomy-work-selection.py"
+python3 "$ROOT/scripts/test-autonomy-cutover.py"
+python3 "$ROOT/scripts/test-autonomy-controller.py"
 printf '[autonomy] offline tests passed\n'
