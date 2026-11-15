@@ -1,24 +1,27 @@
 # CallHarbor — autonomous engineering
 
-Full production V1.0.0, NOT MVP. OpenCode and Paperclip collaborate on separate hosts using **GitHub Issues directly**. The dedicated milestone is `v1.0.0`, label `agent:callharbor`, issue marker `<!-- callharbor-managed:v1 -->`. GitHub is the only task/status source; never create an extra coordinator or STATE.md.
+## Scope
 
-## Read each cycle
-` .autonomous/CYCLE_PROMPT.md`, `.autonomous/V1_ISSUES_WORKFLOW.md`, `.autonomous/PRODUCT_SCOPE.md`, `.autonomous/ARCHITECTURE.md`, `.autonomous/DEFINITION_OF_DONE.md`, `.autonomous/TEST_STRATEGY.md`, `.autonomous/SECURITY.md`, `.autonomous/UX.md`, `.autonomous/GUARDRAILS.md`, `.autonomous/CODE_QUALITY.md`; other documents on demand. Also inspect git, PRs, relevant issues and CI. Respect locked specifications.
+Build the complete production V1.0.0, **not an MVP**. GitHub Issues and pull requests are the authoritative work source; permanent autonomy governance is release-neutral. The current V1 contract explicitly requires independently selectable **OpenAI-compatible Realtime WebSocket** (`realtime_ws`) **and GPT-Live WebSocket** (`live_ws`) voice protocols, behind transport-independent call/media boundaries. WebSocket is the V1 transport; WebRTC and SIP are not implemented V1 features. Never drop either voice protocol or weaken the locked product/security/release contract.
 
-## Process
-Pick a dependency-ready open managed issue, claim with plain `gh issue comment` and `gh issue edit`, recheck first claim, then implement one focused branch and PR. No Python issue helpers, leases, heartbeats or own task manager. Finish your own existing PR before another issue. Treat Renovate PRs as normal reviewed dependency updates, not as new managed issues. Don't touch other agent's work. Tests and docs accompany code; independent review, green CI, protected main merge and issue closure are mandatory. Investigate blockers independently, report evidence and continue other tasks.
+## Roles, not vendor-specific agents
 
-## Product invariants
-Go + SQLite, embedded React/TypeScript UI (responsive and professionally designed, user-configurable appearance), admin/user RBAC, built-in OAuth2.1 for MCP clients plus optional external OIDC, Telnyx outbound, configurable OpenAI-compatible realtime model/gateway, responsive duplex speech with barge-in, multiuser isolation, call audit, recordings with opt-in and in-app playback. One production Docker container. No paid AI fallback, no production Telnyx calls in CI, no made-up live compatibility claim.
+`owner` authorizes governance and releases; `controller` schedules; `orchestrator` selects and coordinates; `worker` implements a single claimed item; `reviewer` independently verifies. Multiple authorized workers can use different execution tools on independent checkouts and GitHub identities. Tool-specific CLI integration belongs **only** to a replaceable runtime adapter, not policy or workflow documents.
 
-## Development environment
-`.mise.toml` pins Go and Node for local and CI use. If `mise` is missing, install the official CLI from https://mise.run into `~/.local/bin/mise` (do not alter global tools or shell profiles), then verify it. Run `mise install` and `mise exec -- bash scripts/verify-local.sh`. The official `jdx/mise-action` supplies the same tools to GitHub Actions. Use Go modules and npm lockfiles for source dependencies. Never write a custom toolchain/installation framework.
+## Required reading
 
-## Test and release
-Use standard `go test`, `go vet`, Go race, `npm`/Vitest, Playwright, Compose-based isolated integration tests and GitHub Actions; no self-made CI frameworks or tests-of-tests. Test product behavior, not merely mocks. Release only when all locked DoD items are proven, required CI green, GHCR images/docs/screenshots/backup restore validated and owner release merged via protected PR. Paperclip cannot independently publish release. Runner stops after verified release and closed managed issues.
+Always: this file, `.autonomous/AUTONOMY_PROMPT.md`, `.autonomous/FLOW.md`, `.autonomous/GUARDRAILS.md`, `.autonomous/CODE_QUALITY.md`, `.autonomous/DEFINITION_OF_DONE.md` and `.autonomous/LEARNINGS.md`.
 
-## Human-approved dual voice protocols (2026-11-15)
-Human-authorized V1 protocol addition: Realtime WS and GPT-Live primary WS are both mandatory selectable providers with different handshakes. Review updated locked scope/architecture/protocol feasibility/DoD and corresponding managed Issues; do not assume `gpt-live-1-codex` alias is accepted without evidence. Implement no mandatory paid backend and preserve the original Telnyx, Go, SQLite and release gates.
+For product changes also read: `.autonomous/PRODUCT_SCOPE.md`, `.autonomous/ARCHITECTURE.md`, `.autonomous/PROTOCOL_FEASIBILITY.md`, `.autonomous/SECURITY.md`, `.autonomous/API_CONTRACT.md`, `.autonomous/TEST_STRATEGY.md`, `.autonomous/UX.md`; consult documentation and roadmap as relevant. Review live GitHub Issues/PRs, CI, security and dependency state every cycle.
 
-## Human-approved transport-independent voice architecture (2026-11-15)
-This scope extension requires transport-independent, behavior-driven internal boundaries between Telnyx, the audio bridge and Realtime/Live voice adapters; V1 still implements only the two verified voice WebSocket transports. WebRTC and SIP are potential future additions, not working V1 features, and no unnecessary abstraction framework or extra service is allowed. Include a capability matrix, latency evidence and negative tests.
+## Engineering workflow
+
+Only Issues carrying exact `release` label are agent-owned **after the owner-controlled label cutover**. Status labels and first-claim-wins protect concurrently working contributors. No Issue title, milestone, version or historical body marker grants ownership by itself. Protected `main` is PR-only. Fix defects with behavioral regression tests, run all required verification, obtain independent review, merge only green required CI, then verify main and close the Issue with evidence. Renovate/security/CI/patch maintenance is permanent and does not require a separate work scheduler. Do not touch an unrelated or another worker's claimed Issue/PR.
+
+## Runtime and governance safety
+
+Only the owner may modify the autonomy controller, selector, runtime adapter, installer, systemd unit, governance authority, locked specs or credentials. Autonomous product-feature workers **must not modify their own authority**. The owner controls installation and service activation separately. No routine action may activate a disabled service. No version completion marker stops the evergreen controller.
+
+## Product/test invariants
+
+Go + SQLite, embedded responsive React/TypeScript WebGUI, local recordings OFF by default, multiuser RBAC and data isolation, OAuth2.1/MCP and optional OIDC, Telnyx outbound telephony, both selectable realtime voice protocol adapters, full-duplex natural speech/barge-in, actual played-audio semantics, auditable outcomes, one production Docker container. Standard `mise`, Go/npm, Playwright and Docker Compose tests; no paid API calls or real Telnyx dialing in automated tests. Do not represent independent simulator tests as proven live provider compatibility. Preserve all locked V1 Definition of Done, genuine screenshots, backups, source tag, and verified GHCR multiarch release evidence.

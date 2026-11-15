@@ -37,7 +37,7 @@ One Go process hosts HTTPS-ready REST/MCP/OAuth handlers, the admin/user React S
 - Telnyx official realtime-ai-demo: Telnyx bidirectional media streaming, clear/barge-in/truncate behavior, codec flow.
 - Telnyx official telnyx-openclaw-voice-call: provider fake, signed webhook tests, lifecycle and media testing patterns (study source, reimplement for Go, respect licenses).
 - Pipecat and LiveKit voice-agent implementations: turn-taking, interruption event ordering, timestamped playout.
-- OpenCode/Tendo autonomous issue workflow: small PRs, mandatory CI, no parallel STATE.md.
+- Tool-independent autonomous issue workflow: small PRs, mandatory CI, no parallel STATE.md.
 
 Architecture boundary changes require short ADR with alternatives and verified evidence. No extra AI API, PBX, Redis, PostgreSQL, LiveKit runtime or OpenClaw runtime permitted in production.
 
