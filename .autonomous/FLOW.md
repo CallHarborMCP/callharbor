@@ -18,9 +18,9 @@ The **owner** authorizes governance changes, cutover, initial service activation
 ## Work ownership and claims
 
 - An Issue is owned **only** with exact label `release`. Milestones, titles, body markers and version numbers do not grant ownership.
-- Each open owned Issue has exactly one of `status:idle`, `status:in-progress`, `status:blocked`. Do not modify unrelated Issues.
-- Ready means `status:idle` with every referenced `## Dependencies` / `Blocked by` Issue closed. Verify actual GitHub history and acceptance criteria.
-- Before claiming, check Issue body, labels, claims, dependencies, all open PRs and current main CI. Post `CLAIM: <role>, GitHub @<account>`, transition from idle to in-progress, reread and honor the first valid claim. Do not claim if another worker owns it.
+- The **only required Issue label is `release`**. `status:*`, `priority:*` and area labels are optional metadata, not requirements for selection or claiming. Do not modify unrelated Issues.
+- Ready means an open `release` Issue with all referenced `## Dependencies` / `Blocked by` Issues closed, no earlier active claim and no explicitly blocked/in-progress legacy status. Verify GitHub history and acceptance criteria.
+- Before claiming, check Issue body, labels, comments/claims, dependencies, all open PRs and current main CI. Post `CLAIM: <role>, GitHub @<account>`, reread and honor the first valid claim. **Do not require or add status labels.** Do not claim if another worker owns it.
 - One branch/PR for one focused unit. Use `Refs #N` in PR body. Run real local gates, independent review and green required checks. Merge only through protected main. Verify main HEAD and close owned Issue with evidence. Do not bypass guards or fake reviews.
 - New engineering Issues may be created inside approved product scope with label `release`, explicit acceptance tests and dependencies; version milestones remain optional reporting metadata, not ownership.
 
@@ -32,7 +32,7 @@ Priority: (1) red required main CI; (2) actionable security fixes; (3) own unfin
 
 - Investigate actual failures, evaluate compatible alternatives, choose an implementation, add regression tests, verify and review without routine owner escalation.
 - If Issues form a genuine dependency cycle: analyze graph and real constraints, split independent work or correct stale dependency edges within owned Issues and document evidence. Never deadlock permanently on a purely technical choice.
-- Mark `status:blocked` only with reproducible evidence and genuine external/upstream blocker, not an uninvestigated technical difficulty. Reevaluate boundedly, continue other independent work, never retry an unchanged failure forever.
+- Document blockers with reproducible evidence in the owned Issue; `status:blocked` may be used as optional metadata but is never required. Reevaluate boundedly, continue other independent work, never retry an unchanged failure forever.
 - Escalate only changing human-locked product/security contracts, missing real external authorization/credentials, financial actions or unsafe destructive requests. State the exact needed action; never invent approval.
 
 ## Dependencies, CI, security and releases

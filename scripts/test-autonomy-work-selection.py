@@ -78,6 +78,38 @@ class SchedulerTests(unittest.TestCase):
         s['runtime_changes_verified']=True
         self.assertEqual(m.decision(s,NOW)['kind'],'patch-release')
 
+    def test_release_only_issue_is_ready(self):
+        s = base(); i = issue(); i['labels'] = [dict(name='release')]; s['issues'] = [i]
+        self.assertEqual(m.decision(s, NOW), dict(kind='claim-issue', number=1, reason='highest priority ready owned issue'))
+
+    def test_release_only_claimed_by_other_is_not_stolen(self):
+        s = base(); i = issue(); i['labels'] = [dict(name='release')]
+        i['claim_comments'] = [dict(body='CLAIM: worker, GitHub @another', created_at='2026-11-15T10:00:00Z')]
+        s['issues'] = [i]
+        self.assertEqual(m.decision(s, NOW)['kind'], 'idle')
+
+    def test_release_only_claimed_by_self_is_resumed(self):
+        s = base(); i = issue(); i['labels'] = [dict(name='release')]
+        i['claim_comments'] = [dict(body='CLAIM: worker, GitHub @builder', created_at='2026-11-15T10:00:00Z')]
+        s['issues'] = [i]
+        self.assertEqual(m.decision(s, NOW)['kind'], 'resume-issue')
+
+    def test_renovate_when_no_issues(self):
+        s = base(); s['prs'] = [pr(created_at='2026-11-15T11:00:00Z')]
+        self.assertEqual(m.decision(s, NOW)['kind'], 'dependency-pr')
+
+    def test_renovate_when_all_release_issues_have_unmet_dependencies(self):
+        s = base(); i = issue(deps='CH-999'); i['labels'] = [dict(name='release')]
+        s['issues'] = [i]
+        s['prs'] = [pr(created_at='2026-11-15T11:00:00Z')]
+        self.assertEqual(m.decision(s, NOW)['kind'], 'dependency-pr')
+
+    def test_optional_blocked_label_skips_issue(self):
+        s = base(); i = issue(); i['labels'] = [dict(name='release'), dict(name='status:blocked')]
+        i['updated_at'] = '2026-11-15T11:00:00Z'
+        s['issues'] = [i]
+        self.assertEqual(m.decision(s, NOW)['kind'], 'idle')
+
     def test_missing_state_fails_closed(self):
         s=base(); del s['runs']
         with self.assertRaises(m.SelectionError): m.decision(s,NOW)

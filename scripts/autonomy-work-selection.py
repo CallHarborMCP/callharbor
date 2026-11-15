@@ -56,8 +56,14 @@ def collect(repo):
     if not actor:
         raise SelectionError('Cannot identify authenticated worker')
     for i in issues:
-        if 'release' in labels(i) and 'status:in-progress' in labels(i) and i.get('state') == 'open':
-            i['claim_comments'] = pages(f'repos/{repo}/issues/{i["number"]}/comments?per_page=100')
+        if 'release' in labels(i) and i.get('state') == 'open':
+            # GitHub's issue.comments is a count. Fetch claims for any issue with
+            # comments (including release-only issues), not only status-labelled ones.
+            # If count is unexpectedly missing, fetch to fail safely rather than
+            # assume nobody claimed the work.
+            count = i.get('comments')
+            if count is None or not isinstance(count, int) or count > 0 or 'status:in-progress' in labels(i):
+                i['claim_comments'] = pages(f'repos/{repo}/issues/{i["number"]}/comments?per_page=100')
     for p in pulls:
         if p.get('state') == 'open' and is_dependency(p):
             p['triage_comments'] = pages(f'repos/{repo}/issues/{p["number"]}/comments?per_page=100')
@@ -144,7 +150,7 @@ def issue_rank(i):
     return (int(coordinator), priority, num)
 
 
-def claimed_by(issue, actor):
+def first_claim(issue):
     comments = issue.get('claim_comments', [])
     if not isinstance(comments, list):
         raise SelectionError('Invalid claim comments')
@@ -154,7 +160,11 @@ def claimed_by(issue, actor):
         if match:
             claims.append((c.get('created_at', ''), match.group(1).lower()))
     claims.sort()
-    return bool(claims) and claims[0][1] == actor.lower()
+    return claims[0][1] if claims else None
+
+
+def claimed_by(issue, actor):
+    return first_claim(issue) == actor.lower()
 
 
 def triage_state(pr, now):
@@ -216,7 +226,7 @@ def decision(snapshot, now):
         if login(p).lower() == actor.lower() and (is_dependency(p) or refs(p) & owned_issues.keys() or (p.get('head') or {}).get('ref', '').startswith('release/v')):
             return dict(kind='resume-pr', number=p['number'], reason='locally owned unfinished PR')
     for i in sorted(open_owned, key=issue_rank):
-        if 'status:in-progress' in labels(i) and claimed_by(i, actor):
+        if 'status:blocked' not in labels(i) and claimed_by(i, actor):
             return dict(kind='resume-issue', number=i['number'], reason='previous claim')
 
     renovate = [p for p in open_prs if is_dependency(p)]
@@ -242,7 +252,9 @@ def decision(snapshot, now):
     ready = []
     for i in open_owned:
         st = labels(i)
-        if 'status:idle' not in st or 'status:blocked' in st or 'status:in-progress' in st:
+        # 'release' alone is enough. Optional old status labels may restrict
+        # work, but they are never prerequisites for selecting a new Issue.
+        if 'status:blocked' in st or 'status:in-progress' in st or first_claim(i) is not None:
             continue
         deps = dependencies(i)
         if all((dep in by_num and by_num[dep].get('state') == 'closed') for dep in deps):
@@ -261,7 +273,8 @@ def decision(snapshot, now):
         if dates and now - max(dates) >= timedelta(days=14) and snapshot.get('runtime_changes_verified') is True:
             return dict(kind='patch-release', reason='14-day window, runtime changes verified')
     if open_owned and not ready:
-        candidates = [i for i in open_owned if 'status:idle' in labels(i) or 'status:blocked' in labels(i)]
+        candidates = [i for i in open_owned if 'status:blocked' in labels(i) or
+                      ('status:in-progress' not in labels(i) and first_claim(i) is None)]
         old = [i for i in candidates if (parse_date(i.get('updated_at')) or now - timedelta(days=8)) < now - timedelta(days=7)]
         if old:
             oldest = min(old, key=lambda i: i.get('updated_at') or '')
