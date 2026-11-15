@@ -16,3 +16,9 @@ Go + SQLite, embedded React/TypeScript UI (responsive and professionally designe
 
 ## Test and release
 Use standard `go test`, `go vet`, Go race, `npm`/Vitest, Playwright, Compose-based isolated integration tests and GitHub Actions; no self-made CI frameworks or tests-of-tests. Test product behavior, not merely mocks. Release only when all locked DoD items are proven, required CI green, GHCR images/docs/screenshots/backup restore validated and owner release merged via protected PR. Paperclip cannot independently publish release. Runner stops after verified release and closed managed issues.
+
+## Human-approved dual voice protocols (2026-11-15)
+Human-authorized V1 protocol addition: Realtime WS and GPT-Live primary WS are both mandatory selectable providers with different handshakes. Review updated locked scope/architecture/protocol feasibility/DoD and corresponding managed Issues; do not assume `gpt-live-1-codex` alias is accepted without evidence. Implement no mandatory paid backend and preserve the original Telnyx, Go, SQLite and release gates.
+
+## Human-approved transport-independent voice architecture (2026-11-15)
+This scope extension requires transport-independent, behavior-driven internal boundaries between Telnyx, the audio bridge and Realtime/Live voice adapters; V1 still implements only the two verified voice WebSocket transports. WebRTC and SIP are potential future additions, not working V1 features, and no unnecessary abstraction framework or extra service is allowed. Include a capability matrix, latency evidence and negative tests.
