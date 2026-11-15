@@ -78,18 +78,18 @@ class SchedulerTests(unittest.TestCase):
         s['runtime_changes_verified']=True
         self.assertEqual(m.decision(s,NOW)['kind'],'patch-release')
 
-    def test_release_only_issue_is_ready(self):
+    def test_release_without_status_fails_closed(self):
         s = base(); i = issue(); i['labels'] = [dict(name='release')]; s['issues'] = [i]
-        self.assertEqual(m.decision(s, NOW), dict(kind='claim-issue', number=1, reason='highest priority ready owned issue'))
+        with self.assertRaises(m.SelectionError): m.decision(s, NOW)
 
     def test_release_only_claimed_by_other_is_not_stolen(self):
-        s = base(); i = issue(); i['labels'] = [dict(name='release')]
+        s = base(); i = issue()
         i['claim_comments'] = [dict(body='CLAIM: worker, GitHub @another', created_at='2026-11-15T10:00:00Z')]
         s['issues'] = [i]
         self.assertEqual(m.decision(s, NOW)['kind'], 'idle')
 
     def test_release_only_claimed_by_self_is_resumed(self):
-        s = base(); i = issue(); i['labels'] = [dict(name='release')]
+        s = base(); i = issue(status='status:in-progress')
         i['claim_comments'] = [dict(body='CLAIM: worker, GitHub @builder', created_at='2026-11-15T10:00:00Z')]
         s['issues'] = [i]
         self.assertEqual(m.decision(s, NOW)['kind'], 'resume-issue')
@@ -99,15 +99,40 @@ class SchedulerTests(unittest.TestCase):
         self.assertEqual(m.decision(s, NOW)['kind'], 'dependency-pr')
 
     def test_renovate_when_all_release_issues_have_unmet_dependencies(self):
-        s = base(); i = issue(deps='CH-999'); i['labels'] = [dict(name='release')]
+        s = base(); i = issue(deps='CH-999')
         s['issues'] = [i]
         s['prs'] = [pr(created_at='2026-11-15T11:00:00Z')]
         self.assertEqual(m.decision(s, NOW)['kind'], 'dependency-pr')
 
     def test_optional_blocked_label_skips_issue(self):
-        s = base(); i = issue(); i['labels'] = [dict(name='release'), dict(name='status:blocked')]
+        s = base(); i = issue(status='status:blocked')
         i['updated_at'] = '2026-11-15T11:00:00Z'
         s['issues'] = [i]
+        self.assertEqual(m.decision(s, NOW)['kind'], 'idle')
+
+    def test_two_status_labels_fail_closed(self):
+        s = base(); i = issue(); i['labels'].append(dict(name='status:blocked')); s['issues'] = [i]
+        with self.assertRaises(m.SelectionError): m.decision(s, NOW)
+
+    def test_earliest_claim_wins_and_loser_never_resumes(self):
+        s = base(); i = issue(status='status:in-progress'); s['issues'] = [i]
+        i['claim_comments'] = [
+            dict(id=20, body='CLAIM: worker, GitHub @someoneelse', created_at='2026-11-15T10:00:00Z'),
+            dict(id=21, body='CLAIM: worker, GitHub @builder', created_at='2026-11-15T10:00:00Z')]
+        self.assertEqual(m.decision(s, NOW)['kind'], 'idle')
+        i['claim_comments'][0], i['claim_comments'][1] = i['claim_comments'][1], i['claim_comments'][0]
+        self.assertEqual(m.decision(s, NOW)['kind'], 'idle')
+
+    def test_released_claim_can_be_reclaimed(self):
+        s = base(); i = issue(); s['issues'] = [i]
+        i['claim_comments'] = [
+            dict(id=10, body='CLAIM: worker, GitHub @another', created_at='2026-11-15T08:00:00Z'),
+            dict(id=11, body='RELEASE: GitHub @another', created_at='2026-11-15T09:00:00Z')]
+        self.assertEqual(m.decision(s, NOW)['kind'], 'claim-issue')
+
+    def test_open_pr_blocks_duplicate_issue_claim(self):
+        s = base(); s['issues'] = [issue()]
+        s['prs'] = [pr(owner='someoneelse', branch='work-issue', body='Refs #1', created_at='2026-11-15T11:00:00Z')]
         self.assertEqual(m.decision(s, NOW)['kind'], 'idle')
 
     def test_missing_state_fails_closed(self):
