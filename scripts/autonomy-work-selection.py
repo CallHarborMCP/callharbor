@@ -151,16 +151,36 @@ def issue_rank(i):
 
 
 def first_claim(issue):
+    """Replay claims using GitHub's server timestamp and comment ID.
+
+    A claimant may explicitly release its own claim. Later competing claims
+    never become owners implicitly: a fresh claim is required after release.
+    """
     comments = issue.get('claim_comments', [])
     if not isinstance(comments, list):
         raise SelectionError('Invalid claim comments')
-    claims = []
+    events = []
     for c in comments:
-        match = re.search(r'^CLAIM:\s*.+?GitHub\s+@([\w-]+)', c.get('body') or '', re.M | re.I)
-        if match:
-            claims.append((c.get('created_at', ''), match.group(1).lower()))
-    claims.sort()
-    return claims[0][1] if claims else None
+        body = c.get('body') or ''
+        claim = re.search(r'^CLAIM:\s*.+?GitHub\s+@([\w-]+)', body, re.M | re.I)
+        release = re.search(r'^RELEASE:\s*GitHub\s+@([\w-]+)', body, re.M | re.I)
+        match = claim or release
+        if not match:
+            continue
+        user = match.group(1).lower()
+        author = ((c.get('user') or {}).get('login') or '').lower()
+        if author and author != user:
+            continue
+        events.append((c.get('created_at', ''), int(c.get('id') or 0),
+                       'claim' if claim else 'release', user))
+    events.sort()
+    owner = None
+    for _, _, action, user in events:
+        if action == 'claim' and owner is None:
+            owner = user
+        elif action == 'release' and owner == user:
+            owner = None
+    return owner
 
 
 def claimed_by(issue, actor):
@@ -203,6 +223,10 @@ def decision(snapshot, now):
         raise SelectionError(f'Owner label cutover not complete for legacy Issues: {unmigrated[:10]}')
     owned_issues = {n: i for n, i in by_num.items() if 'release' in labels(i)}
     open_owned = [i for i in owned_issues.values() if owned(i)]
+    for i in open_owned:
+        states = labels(i) & {'status:idle', 'status:in-progress', 'status:blocked'}
+        if len(states) != 1:
+            raise SelectionError(f'Issue #{i["number"]} must have exactly one status label: {sorted(states)}')
     open_prs = [p for p in prs if p.get('state') == 'open']
 
     runs = [r for r in snapshot['runs'] if r.get('event') in (None, 'push')]
@@ -226,7 +250,7 @@ def decision(snapshot, now):
         if login(p).lower() == actor.lower() and (is_dependency(p) or refs(p) & owned_issues.keys() or (p.get('head') or {}).get('ref', '').startswith('release/v')):
             return dict(kind='resume-pr', number=p['number'], reason='locally owned unfinished PR')
     for i in sorted(open_owned, key=issue_rank):
-        if 'status:blocked' not in labels(i) and claimed_by(i, actor):
+        if 'status:in-progress' in labels(i) and claimed_by(i, actor):
             return dict(kind='resume-issue', number=i['number'], reason='previous claim')
 
     renovate = [p for p in open_prs if is_dependency(p)]
@@ -250,11 +274,11 @@ def decision(snapshot, now):
         return dict(kind='dependency-pr', number=actionable[0]['number'], reason='fairness slot')
 
     ready = []
+    referenced_by_open_pr = set().union(*(refs(p) for p in open_prs)) if open_prs else set()
     for i in open_owned:
         st = labels(i)
-        # 'release' alone is enough. Optional old status labels may restrict
-        # work, but they are never prerequisites for selecting a new Issue.
-        if 'status:blocked' in st or 'status:in-progress' in st or first_claim(i) is not None:
+        if ('status:idle' not in st or first_claim(i) is not None
+                or i['number'] in referenced_by_open_pr):
             continue
         deps = dependencies(i)
         if all((dep in by_num and by_num[dep].get('state') == 'closed') for dep in deps):
@@ -273,8 +297,9 @@ def decision(snapshot, now):
         if dates and now - max(dates) >= timedelta(days=14) and snapshot.get('runtime_changes_verified') is True:
             return dict(kind='patch-release', reason='14-day window, runtime changes verified')
     if open_owned and not ready:
-        candidates = [i for i in open_owned if 'status:blocked' in labels(i) or
-                      ('status:in-progress' not in labels(i) and first_claim(i) is None)]
+        candidates = [i for i in open_owned if i['number'] not in referenced_by_open_pr and
+                      ('status:blocked' in labels(i) or
+                       ('status:idle' in labels(i) and first_claim(i) is None))]
         old = [i for i in candidates if (parse_date(i.get('updated_at')) or now - timedelta(days=8)) < now - timedelta(days=7)]
         if old:
             oldest = min(old, key=lambda i: i.get('updated_at') or '')
