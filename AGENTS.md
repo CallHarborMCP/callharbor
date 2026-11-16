@@ -8,7 +8,7 @@ CallHarbor is a self-hosted multi-user AI telephone-calling product. Deliver the
 - API, security and UX: `.agents/API_CONTRACT.md`, `.agents/SECURITY.md`, `.agents/UX.md`.
 - Engineering quality: `.agents/GUARDRAILS.md`, `.agents/CODE_QUALITY.md`, `.agents/TEST_STRATEGY.md`, `.agents/DOCUMENTATION.md`, `.agents/LEARNINGS.md`.
 - Release acceptance: `.agents/DEFINITION_OF_DONE.md`. Future ideas: `.agents/ROADMAP.md`.
-- GitHub Issues contain individual acceptance criteria. Historical Issue references to `.autonomous/<file>` refer to the corresponding `.agents/<file>`. Old orchestration documents are retired and remain in Git history.
+- GitHub Issues contain individual acceptance criteria.
 
 ## Working in this repository
 
