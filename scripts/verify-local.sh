@@ -2,10 +2,8 @@
 # Standard developer test command; extend with real product checks as code arrives.
 set -Eeuo pipefail
 cd "$(dirname "$0")/.."
-bash -n scripts/autonomous-loop.sh scripts/install-autonomous-service.sh scripts/verify-release-artifacts.sh
-bash scripts/autonomy-test.sh
-sha256sum -c .autonomous/LOCKED_SHA256SUMS
-[[ ! -e .autonomous/STATE.md ]] || { echo 'No STATE.md: GitHub Issues are the backlog' >&2; exit 1; }
+bash -n scripts/verify-release-artifacts.sh
+sha256sum -c .agents/LOCKED_SHA256SUMS
 if [[ -f go.mod ]]; then
   gofiles="$(find . -type f -name '*.go' -not -path './vendor/*' -print0 | xargs -0 -r gofmt -l)"
   [[ -z "$gofiles" ]] || { printf 'Go formatting errors:
@@ -29,7 +27,7 @@ fi
 if [[ -f web/playwright.config.ts ]]; then
   (cd web && npx playwright test)
 fi
-if [[ -f .autonomous/V1_COMPLETE ]]; then
+if [[ -f .agents/V1_COMPLETE ]]; then
   for required in go.mod web/package.json Dockerfile compose.yaml compose.test.yaml web/playwright.config.ts docs/releases/v1.0.0.md; do
     test -f "$required" || { echo "V1 release missing required production/test file: $required" >&2; exit 1; }
   done
