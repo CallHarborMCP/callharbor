@@ -12,7 +12,7 @@ CallHarbor is a self-hosted multi-user AI telephone-calling product. Deliver the
 
 ## Working in this repository
 
-- Use `mise install` and `mise exec -- bash scripts/verify-local.sh` for fast local checks, or add `--full` for production Docker/browser E2E. `.mise.toml` pins Go and Node.js. Go modules and npm manage application dependencies.
+- Use `mise install` and `mise exec -- bash scripts/verify-local.sh --quick` for fast local checks; the default (no flag) runs full production Docker/browser E2E. `.mise.toml` pins Go and Node.js. Go modules and npm manage application dependencies.
 - Keep `renovate.json` and the required GitHub Actions CI active. Do not weaken or bypass tests, protected branches, independent review or release gates.
 - Use genuine Go/React/SQLite, protocol, audio, security and browser tests. Test actual production behavior with independent simulated Telnyx and voice-provider endpoints; automated tests must never place paid calls or incur paid AI charges.
 - The required V1 product uses Telnyx, both separately selectable Realtime WebSocket and GPT-Live WebSocket adapters, one Go service with embedded React, and SQLite. Preserve isolation, auth, recording opt-in, truthful transcription and auditability.
