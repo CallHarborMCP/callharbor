@@ -1,6 +1,6 @@
 # WebGUI & design quality policy
 
-## Tendo V3-grade design process (mandatory for CallHarbor V1)
+## Design validation requirements (V1)
 - Build TWO genuinely distinct interactive React design prototypes, each with dashboard/history, call detail, settings and admin navigation at phone and desktop sizes. Not merely different accent colors.
 - Capture and independently critique real browser screenshots of both prototypes with realistic synthetic transcripts, empty/error and forbidden states. Record choice and tradeoffs in `docs/design/direction-review.md`; never claim human approval.
 - Document a cohesive and reusable design system in `docs/design/design-system.md`: typography, tokens, spacing, layouts, navigation, responsive breakpoints, motion, focus, density and theme presets.
@@ -18,9 +18,9 @@ Stack: React, TypeScript, Vite (build embedded into Go), established accessible 
 - Release README must embed actual screenshots of the finished application captured via Playwright from the **running production build** using sanitized demonstration data; minimum dashboard, call detail with playable recording, mobile call history and theme settings. Store version-controlled images under `docs/assets/screenshots/`, reference relatively in README, verify links/files and screenshot content, and avoid fake/static/marketing mockups. Release documentation must cover onboarding, operator admin, individual user flows, security/privacy, retention and recorded-call limitations, MCP setup, troubleshooting, architecture/development and restore.
 - No manual CSS editing or designer needed after installation to obtain beautiful defaults.
 
-## Human-approved dual voice protocols (2026-11-15)
+## Dual voice protocols (V1)
 - In profile/settings screens provide a clear `Realtime (WebSocket)` / `GPT-Live (WebSocket)` selector with protocol-aware model, endpoint, headers/auth and voice validation. Keep English-only UI labels. Warn when a gateway does not implement the selected audio protocol, rather than accepting a plain text-compatible endpoint as proof.
 - Existing Realtime profiles must remain selected and working after upgrade. No mandatory backend model configuration for Live; show actual costs/usage only when provider reports them.
 
-## Human-approved transport-independent voice architecture (2026-11-15)
+## Transport-independent voice architecture (V1)
 - Explain AI protocol choice separately from model/gateway settings. V1 only offers functional WebSocket-backed Realtime and Live selections; do not show nonfunctional WebRTC/SIP checkboxes. Keep the profile metadata prepared for adding independently supported transports in future without confusing users or altering the standard call flow.

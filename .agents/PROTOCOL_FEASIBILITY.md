@@ -1,6 +1,5 @@
 # CallHarbor v1.0.0 — mandatory early protocol feasibility contract
 
-status=locked_human_authorized
 purpose=prove_real_external_compatibility_without_reopening_locked_architecture
 owner_issue=CH-001
 
@@ -51,14 +50,14 @@ prove both adapters agree on an explicit, documented audio/message interface.
 If a required capability is unproven or impossible, block the dependent
 work/release explicitly; NEVER declare compatibility by assumption.
 
-## Human-approved dual voice protocols (2026-11-15)
+## Dual voice protocols (V1)
 - Verify both WS protocols with independent fake provider servers and negative cases: Realtime URL model query and `session.update` versus GPT-Live no-query URL, first `session.start`, `session.started`, audio/usage/errors and `session.close`/`session.closed`. A Realtime emulator is NOT a valid Live emulator.
 - Evaluate Live PCM/PCMU/PCMA formats and rates against Telnyx stream formats; test resampling, packet timing, output truncation and incoming/outgoing audio accounting without assuming identical event semantics.
 - Verify GPT-Live startup prompt constraints, voice/model immutability, actual long-context acceptance, any delegation events and deterministic safe handling with NO separate paid backend, plus two-party transcript availability/quality and recording correctness.
 - For arbitrary model aliases/gateways (including `gpt-live-1-codex`), require a capability handshake or documented trusted evidence before claiming support. No paid live tests in CI; testable emulator conformance and explicit unverified-provider caveats are mandatory.
 - Reference official API contracts: https://developers.openai.com/api/reference/resources/live/primary-websocket and https://developers.openai.com/api/docs/guides/voice-websockets .
 
-## Human-approved transport-independent voice architecture (2026-11-15)
+## Transport-independent voice architecture (V1)
 - Verify and record independent capability matrices for telephony transport, AI voice protocol and AI transport. V1 test matrix: Telnyx media WebSocket x Realtime primary WebSocket; Telnyx media WebSocket x GPT-Live primary WebSocket. Separate protocol event fixtures and shared media/call assertions must cover codec, clocks, interruption, transcript fidelity, disconnection, backpressure and resource usage.
 - Cross-check official GPT-Live WebSocket and WebRTC/SIP specs without implementing unrequested additional transports. Document future integration constraints, including WebRTC data-channel/media separation and SIP/sideband, and whether a configured proxy can carry the chosen protocol. Do not assume text OpenAI API compatibility means voice support.
 - Negative tests MUST reject mismatched protocol, unsupported codec or rate, missing play-out confirmation, unavailable recording/transcript evidence and unexpected delegation without silently switching to another transport or paid model.

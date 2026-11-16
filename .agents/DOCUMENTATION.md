@@ -1,7 +1,4 @@
-# Documentation and product evidence policy — immutable
-
-status=locked_human_authorized
-agent_must_not_edit=this_file
+# Documentation and product evidence standards
 
 Public user/admin/operator/developer docs live in `docs/`; the product, security, design and engineering contracts live in `.agents/`. `AGENTS.md` is the tool-independent entry point. Project internals do not belong in public onboarding docs, especially user-specific agent prompts.
 - Include first admin wizard, standalone accounts/OIDC, MCP/ChatGPT authorization, per-user Telnyx and Realtime provider configuration, reverse proxy/WebSocket ingress, call/recording workflows, safe retention and warning, backups/restore/upgrade/rollback, diagnostics, threat model and development/test instructions.

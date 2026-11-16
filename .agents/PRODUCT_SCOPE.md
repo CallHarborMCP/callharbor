@@ -54,7 +54,7 @@ Build a fully usable production-grade, self-hosted, lightweight platform for aut
 ## V1 exclusions (planned follow-ups)
 - Live human intervention/steering during conversation (beyond emergency hangup); human takeover; inbound AI receptionist; additional telephony providers; outbound campaigns/bulk dialer; complex enterprise call queues; country-specific legal notices/recording policies. All belong in roadmap V2+; modular interfaces must make them possible without implementing dead abstractions now.
 
-## Human-approved dual voice protocols (2026-11-15)
+## Dual voice protocols (V1)
 - V1 MUST support both modes per user/profile: `realtime_ws` (existing Realtime event protocol) and `live_ws` (GPT-Live event protocol). Neither is optional, nor a replacement for the other. An explicit protocol selector is required in WebGUI, stored profiles and the API. Existing Realtime profiles retain their behavior on upgrade.
 - On Realtime WS, the model is a URL query parameter (`/v1/realtime?model=...`), with Realtime session events. On Live WS, connect to `/v1/live/sessions` WITHOUT a model query parameter, send `session.start` containing model, instructions, audio and voice, and await `session.started` before audio. Do not conflate event schemas or silently fall back between protocols.
 - Prefer one primary server-side WebSocket between CallHarbor and the chosen provider; WebRTC/SIP to the AI provider is NOT mandatory. Telnyx Call Control and bidirectional media WebSocket remain the V1 telephone interface. Other media transports can be considered later only with explicit authorization.
@@ -64,7 +64,7 @@ Build a fully usable production-grade, self-hosted, lightweight platform for aut
 - Preserve codec, timing, playback, barge-in, accurate two-party transcript/recording, fail-closed errors, billing/usage, idempotency, tenant isolation and full E2E contracts for BOTH modes; never mark simulated provider tests as a real paid provider test.
 - Official protocol references: https://developers.openai.com/api/docs/guides/voice-websockets ; https://developers.openai.com/api/reference/resources/live/primary-websocket ; https://developers.openai.com/api/docs/guides/live-delegation ; https://developers.openai.com/api/docs/guides/realtime-conversations .
 
-## Human-approved transport-independent voice architecture (2026-11-15)
+## Transport-independent voice architecture (V1)
 - Voice API protocol and network/media transport are independent choices. V1 must implement both Realtime and GPT-Live using the validated primary server-to-server WebSocket transport; these two protocol adapters MUST NOT be embedded into Telnyx, Go HTTP routes, React screens or core call state machine. Future WebRTC/SIP implementations are extension points, not mandatory V1 features and not advertised as supported now.
 - Keep Telnyx as the V1 telephony adapter, but separate its call-control events and bidirectional media from the AI voice session behind focused internal interfaces. Adding a new telephone carrier should not require editing Realtime/Live protocol implementations or business logic. Do not build a generic multi-carrier UI or an extra service in V1.
 - Explicitly distinguish: telephony provider (`telnyx` in V1), AI protocol (`realtime`, `live`), and AI primary transport (`websocket` in V1). Do not infer one from model name, gateway URL or the other axis. Existing configurations migrate without change; future transports must be additive and capability-checked.

@@ -15,9 +15,9 @@ Tests may never call live Telnyx endpoints or incur call charges in CI; user wil
 Do not deploy CPU STT/LLM/TTS on Hetzner or in GitHub Actions for standard gates. Use real audio fixtures and a deterministic realtime protocol emulator, not AI quality testing. All test dependencies can run locally via Docker Compose test profile, ideally entirely on a GitHub Actions runner.
 
 ## Release evidence and honesty
-The v1 gate must show real automated contract/E2E evidence, recording media test, security boundary and OAuth results, CI green and release artifacts. The separate status `Live Telnyx tested` MUST remain false unless an actual permitted billable call was conducted; such a live call is not required for autonomous release. Do not invent a sandbox or promise impossible verification.
+The v1 gate must show real automated contract/E2E evidence, recording media test, security boundary and OAuth results, CI green and release artifacts. The separate status `Live Telnyx tested` MUST remain false unless an actual permitted billable call was conducted; such a live call is not required for V1 release. Do not invent a sandbox or promise impossible verification.
 
-## Tendo-style test proof requirements
+## Behavioral test evidence requirements
 - `tests_prove_behavior_not_presence`: 200/OK alone does not prove persistence/authorization. Test response schema AND real SQLite/app state; tests cannot mock the exact behavior under test.
 - Every confirmed defect gets a failing regression BEFORE implementation where feasible, and pass-after proof. Important failures require adversarial invalid/unauthorized/concurrent/reordered cases, not just happy paths.
 - One canonical deterministic clock and unique isolated fixtures per integration/E2E run; never sleep until a real time of day or rely on external Telnyx/billable AI services. Fake Telnyx/OpenAI-compatible protocol boundaries, not the production application under test.
@@ -27,11 +27,11 @@ The v1 gate must show real automated contract/E2E evidence, recording media test
 - Every new code layer must add its actual product tests to standard project commands/`scripts/verify-local.sh` in the introducing PR; required CI runs those commands. A release requires the real backend + frontend + contract/media/E2E harness, representative failure injection, production Docker build, backup/restore and actual CI evidence. Bootstrap-only tests CANNOT satisfy V1 DoD.
 - Run the production rate, response/TTFT and memory benchmarks under deterministic bounded load and capture real measurements with resource/host details. Never invent numbers or claim live Telnyx compatibility from mocks.
 
-## Human-approved dual voice protocols (2026-11-15)
+## Dual voice protocols (V1)
 - Execute the same behavioral contract and failure suite against BOTH voice adapters; use distinct handshake/session/audio event fixtures for each protocol. Test model-in-URL versus model-in-`session.start`, codec conversions, real media playout markers, cancellation/interrupts, transcript fidelity, final usage and no second paid model.
 - Verify that migrating existing user profiles retains `realtime_ws` and that explicit Live selection is persisted, validated and isolated per user. Test malformed, unsupported or mismatched protocol responses and provider disconnects without silent fallback.
 - CI must never dial Telnyx or charge GPT-Live/Realtime API; verify with independent protocol simulators and clearly report external end-to-end verification as unproven.
 
-## Human-approved transport-independent voice architecture (2026-11-15)
+## Transport-independent voice architecture (V1)
 - Add adapter-boundary regression tests that demonstrate the call engine is independent of Telnyx-specific and GPT-Live/Realtime-specific event schemas, plus table-driven codec/rate/clock validation and bounded queues. Do not add a real second telephony provider or WebRTC/SIP runtime to V1 just for testing.
 - Record a reproducible end-to-end latency budget by stage (telephony input, conversion, AI first output, playback delivery, interruption); distinguish emulator measurements from real provider behavior. Require deterministic negative tests for unsupported transport selection and protocol mismatch.
