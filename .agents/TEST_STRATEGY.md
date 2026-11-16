@@ -1,4 +1,4 @@
-# Test strategy — full autonomy, zero live Telnyx calls in CI
+# Test strategy — production-level coverage without live Telnyx calls in CI
 
 Tests may never call live Telnyx endpoints or incur call charges in CI; user will conduct their own real telephone acceptance calls later. CI must never claim live Telnyx was verified. Automated compatibility aims to be as close as independently possible to production interfaces.
 
