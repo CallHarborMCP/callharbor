@@ -1,27 +1,22 @@
-# CallHarbor — autonomous engineering
+# CallHarbor — engineering guidance
 
-## Scope
+CallHarbor is a self-hosted multi-user AI telephone-calling product. Deliver the **complete** V1.0.0 contract; do not silently downgrade requirements or claim unfinished behavior as implemented. This repository contains product and engineering requirements, **not** an agent orchestrator.
 
-Build the complete production V1.0.0, **not an MVP**. GitHub Issues and pull requests are the authoritative work source; permanent autonomy governance is release-neutral. The current V1 contract explicitly requires independently selectable **OpenAI-compatible Realtime WebSocket** (`realtime_ws`) **and GPT-Live WebSocket** (`live_ws`) voice protocols, behind transport-independent call/media boundaries. WebSocket is the V1 transport; WebRTC and SIP are not implemented V1 features. Never drop either voice protocol or weaken the locked product/security/release contract.
+## Read the project contracts
 
-## Roles, not vendor-specific agents
+- Scope and architecture: `.agents/CHARTER.md`, `.agents/PRODUCT_SCOPE.md`, `.agents/ARCHITECTURE.md`, `.agents/PROTOCOL_FEASIBILITY.md`.
+- API, security and UX: `.agents/API_CONTRACT.md`, `.agents/SECURITY.md`, `.agents/UX.md`.
+- Engineering quality: `.agents/GUARDRAILS.md`, `.agents/CODE_QUALITY.md`, `.agents/TEST_STRATEGY.md`, `.agents/DOCUMENTATION.md`, `.agents/LEARNINGS.md`.
+- Release acceptance: `.agents/DEFINITION_OF_DONE.md`. Future ideas: `.agents/ROADMAP.md`.
+- GitHub Issues contain individual acceptance criteria. Historical Issue references to `.autonomous/<file>` refer to the corresponding `.agents/<file>`. Old orchestration documents are retired and remain in Git history.
 
-`owner` authorizes governance and releases; `controller` schedules; `orchestrator` selects and coordinates; `worker` implements a single claimed item; `reviewer` independently verifies. Multiple authorized workers can use different execution tools on independent checkouts and GitHub identities. Tool-specific CLI integration belongs **only** to a replaceable runtime adapter, not policy or workflow documents.
+## Working in this repository
 
-## Required reading
+- Use `mise install` and `mise exec -- bash scripts/verify-local.sh`; `.mise.toml` pins Go and Node.js. Go modules and npm manage application dependencies.
+- Keep `renovate.json` and the required GitHub Actions CI active. Do not weaken or bypass tests, protected branches, independent review or release gates.
+- Use genuine Go/React/SQLite, protocol, audio, security and browser tests. Test actual production behavior with independent simulated Telnyx and voice-provider endpoints; automated tests must never place paid calls or incur paid AI charges.
+- The required V1 product uses Telnyx, both separately selectable Realtime WebSocket and GPT-Live WebSocket adapters, one Go service with embedded React, and SQLite. Preserve isolation, auth, recording opt-in, truthful transcription and auditability.
+- Protect credentials and users' data. Never invent successful calls, simulated-live compatibility, benchmarks, screenshots or completed release evidence.
+- The locked product contracts and their SHA manifest are owner-controlled. Do not change their requirements without explicit authorization.
 
-Always: this file, `.autonomous/AUTONOMY_PROMPT.md`, `.autonomous/FLOW.md`, `.autonomous/GUARDRAILS.md`, `.autonomous/CODE_QUALITY.md`, `.autonomous/DEFINITION_OF_DONE.md` and `.autonomous/LEARNINGS.md`.
-
-For product changes also read: `.autonomous/PRODUCT_SCOPE.md`, `.autonomous/ARCHITECTURE.md`, `.autonomous/PROTOCOL_FEASIBILITY.md`, `.autonomous/SECURITY.md`, `.autonomous/API_CONTRACT.md`, `.autonomous/TEST_STRATEGY.md`, `.autonomous/UX.md`; consult documentation and roadmap as relevant. Review live GitHub Issues/PRs, CI, security and dependency state every cycle.
-
-## Engineering workflow
-
-Only Issues carrying exact `release` label are agent-owned **after the owner-controlled label cutover**. GitHub first-claim-wins, open PRs and required `status:idle` / `status:in-progress` / `status:blocked` lifecycle coordinate independent workers; `release` alone determines ownership. No priority or area label is required. No Issue title, milestone, version or historical body marker grants ownership by itself. Protected `main` is PR-only. Fix defects with behavioral regression tests, run all required verification, obtain independent review, merge only green required CI, then verify main and close the Issue with evidence. Renovate/security/CI/patch maintenance is permanent and does not require a separate work scheduler. Do not touch an unrelated or another worker's claimed Issue/PR.
-
-## Runtime and governance safety
-
-Only the owner may modify the autonomy controller, selector, runtime adapter, installer, systemd unit, governance authority, locked specs or credentials. Autonomous product-feature workers **must not modify their own authority**. The owner controls installation and service activation separately. No routine action may activate a disabled service. No version completion marker stops the evergreen controller.
-
-## Product/test invariants
-
-Go + SQLite, embedded responsive React/TypeScript WebGUI, local recordings OFF by default, multiuser RBAC and data isolation, OAuth2.1/MCP and optional OIDC, Telnyx outbound telephony, both selectable realtime voice protocol adapters, full-duplex natural speech/barge-in, actual played-audio semantics, auditable outcomes, one production Docker container. Standard `mise`, Go/npm, Playwright and Docker Compose tests; no paid API calls or real Telnyx dialing in automated tests. Do not represent independent simulator tests as proven live provider compatibility. Preserve all locked V1 Definition of Done, genuine screenshots, backups, source tag, and verified GHCR multiarch release evidence.
+Assignment, scheduling, issue state transitions, agent identities, handoffs and task orchestration are deliberately **not defined in this repository**.

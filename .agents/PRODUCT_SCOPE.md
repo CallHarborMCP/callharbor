@@ -1,7 +1,7 @@
 # CallHarbor V1.0.0 — Locked Product Contract
 
 ## Product mission
-Build a fully usable production-grade, self-hosted, lightweight platform for autonomous outbound AI telephone calls. Not an MVP, not a prototype, not an MCP-only wrapper. All the functionality specified here must ship together in v1.0.0. Autonomous implementation must not expand scope or silently defer mandatory capabilities.
+Build a fully usable production-grade, self-hosted, lightweight platform for autonomous outbound AI telephone calls. Not an MVP, not a prototype, not an MCP-only wrapper. All the functionality specified here must ship together in v1.0.0. Implementation must not expand scope or silently defer mandatory capabilities.
 
 ## Guiding principles
 - Multi-user; strict per-user identity, tenant-like resource isolation, no leaks via REST, MCP, files, logs, WebSocket or IDs.

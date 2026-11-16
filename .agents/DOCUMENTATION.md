@@ -3,7 +3,7 @@
 status=locked_human_authorized
 agent_must_not_edit=this_file
 
-Public user/admin/operator/developer docs live in `docs/`; the locked governance, product contract, design constraints and agent workflow live in `.autonomous/`. `AGENTS.md` is only the entry point. Project internals do not belong in public onboarding docs, especially user-specific agent prompts.
+Public user/admin/operator/developer docs live in `docs/`; the product, security, design and engineering contracts live in `.agents/`. `AGENTS.md` is the tool-independent entry point. Project internals do not belong in public onboarding docs, especially user-specific agent prompts.
 - Include first admin wizard, standalone accounts/OIDC, MCP/ChatGPT authorization, per-user Telnyx and Realtime provider configuration, reverse proxy/WebSocket ingress, call/recording workflows, safe retention and warning, backups/restore/upgrade/rollback, diagnostics, threat model and development/test instructions.
 - README is product-quality: features, honest capabilities and limits, Docker Compose quickstart, tested prerequisites, exact commands, auth flow, image tags, docs links and actual screenshots.
 - Screenshots must be captured through Playwright from the genuine production-built running application with synthetic test fixtures. Save to `docs/assets/screenshots/`, commit images, embed in README, and verify mobile/desktop and light/dark screenshots against live pages. No illustrations/mockups posed as screenshots.
