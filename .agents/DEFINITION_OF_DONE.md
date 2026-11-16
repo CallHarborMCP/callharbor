@@ -22,7 +22,7 @@ Every item below is mandatory. An issue is done only when PR merged, required CI
 
 
 ## Continuous engineering quality required before the V1 release
-- [ ] Go/Node/Playwright versions and lockfiles match GitHub CI without changing global host or Tendo configuration. A repeatable local verification command covers all production layers.
+- [ ] Go/Node/Playwright versions and lockfiles match GitHub CI without modifying host-global toolchains or unrelated projects. A repeatable local verification command covers all production layers.
 - [ ] Independent review on every behavior PR; high-risk changes have independent skeptical technical review evidence, and findings are addressed before release.
 - [ ] Human-authored source code independently reviewed for cohesion, complexity, coupling and high-risk hotspots; identified problems fixed with regression evidence.
 - [ ] Full E2E suite proves REAL production app/SQLite/auth/call/recording paths with independent fake provider protocols, never only mocked domain behaviors. Every release-critical interface has deterministic negative/concurrent tests.
@@ -33,7 +33,6 @@ Every item below is mandatory. An issue is done only when PR merged, required CI
 - V1 release is BLOCKED unless both `realtime_ws` and `live_ws` are selectable, functional and independently covered by actual end-to-end protocol-contract tests (startup, audio, barge-in, transcript quality, failure, termination, recording and cleanup).
 - Demonstrate upfront long call context for both providers without mid-call mandatory planning LLM, fallback chain or extra paid API. Live startup/delegation behavior must not add unrequested fees; errors must be explicit.
 - Validate migration of old Realtime profiles, API/GUI protocol choice, model alias/endpoints, per-user isolation, failure handling, and real (non-invented) final usage. Document emulator versus live-call limitations accurately.
-- Human change is an additive V1 REQUIREMENT, not a scope reduction or release deferral.
 
 ## Transport-independent voice architecture (V1)
 - Verify both required V1 voice adapters run through one provider-independent call/audio engine and do not embed Telnyx events in AI protocols or provider-specific AI events in the core state machine. No abstract-only scaffolding: real simulator-backed E2E for both required adapters. WebRTC/SIP are clearly documented as future transport options, not V1 functionality or release blockers.
