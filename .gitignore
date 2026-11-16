@@ -4,10 +4,6 @@
 *.db
 *.db-*
 *.sqlite*
-*.wav
-*.mp3
-*.pcm
-*.ogg
 node_modules/
 dist/
 coverage/
@@ -18,9 +14,8 @@ test-results/
 *.pem
 *.key
 private/
-PAPERCLIP_PROMPT.md
+recordings/
 .data/
 data/
-.autonomous/*.pending
 __pycache__/
 *.pyc
