@@ -12,17 +12,16 @@ Every item below is mandatory. An issue is done only when PR merged, required CI
 8. One production container (Go embedded React + SQLite WAL + local media volume); no runtime Redis/PG/PBX/cloud AI/OpenClaw; compose setup and reverse proxy/WebSocket instructions, non-root minimal runtime, first-run wizard.
 9. Repeatable automated CI: unit/integration/race/contract/auth/E2E/Playwright/visual/security/performance and full Docker end-to-end with independent Telnyx/media plus Realtime AND GPT-Live protocol harnesses; no live phone calls/AI API payment in CI. CI must measure and report actual performance, not promise a fixed amount.
 10. Threat model, security review, code/license audit of reused patterns, dependency provenance; COMPLETE professional user/admin/operator/developer documentation (installation, configuration, OAuth/MCP, Telnyx, AI providers, data/retention, upgrades/rollback, backup/restore, troubleshooting, API, architecture, CI and licensing). Release-ready product README with embedded REAL screenshots taken automatically from the running production-built React app using sanitized fixtures. Commit screenshots to `docs/assets/screenshots/`, exercise responsive mobile/desktop and light/dark, verify paths/images and factual UI accuracy in CI. Every critical flaw fixed; no fake green.
-11. GitHub main is PR protected, `required` check mandatory, every scope issue done with evidence, actual release CI passes. The public README, installation docs, live-app screenshot assets and release notes must be reviewed for correctness and completeness by an independent review agent; missing, placeholder or broken images block release. Publish source tag `v1.0.0`, public GHCR multi-platform Linux/amd64 + Linux/arm64 release Docker image with independently verified platform manifest and digest, downloadable compose/setup artifact and professional public GitHub Release including explicit distinction simulation vs live provider testing. Verify artifacts from a clean environment before completion marker PR.
-12. Final `.agents/V1_COMPLETE` exists on protected clean main only after verified release, completed/issues closed and green CI. This marker records release evidence; it does not change product or maintenance obligations.
+11. GitHub main is PR protected, `required` check mandatory, every scope issue done with evidence, actual release CI passes. The public README, installation docs, live-app screenshot assets and release notes must be reviewed for correctness and completeness by an independent review agent; missing, placeholder or broken images block release. Publish source tag `v1.0.0`, public GHCR multi-platform Linux/amd64 + Linux/arm64 release Docker image with independently verified platform manifest and digest, downloadable compose/setup artifact and professional public GitHub Release including explicit distinction simulation vs live provider testing. Verify published artifacts from a clean environment before declaring release complete.
+12. V1 completion requires all release Issues closed with evidence, verified published release artifacts and green required CI on the released main commit. Security, dependency and patch maintenance continue after V1.
 
-## Tendo V3-quality release requirements
+## Release quality requirements
 - Implement two real interactive design concepts, capture authentic screenshots, review them critically and document the chosen direction and design system in `docs/design/`. Require real responsive production screenshot evidence and meaningful WCAG-oriented browser tests.
 - Project-local pinned Go, Node/npm and Playwright versions and a unified local verification command must match the required CI versions. First PR introducing source/code must add corresponding real product tests in standard Go/Node/Playwright/Compose tooling; no skipped local-only tests.
 - Independently audit maintainability, architectural boundaries, auth/tenant and audio correctness; fix identified release blockers before release instead of merely documenting them.
 
 
-## Continuous engineering quality required before V1_COMPLETE
-- [ ] Reusable engineering lessons in `.agents/LEARNINGS.md` are evidence-backed, with meaningful regression checks where feasible.
+## Continuous engineering quality required before the V1 release
 - [ ] Go/Node/Playwright versions and lockfiles match GitHub CI without changing global host or Tendo configuration. A repeatable local verification command covers all production layers.
 - [ ] Independent review on every behavior PR; high-risk changes have independent skeptical technical review evidence, and findings are addressed before release.
 - [ ] Human-authored source code independently reviewed for cohesion, complexity, coupling and high-risk hotspots; identified problems fixed with regression evidence.
@@ -30,13 +29,13 @@ Every item below is mandatory. An issue is done only when PR merged, required CI
 - [ ] Browser Playwright verifies genuine responsive flows, accessibility, light/dark/theme, error/loading, and screenshots from actually running production build with independently reviewed baselines.
 - [ ] Final aggregate local gate and exact required CI gates pass; documented release evidence proves artifact, clean install, backup/restore, upgrades and GHCR both architectures without fabricated human/live-call coverage.
 
-## Human-approved dual voice protocols (2026-11-15)
+## Dual voice protocols (V1)
 - V1 release is BLOCKED unless both `realtime_ws` and `live_ws` are selectable, functional and independently covered by actual end-to-end protocol-contract tests (startup, audio, barge-in, transcript quality, failure, termination, recording and cleanup).
 - Demonstrate upfront long call context for both providers without mid-call mandatory planning LLM, fallback chain or extra paid API. Live startup/delegation behavior must not add unrequested fees; errors must be explicit.
 - Validate migration of old Realtime profiles, API/GUI protocol choice, model alias/endpoints, per-user isolation, failure handling, and real (non-invented) final usage. Document emulator versus live-call limitations accurately.
 - Human change is an additive V1 REQUIREMENT, not a scope reduction or release deferral.
 
-## Human-approved transport-independent voice architecture (2026-11-15)
+## Transport-independent voice architecture (V1)
 - Verify both required V1 voice adapters run through one provider-independent call/audio engine and do not embed Telnyx events in AI protocols or provider-specific AI events in the core state machine. No abstract-only scaffolding: real simulator-backed E2E for both required adapters. WebRTC/SIP are clearly documented as future transport options, not V1 functionality or release blockers.
 - Include an integration test that demonstrates adding a fake additional telephony adapter or alternate voice provider through the intended boundaries without rewriting the call lifecycle; no new production service, paid AI or unsupported transport claimed.
 - Benchmark media latency, conversion costs and interruption to audible silence with realistic independent fixtures; preserve complete recording/transcript evidence and avoid performance claims unsupported by actual measurements.
