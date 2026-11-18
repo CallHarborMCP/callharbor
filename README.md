@@ -21,7 +21,7 @@ Dependency updates use [Renovate](https://github.com/apps/renovate). `renovate.j
 - Release gate: `.agents/DEFINITION_OF_DONE.md`
 - Planned future features: `.agents/ROADMAP.md`
 - Engineering instructions: `AGENTS.md` (tool-independent).
-- Work items and acceptance criteria: GitHub Issues. Agent scheduling, assignment and workflow are external to the repository. Renovate continues to propose dependency PRs.
+- **Authoritative work backlog and task acceptance:** CallHarbor project in [Paperclip](https://paperclip.veselarodina.cz/). GitHub Issues from initial planning are archived provenance, not an active task queue. Coding changes, PR reviews, CI and GitHub Releases remain on GitHub. Renovate continues to open dependency PRs; authorized work is tracked via Paperclip tasks.
 
 The V1 release requires complete professional installation, configuration, security, backup/restore, troubleshooting and development documentation with authentic screenshots of the running application. Acceptance criteria live in `.agents/DOCUMENTATION.md` and `.agents/DEFINITION_OF_DONE.md`.
 
