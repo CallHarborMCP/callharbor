@@ -1,28 +1,21 @@
 # CallHarbor — engineering guidance
 
-CallHarbor is a self-hosted multi-user AI telephone-calling product. Deliver the **complete** V1.0.0 contract; do not silently downgrade requirements or claim unfinished behavior as implemented. This repository contains product and engineering requirements, **not** an agent orchestrator.
+CallHarbor is a self-hosted, multi-user AI telephone-calling product. This repository provides product and engineering requirements for any coding agent, regardless of its runtime or work-management system. It does not define agent assignments, scheduling, task-state transitions, review routing or approval workflows.
 
-## Read the project contracts
+## Authoritative contracts
 
-- Scope and architecture: `.agents/CHARTER.md`, `.agents/PRODUCT_SCOPE.md`, `.agents/ARCHITECTURE.md`, `.agents/PROTOCOL_FEASIBILITY.md`.
+- Product and architectural scope: `.agents/CHARTER.md`, `.agents/PRODUCT_SCOPE.md`, `.agents/ARCHITECTURE.md`, `.agents/PROTOCOL_FEASIBILITY.md`.
 - API, security and UX: `.agents/API_CONTRACT.md`, `.agents/SECURITY.md`, `.agents/UX.md`.
 - Engineering quality: `.agents/GUARDRAILS.md`, `.agents/CODE_QUALITY.md`, `.agents/TEST_STRATEGY.md`, `.agents/DOCUMENTATION.md`.
-- Release acceptance: `.agents/DEFINITION_OF_DONE.md`. Future ideas: `.agents/ROADMAP.md`.
-- **Paperclip is the sole authoritative backlog and acceptance tracker** for CallHarbor. Every authorized V1 work item, acceptance criterion, blocker, dependency, priority, review, decision and evidence link lives in the CallHarbor project in Paperclip. Use only native Paperclip task identifiers.
+- Release acceptance: `.agents/DEFINITION_OF_DONE.md`. Future possibilities: `.agents/ROADMAP.md`; a roadmap item is not authorization to implement it.
 
-## Working in this repository
+Deliver the complete V1.0.0 contract. Do not silently remove mandatory functionality, downgrade requirements or represent unverified behavior as complete. The product, scope, security, guardrails and acceptance contracts protected by `.agents/LOCKED_SHA256SUMS` require explicit owner authorization for changes.
 
-- Use `mise install` and `mise exec -- bash scripts/verify-local.sh --quick` for fast local checks; the default (no flag) runs full production Docker/browser E2E. `.mise.toml` pins Go and Node.js. Go modules and npm manage application dependencies.
-- Keep `renovate.json` and the required GitHub Actions CI active. Do not weaken or bypass tests, protected branches, independent review or release gates.
-- Use genuine Go/React/SQLite, protocol, audio, security and browser tests. Test actual production behavior with independent simulated Telnyx and voice-provider endpoints; automated tests must never place paid calls or incur paid AI charges.
-- The required V1 product uses Telnyx, both separately selectable Realtime WebSocket and GPT-Live WebSocket adapters, one Go service with embedded React, and SQLite. Preserve isolation, auth, recording opt-in, truthful transcription and auditability.
-- Protect credentials and users' data. Never invent successful calls, simulated-live compatibility, benchmarks, screenshots or completed release evidence.
-- The product mission, V1 scope, security, guardrails and release acceptance are owner-controlled and protected by `.agents/LOCKED_SHA256SUMS`. Other technical documents may evolve with implementation without weakening those requirements.
+## Development and verification
 
-## Backlog authority and implementation evidence
-
-- Obtain authorized assignments from Paperclip tasks only. Avoid duplicate work: verify Paperclip ownership and existing PR claims before starting.
-- GitHub remains the source of truth **for Git code, PRs, CI, releases and Renovate PRs only**. A PR must cite its canonical native Paperclip task identifier; review and merge evidence is recorded back on that task. Actionable Renovate PRs get one linked Paperclip task.
-- Release qualification requires all V1 CallHarbor Paperclip tasks completed with real linked evidence and verified artifacts.
-- Assignment, scheduling, agent identities, status transitions and orchestration remain native to Paperclip, not defined as a second workflow in this repository.
-
+- Use `mise install` and `mise exec -- bash scripts/verify-local.sh --quick` for fast local checks. The full command without `--quick` runs production Docker/browser end-to-end tests. `.mise.toml` pins Go and Node; Go modules and npm manage application dependencies.
+- Preserve the V1 product design: a Go modular monolith with embedded React, SQLite and one production container; Telnyx outbound calling, independently selectable Realtime and GPT-Live WebSocket adapters, per-user isolation, authorization, recording opt-in and auditable outcomes.
+- Test actual behavior with genuine Go/React/SQLite, protocol/audio/security and browser tests. Use independent simulated Telnyx and voice-provider endpoints; automated tests must never make paid calls or incur hosted AI charges. Document simulation limits honestly.
+- Protect secrets, user data and recordings. Do not invent successful calls, transcripts, screenshots, benchmarks, test results or release evidence.
+- Keep Renovate and required GitHub Actions CI working. Changes to source and tests use reviewable pull requests and existing branch protection; do not bypass green checks or independent quality review.
+- Validate applicable contracts, compatibility, documentation, artifacts and upgrade/install behavior before declaring technical delivery complete. Work authorization, operational task tracking and acceptance decisions are handled outside this repository.

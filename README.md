@@ -21,7 +21,6 @@ Dependency updates use [Renovate](https://github.com/apps/renovate). `renovate.j
 - Release gate: `.agents/DEFINITION_OF_DONE.md`
 - Planned future features: `.agents/ROADMAP.md`
 - Engineering instructions: `AGENTS.md` (tool-independent).
-- **Work backlog and acceptance:** [CallHarbor in Paperclip](https://paperclip.veselarodina.cz/) using native Paperclip issue IDs. Source code, PR reviews, CI and releases stay on GitHub; Renovate opens dependency PRs and their execution is tracked in Paperclip.
 
 The V1 release requires complete professional installation, configuration, security, backup/restore, troubleshooting and development documentation with authentic screenshots of the running application. Acceptance criteria live in `.agents/DOCUMENTATION.md` and `.agents/DEFINITION_OF_DONE.md`.
 
