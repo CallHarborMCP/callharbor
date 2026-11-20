@@ -27,11 +27,9 @@ The v1 gate must show real automated contract/E2E evidence, recording media test
 - Every new code layer must add its actual product tests to standard project commands/`scripts/verify-local.sh` in the introducing PR; required CI runs those commands. A release requires the real backend + frontend + contract/media/E2E harness, representative failure injection, production Docker build, backup/restore and actual CI evidence. Bootstrap-only tests CANNOT satisfy V1 DoD.
 - Run the production rate, response/TTFT and memory benchmarks under deterministic bounded load and capture real measurements with resource/host details. Never invent numbers or claim live Telnyx compatibility from mocks.
 
-## Dual voice protocols (V1)
-- Execute the same behavioral contract and failure suite against BOTH voice adapters; use distinct handshake/session/audio event fixtures for each protocol. Test model-in-URL versus model-in-`session.start`, codec conversions, real media playout markers, cancellation/interrupts, transcript fidelity, final usage and no second paid model.
-- Verify that migrating existing user profiles retains `realtime_ws` and that explicit Live selection is persisted, validated and isolated per user. Test malformed, unsupported or mismatched protocol responses and provider disconnects without silent fallback.
-- CI must never dial Telnyx or charge GPT-Live/Realtime API; verify with independent protocol simulators and clearly report external end-to-end verification as unproven.
+## Cross-adapter voice verification
 
-## Transport-independent voice architecture (V1)
-- Add adapter-boundary regression tests that demonstrate the call engine is independent of Telnyx-specific and GPT-Live/Realtime-specific event schemas, plus table-driven codec/rate/clock validation and bounded queues. Do not add a real second telephony provider or WebRTC/SIP runtime to V1 just for testing.
-- Record a reproducible end-to-end latency budget by stage (telephony input, conversion, AI first output, playback delivery, interruption); distinguish emulator measurements from real provider behavior. Require deterministic negative tests for unsupported transport selection and protocol mismatch.
+- Execute the same behavior, failure and concurrency contract suite against BOTH Realtime and GPT-Live using separate handshake, session, audio and event fixtures. Verify URL-model versus `session.start`, codec conversion, playout markers, cancellation and interruption, transcript provenance, final usage and absence of a second paid model.
+- Verify existing Realtime profiles migrate safely, explicit Live selection is persisted and isolated per user, and malformed/unsupported/mismatched events or disconnects produce visible failures without hidden fallback.
+- Exercise adapter boundaries with a fake additional telephony adapter or alternate voice provider. Assert the core call engine is independent of Telnyx and voice-protocol event schemas; include table-driven codec, sample-rate and clock tests and bounded-queue failures. Do not implement a second real carrier or WebRTC/SIP runtime merely for tests.
+- Record reproducible end-to-end first-audio and interruption latency by stage (telephony input, conversion, AI first output, playback), and separate emulator findings from unverified live-provider behavior.
