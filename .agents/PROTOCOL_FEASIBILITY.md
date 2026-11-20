@@ -1,11 +1,10 @@
 # CallHarbor v1.0.0 — mandatory early protocol feasibility contract
 
 purpose=prove_real_external_compatibility_without_reopening_locked_architecture
-owner_issue=CH-001
 
 The product architecture, chosen providers and single-container runtime are ALREADY DECIDED.
-CH-001 may not choose a new stack or silently shrink the mandatory V1 product.
-Before merging ANY Telnyx/Realtime voice engine feature, CH-001 must deliver
+Feasibility work may not choose a new stack or silently shrink the mandatory V1 product.
+Before merging any Telnyx/Realtime voice engine feature, this contract requires
 pinned, licensed source citations and executable offline contract tests, and
 prove both adapters agree on an explicit, documented audio/message interface.
 
@@ -46,7 +45,7 @@ prove both adapters agree on an explicit, documented audio/message interface.
 - Reproducible commands and risk/unknown list in a reviewed ADR or fixture doc.
 - Green required CI evidence proving the above; mocks must not implement
   the exact service logic under test. No paid calls or hosted AI tests needed.
-- CH-009/010/011/012/016/017 and full E2E MUST use verified contracts for BOTH voice protocol modes.
+- All dependent voice implementations and full E2E tests MUST use verified contracts for BOTH voice protocol modes.
 If a required capability is unproven or impossible, block the dependent
 work/release explicitly; NEVER declare compatibility by assumption.
 

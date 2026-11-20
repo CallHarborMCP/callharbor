@@ -9,7 +9,7 @@ One Go process hosts HTTPS-ready REST/MCP/OAuth handlers, the admin/user React S
   `security/`, `backup/`. Web frontend is `web/`; public contracts in `api/`.
 - Any intentionally different package tree MUST update the relevant contract/E2E tests in the SAME PR. Moving
   packages to an unmonitored directory to bypass a gate is strictly forbidden.
-- Before the first real provider integration, satisfy CH-001 protocol-feasibility acceptance criteria with reproducible evidence.
+- Before the first real provider integration, satisfy `.agents/PROTOCOL_FEASIBILITY.md` with reproducible evidence.
 
 ## Modules
 1. identity: built-in accounts, optional external OIDC, sessions, role and resource permissions; OAuth 2.1 MCP authorization server using trusted library.
