@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strings"
 
 	_ "modernc.org/sqlite"
 )
@@ -26,6 +27,9 @@ type Store struct {
 func Open(ctx context.Context, path string) (*Store, error) {
 	if path == "" {
 		return nil, errors.New("database path is empty")
+	}
+	if strings.ContainsAny(path, "?#") {
+		return nil, fmt.Errorf("database path %q must not contain '?' or '#'", path)
 	}
 	db, err := sql.Open(driverName, "file:"+path+dsnOptions)
 	if err != nil {

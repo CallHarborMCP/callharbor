@@ -169,9 +169,11 @@ CREATE TABLE provider_webhook_receipts (
 
 CREATE TABLE retention_purge_markers (
     scope TEXT NOT NULL CHECK (scope IN ('call', 'audit')),
-    key TEXT NOT NULL,
+    key TEXT NOT NULL CHECK (length(key) BETWEEN 1 AND 128),
+    cutoff_at TEXT,
     created_at TEXT NOT NULL,
-    PRIMARY KEY (scope, key)
+    PRIMARY KEY (scope, key),
+    CHECK ((scope = 'audit') = (cutoff_at IS NOT NULL))
 );
 
 CREATE TABLE audit_events (
@@ -262,7 +264,16 @@ END;
 
 CREATE TRIGGER audit_events_guarded_delete
 BEFORE DELETE ON audit_events
-WHEN NOT EXISTS (SELECT 1 FROM retention_purge_markers WHERE scope = 'audit' AND key = 'global')
+WHEN NOT EXISTS (
+    SELECT 1 FROM retention_purge_markers m
+    WHERE m.scope = 'audit' AND OLD.occurred_at < m.cutoff_at
+)
 BEGIN
     SELECT RAISE(ABORT, 'audit events may only be deleted by retention purge');
+END;
+
+CREATE TRIGGER retention_purge_markers_immutable_update
+BEFORE UPDATE ON retention_purge_markers
+BEGIN
+    SELECT RAISE(ABORT, 'retention purge markers are immutable');
 END;

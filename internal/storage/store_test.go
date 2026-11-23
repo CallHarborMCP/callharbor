@@ -91,6 +91,14 @@ func TestOpenRejectsEmptyPath(t *testing.T) {
 	}
 }
 
+func TestOpenRejectsDSNMetacharactersInPath(t *testing.T) {
+	for _, p := range []string{"/tmp/a?mode=memory", "/tmp/a#frag"} {
+		if _, err := Open(context.Background(), p); err == nil {
+			t.Fatalf("Open(%q) accepted a path that changes the DSN", p)
+		}
+	}
+}
+
 func TestMigrationsRoundTripUpAndDown(t *testing.T) {
 	ctx := context.Background()
 	s, err := Open(ctx, filepath.Join(t.TempDir(), "rt.db"))
@@ -277,44 +285,135 @@ func TestAppendOnlyTablesRejectUpdatesAndDeletes(t *testing.T) {
 	expectExecError(t, s, "DELETE FROM calls WHERE id = 'alice-call'")
 }
 
-func TestRetentionPurgeMarkerPermitsScopedDeletion(t *testing.T) {
+func seedCallWithEvents(t *testing.T, s *Store, callID string) {
+	t.Helper()
+	ctx := context.Background()
+	if _, err := s.db.ExecContext(ctx, `INSERT INTO calls (id, owner_user_id, telephony_profile_id, ai_profile_id, idempotency_key, to_number, status, max_duration_seconds, created_at, updated_at)
+		VALUES (?, 'alice', 'alice-tel', 'alice-ai', ?, '+14155550111', 'queued', 300, ?, ?)`, callID, "k-"+callID, testTime, testTime); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.db.ExecContext(ctx, `INSERT INTO call_events (call_id, owner_user_id, seq, kind, occurred_at, recorded_at)
+		VALUES (?, 'alice', 1, 'call.created', ?, ?)`, callID, testTime, testTime); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.db.ExecContext(ctx, `INSERT INTO call_briefs (call_id, owner_user_id, version, content_json, content_sha256, created_at)
+		VALUES (?, 'alice', 1, '{}', ?, ?)`, callID, strings.Repeat("b", 64), testTime); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestPurgeCallDeletesOnlyTargetAndCloseWindow(t *testing.T) {
 	ctx := context.Background()
 	s := openMigrated(t, filepath.Join(t.TempDir(), "purge.db"))
 	seedTenants(t, s)
-	if _, err := s.db.Exec(`INSERT INTO call_events (call_id, owner_user_id, seq, kind, occurred_at, recorded_at)
-		VALUES ('alice-call', 'alice', 1, 'call.created', '` + testTime + `', '` + testTime + `'),
-		       ('alice-call', 'alice', 2, 'call.ended', '` + testTime + `', '` + testTime + `')`); err != nil {
+	seedCallWithEvents(t, s, "old-call")
+	seedCallWithEvents(t, s, "kept-call")
+
+	if err := s.PurgeCall(ctx, "old-call", testTime); err != nil {
+		t.Fatalf("PurgeCall: %v", err)
+	}
+	if n := scalarInt(t, s, "SELECT COUNT(*) FROM calls WHERE id = 'old-call'"); n != 0 {
+		t.Fatalf("old-call still present after purge")
+	}
+	if n := scalarInt(t, s, "SELECT COUNT(*) FROM call_events WHERE call_id = 'kept-call'"); n != 1 {
+		t.Fatalf("kept-call events = %d, want 1", n)
+	}
+	if n := scalarInt(t, s, "SELECT COUNT(*) FROM retention_purge_markers"); n != 0 {
+		t.Fatalf("purge marker not closed at commit: %d remain", n)
+	}
+	expectExecError(t, s, "DELETE FROM call_events WHERE call_id = 'kept-call'")
+	expectExecError(t, s, "DELETE FROM call_briefs WHERE call_id = 'kept-call'")
+	expectExecError(t, s, "DELETE FROM calls WHERE id = 'kept-call'")
+}
+
+func TestPurgeCallRejectsEmptyIDWithoutOpeningWindow(t *testing.T) {
+	ctx := context.Background()
+	s := openMigrated(t, filepath.Join(t.TempDir(), "purge-empty.db"))
+	seedTenants(t, s)
+	seedCallWithEvents(t, s, "kept-call")
+
+	if err := s.PurgeCall(ctx, "", testTime); err == nil {
+		t.Fatal("empty call id accepted")
+	}
+	if n := scalarInt(t, s, "SELECT COUNT(*) FROM retention_purge_markers"); n != 0 {
+		t.Fatalf("markers left after rejected purge: %d", n)
+	}
+	expectExecError(t, s, "DELETE FROM call_events WHERE call_id = 'kept-call'")
+}
+
+func TestPurgeWindowIsFailClosedOnStatementError(t *testing.T) {
+	ctx := context.Background()
+	s := openMigrated(t, filepath.Join(t.TempDir(), "purge-fail.db"))
+	seedTenants(t, s)
+	seedCallWithEvents(t, s, "stuck-call")
+	if _, err := s.db.ExecContext(ctx, `CREATE TRIGGER test_block_brief_purge BEFORE DELETE ON call_briefs
+		BEGIN SELECT RAISE(ABORT, 'injected failure'); END;`); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.db.Exec(`INSERT INTO audit_events (occurred_at, actor_user_id, actor_role, action, resource_type, outcome)
-		VALUES ('` + testTime + `', 'alice', 'user', 'login', 'session', 'success')`); err != nil {
+	if err := s.PurgeCall(ctx, "stuck-call", testTime); err == nil {
+		t.Fatal("purge with injected mid-transaction failure unexpectedly succeeded")
+	}
+	if n := scalarInt(t, s, "SELECT COUNT(*) FROM retention_purge_markers"); n != 0 {
+		t.Fatalf("marker left after failed purge: %d", n)
+	}
+	if n := scalarInt(t, s, "SELECT COUNT(*) FROM call_events WHERE call_id = 'stuck-call'"); n != 1 {
+		t.Fatalf("events deleted despite rollback: %d", n)
+	}
+	expectExecError(t, s, "DELETE FROM call_events WHERE call_id = 'stuck-call'")
+}
+
+func TestPurgeMarkerCannotBeRetargeted(t *testing.T) {
+	ctx := context.Background()
+	s := openMigrated(t, filepath.Join(t.TempDir(), "marker.db"))
+	seedTenants(t, s)
+	seedCallWithEvents(t, s, "guarded-call")
+
+	if _, err := s.db.ExecContext(ctx, "INSERT INTO retention_purge_markers (scope, key, created_at) VALUES ('call', 'bob-call', ?)", testTime); err != nil {
+		t.Fatal(err)
+	}
+	expectExecError(t, s, "UPDATE retention_purge_markers SET key = 'guarded-call'")
+	expectExecError(t, s, "DELETE FROM call_events WHERE call_id = 'guarded-call'")
+	expectExecError(t, s, "INSERT INTO retention_purge_markers (scope, key, created_at) VALUES ('audit', 'global', ?)", testTime)
+}
+
+func TestAuditPurgeIsScopedByCutoff(t *testing.T) {
+	ctx := context.Background()
+	s := openMigrated(t, filepath.Join(t.TempDir(), "audit.db"))
+	seedTenants(t, s)
+	const oldTime = "2026-01-01T00:00:00.000Z"
+	const cutoff = "2026-06-01T00:00:00.000Z"
+	const newTime = "2026-11-01T00:00:00.000Z"
+	if _, err := s.db.Exec(`INSERT INTO audit_events (occurred_at, actor_user_id, actor_role, action, resource_type, outcome) VALUES
+		(?, 'alice', 'user', 'login', 'session', 'success'),
+		(?, 'alice', 'user', 'login', 'session', 'success')`, oldTime, newTime); err != nil {
 		t.Fatal(err)
 	}
 
-	expectExecError(t, s, "DELETE FROM call_events")
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		t.Fatal(err)
+	if err := s.PurgeAudit(ctx, cutoff, testTime); err != nil {
+		t.Fatalf("PurgeAudit: %v", err)
 	}
-	if _, err := tx.ExecContext(ctx, "INSERT INTO retention_purge_markers (scope, key, created_at) VALUES ('call', 'alice-call', ?)", testTime); err != nil {
-		_ = tx.Rollback()
-		t.Fatal(err)
+	if n := scalarInt(t, s, "SELECT COUNT(*) FROM audit_events"); n != 1 {
+		t.Fatalf("audit rows after purge = %d, want 1 newer row", n)
 	}
-	if _, err := tx.ExecContext(ctx, "DELETE FROM call_events WHERE call_id = 'alice-call'"); err != nil {
-		_ = tx.Rollback()
-		t.Fatalf("purge of marked call events: %v", err)
-	}
-	if _, err := tx.ExecContext(ctx, "DELETE FROM calls WHERE id = 'alice-call'"); err != nil {
-		_ = tx.Rollback()
-		t.Fatalf("purge of marked call: %v", err)
-	}
-	if err := tx.Commit(); err != nil {
-		t.Fatal(err)
-	}
-	if n := scalarInt(t, s, "SELECT COUNT(*) FROM calls"); n != 0 {
-		t.Fatalf("calls after purge = %d", n)
+	if n := scalarInt(t, s, "SELECT COUNT(*) FROM retention_purge_markers"); n != 0 {
+		t.Fatalf("audit marker not closed at commit: %d remain", n)
 	}
 	expectExecError(t, s, "DELETE FROM audit_events")
+	if _, err := s.db.Exec(`INSERT INTO audit_events (occurred_at, actor_user_id, actor_role, action, resource_type, outcome)
+		VALUES (?, 'alice', 'user', 'login', 'session', 'success')`, oldTime); err != nil {
+		t.Fatal(err)
+	}
+	expectExecError(t, s, "DELETE FROM audit_events WHERE occurred_at < '"+cutoff+"'")
+	if _, err := s.db.ExecContext(ctx, "INSERT INTO retention_purge_markers (scope, key, cutoff_at, created_at) VALUES ('audit', ?, ?, ?)", cutoff, cutoff, testTime); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.db.ExecContext(ctx, `INSERT INTO audit_events (occurred_at, actor_user_id, actor_role, action, resource_type, outcome)
+		VALUES (?, 'alice', 'user', 'login', 'session', 'success')`, newTime); err != nil {
+		t.Fatal(err)
+	}
+	expectExecError(t, s, "UPDATE retention_purge_markers SET cutoff_at = '2026-11-30T00:00:00.000Z'")
+	expectExecError(t, s, "UPDATE retention_purge_markers SET key = 'global'")
+	expectExecError(t, s, "DELETE FROM audit_events WHERE occurred_at >= '"+cutoff+"'")
 }
 
 func TestDataSurvivesRestartAndCrashCopy(t *testing.T) {

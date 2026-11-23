@@ -1,3 +1,4 @@
+DROP TRIGGER IF EXISTS retention_purge_markers_immutable_update;
 DROP TRIGGER IF EXISTS audit_events_guarded_delete;
 DROP TRIGGER IF EXISTS audit_events_immutable_update;
 DROP TRIGGER IF EXISTS calls_guarded_delete;
