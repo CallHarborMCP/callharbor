@@ -2,6 +2,12 @@
 
 **Self-hosted, lightweight, multi-user AI calling platform.**
 
+<p align="center">
+  <a href="https://github.com/CallHarborMCP/callharbor/actions/workflows/required.yml"><img alt="Required CI status" src="https://img.shields.io/github/actions/workflow/status/CallHarborMCP/callharbor/required.yml?branch=main&label=required"></a>
+  <a href="https://scorecard.dev/viewer/?uri=github.com/CallHarborMCP/callharbor"><img alt="OpenSSF Scorecard score" src="https://api.scorecard.dev/projects/github.com/CallHarborMCP/callharbor/badge"></a>
+  <a href="LICENSE"><img alt="Apache-2.0 license" src="https://img.shields.io/github/license/CallHarborMCP/callharbor"></a>
+</p>
+
 CallHarbor is an autonomous outbound-calling product with a responsive React web UI, an OAuth-protected MCP server, Telnyx telephony and configurable OpenAI-compatible Realtime voice gateways. It stores call timelines, transcripts and optionally locally recorded audio with configurable retention.
 
 > This repository currently contains product specifications and test scaffolding, not a working application. Complete release requirements are in `.agents/DEFINITION_OF_DONE.md`.
