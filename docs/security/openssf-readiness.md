@@ -8,7 +8,7 @@ Status: pre-code readiness assessment. This is not a certification, badge claim 
 | --- | --- | --- |
 | OpenSSF Best Practices criteria | https://www.bestpractices.dev/en/criteria (Passing, Silver, Gold text; the page shows no version identifier) | Read 2026-11-24 |
 | OSPS Baseline | Current version v2026.08.28 (https://baseline.openssf.org/) | Read 2026-11-24 |
-| Repository state | `main` at `997dcd3` (includes PRs #47 and #48: readiness report, `SECURITY.md`, `LICENSE`, `CONTRIBUTING.md`, `CODE_OF_CONDUCT.md`, `GOVERNANCE.md`) | 2026-11-24 |
+| Repository state | `main` at `29d31f9` (includes PRs #47, #48 and #49: readiness report, `SECURITY.md`, `LICENSE`, `CONTRIBUTING.md`, `CODE_OF_CONDUCT.md`, `GOVERNANCE.md`) | 2026-11-24 |
 
 Scope: Best Practices Passing and Silver MUST and SHOULD/SUGGESTED items, and OSPS Baseline Level 1 (24 controls). Gold and OSPS Level 2 and 3 are out of scope for this report.
 
@@ -25,7 +25,8 @@ Scope: Best Practices Passing and Silver MUST and SHOULD/SUGGESTED items, and OS
 - Met on `main`: public HTTPS git repository, public history with author attribution, a pinned toolchain (`.mise.toml`), Renovate configuration, a CI workflow that runs on push and pull request, no secret patterns found by a manual scan of tracked files (no secret scanner runs in CI yet), no tracked binaries, the public vulnerability reporting process (`.github/SECURITY.md`) and private vulnerability reporting (API `{"enabled":true}`, verified 2026-11-24).
 - Met: Apache-2.0 `LICENSE`, `CONTRIBUTING.md` (including DCO sign-off), `CODE_OF_CONDUCT.md` (Contributor Covenant 2.1) and `GOVERNANCE.md`.
 - Remaining gaps before any badge claim: a second maintainer (bus factor), the access-continuity plan, owner-only settings, product tests, and a release.
-- Owner actions: the 2FA and collaborator-permission settings, branch protection, the human attestations on secure design and access continuity, a second maintainer, and confirmation of the Code of Conduct enforcement contact.
+- Owner actions: the 2FA and collaborator-permission settings, branch protection, the human attestations on secure design and access continuity, and a second maintainer.
+- Single-maintainer state accepted for v1.0.0 (CEO decision, DEV-81). Bus factor and access continuity stay Owner and are not marked Met.
 
 ## Passing (MUST items)
 
@@ -101,7 +102,7 @@ Scope: Best Practices Passing and Silver MUST and SHOULD/SUGGESTED items, and OS
 | contribution_requirements | Contribution page includes acceptable-contribution requirements | Met | `CONTRIBUTING.md` section "Acceptable contributions" | | |
 | dco (SHOULD) | Developer Certificate of Origin or equivalent | Met | `CONTRIBUTING.md` requires `git commit -s` sign-off under DCO 1.1 | | Existing commits are not retroactively signed off |
 | governance | Documented governance and decision model | Met | `GOVERNANCE.md`. Owner delegated the model to the team (interaction 84af1fb5). It states the single-maintainer reality | | |
-| code_of_conduct | Code of conduct in standard location | Met | `CODE_OF_CONDUCT.md` is Contributor Covenant 2.1, approved by owner. Enforcement contact routes through `.github/SECURITY.md` | Owner confirms enforcement contact | |
+| code_of_conduct | Code of conduct in standard location | Met | `CODE_OF_CONDUCT.md` is Contributor Covenant 2.1, approved by owner. Enforcement contact confirmed as the private advisory channel in `.github/SECURITY.md` (CEO decision, DEV-81; private reporting verified `{"enabled":true}`) | | |
 | roles_responsibilities | Public key roles and responsibilities | Partial | `GOVERNANCE.md` lists maintainer and contributor roles. Only one maintainer is named | Owner names a second maintainer | Update `GOVERNANCE.md` when roles change |
 | access_continuity | Project continues if one person is unavailable within a week | Owner | No documented key, account or recovery process | Owner sets up recovery access | Document the continuity plan without publishing secrets |
 | bus_factor (SHOULD) | Bus factor of 2 or more | Owner | One maintainer evident in commit history | Owner adds a second maintainer | |
@@ -193,13 +194,12 @@ OSPS Level 2 and 3 controls were not assessed in this report.
 
 ## Owner actions required
 
-1. Name a second maintainer and update the roles in `GOVERNANCE.md` (bus factor, roles).
+1. Name a second maintainer and update the roles in `GOVERNANCE.md` (bus factor, roles). Post-v1.0.0 governance item per CEO decision (DEV-81).
 2. Enforce organisation 2FA, the collaborator permission default, and branch protection or a ruleset on `main`, including blocking direct commits and branch deletion.
 3. Confirm Dependabot alerts are enabled (GitHub Issues is verified enabled).
-4. Confirm the Code of Conduct enforcement contact in `CODE_OF_CONDUCT.md`.
-5. Attest the secure-design knowledge of at least one primary developer.
-6. Document the access continuity arrangement and keep its secrets out of the repository.
-7. Confirm the 14-day initial response and 90-day disclosure defaults in `.github/SECURITY.md`.
+4. Attest the secure-design knowledge of at least one primary developer.
+5. Document the access continuity arrangement and keep its secrets out of the repository.
+6. Confirm the 14-day initial response and 90-day disclosure defaults in `.github/SECURITY.md`.
 
 ## Planned work
 
