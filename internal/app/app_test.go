@@ -100,6 +100,23 @@ func TestRunRejectsDataPathThatIsAFile(t *testing.T) {
 	}
 }
 
+func TestRunRejectsUnwritableDataDirectory(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root bypasses directory permissions")
+	}
+	cfg := testConfig(t)
+	cfg.DataDir = filepath.Join(t.TempDir(), "readonly")
+	if err := os.Mkdir(cfg.DataDir, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(cfg.DataDir, 0o700) })
+	logger := observability.NewLogger(io.Discard, slog.LevelError)
+
+	if err := Run(context.Background(), cfg, logger, listen(t)); err == nil {
+		t.Fatal("Run() error = nil, want not-writable error")
+	}
+}
+
 func waitForStatus(t *testing.T, client *http.Client, url string, want int) {
 	t.Helper()
 	deadline := time.Now().Add(5 * time.Second)

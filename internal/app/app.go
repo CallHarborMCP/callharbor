@@ -30,6 +30,14 @@ func Run(ctx context.Context, cfg config.Config, logger *slog.Logger, ln net.Lis
 	if !info.IsDir() {
 		return fmt.Errorf("data directory %s is not a directory", cfg.DataDir)
 	}
+	probe, err := os.CreateTemp(cfg.DataDir, ".write-probe-*")
+	if err != nil {
+		return fmt.Errorf("data directory %s is not writable: %w", cfg.DataDir, err)
+	}
+	_ = probe.Close()
+	if err := os.Remove(probe.Name()); err != nil {
+		return fmt.Errorf("data directory %s cleanup: %w", cfg.DataDir, err)
+	}
 
 	assets, err := web.Assets()
 	if err != nil {
