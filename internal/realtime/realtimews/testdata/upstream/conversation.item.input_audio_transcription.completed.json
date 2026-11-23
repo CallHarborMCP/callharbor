@@ -1,0 +1,1 @@
+{"type":"conversation.item.input_audio_transcription.completed","event_id":"event_CCXGRvtUVrax5SJAnNOWZ","item_id":"item_CCXGQ4e1ht4cOraEYcuR2","content_index":0,"transcript":"Hey, can you hear me?","usage":{"type":"tokens","total_tokens":22,"input_tokens":13,"input_token_details":{"text_tokens":0,"audio_tokens":13},"output_tokens":9}}

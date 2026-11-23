@@ -35,7 +35,11 @@ if [[ -f web/package.json ]]; then
   (cd web && npm ci && npm run lint && npm run typecheck && npm run test -- --run && npm run build)
 fi
 
+bash -n scripts/update-telnyx-contract.sh
+
 if [[ "$MODE" == --full ]]; then
+  # The committed Telnyx contract must be the mechanical extract of the pinned upstream spec.
+  bash scripts/update-telnyx-contract.sh --check
   # Full E2E must test CURRENT production code, not a stale application image.
   if [[ -f compose.test.yaml ]]; then
     trap 'docker compose -f compose.test.yaml down --volumes --remove-orphans' EXIT
