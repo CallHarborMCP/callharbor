@@ -24,7 +24,7 @@ Scope: Best Practices Passing and Silver MUST and SHOULD/SUGGESTED items, and OS
 ## Summary
 
 - Met now: public HTTPS git repository, public history with author attribution, a pinned toolchain (`.mise.toml`), Renovate configuration, a CI workflow that runs on push and pull request, no secret patterns found by a manual scan of tracked files (no secret scanner runs in CI yet), and no tracked binaries.
-- Met after merge: a public vulnerability reporting process (`.github/SECURITY.md`).
+- Partial after merge: a public vulnerability reporting process (`.github/SECURITY.md`). Its private channel is disabled on the repository (API `enabled: false`, verified 2026-11-24), so it is not Met until the owner enables it.
 - Blocking gaps before any badge claim: no `LICENSE` file on `main`, no `CONTRIBUTING`, code of conduct or governance documents, no product tests, and no release.
 - Owner actions: enable and verify private vulnerability reporting, the 2FA and collaborator-permission settings, branch protection, and the human attestations on secure design and access continuity.
 
@@ -40,7 +40,7 @@ Scope: Best Practices Passing and Silver MUST and SHOULD/SUGGESTED items, and OS
 | documentation_basics | Basic user/developer documentation | Partial | `.agents/*.md` are internal contracts. Public docs are required by `.agents/DOCUMENTATION.md` | | Public `docs/` for the V1 release |
 | documentation_interface | Reference docs for external interface | Planned | `.agents/API_CONTRACT.md` is internal | | Public API reference at V1 |
 | sites_https | Project sites support HTTPS | Met | `https://github.com/CallHarborMCP/callharbor` responds over HTTPS | | |
-| discussion | Searchable discussion mechanism usable without proprietary client software | Owner | GitHub Issues presumed, not verified from an agent identity | Owner confirms Issues is enabled | |
+| discussion | Searchable discussion mechanism usable without proprietary client software | Met | GitHub Issues enabled: `has_issues: true` on the repository API (verified 2026-11-24) | | |
 | english | Documentation and bug reports in English | Met | Public docs are English per `.agents/DOCUMENTATION.md` | | |
 | maintained | Project is maintained | Met | Active commits through 2026-11-23 | | |
 | repo_public | Public readable version-controlled repository | Met | Anonymous HTTPS access returns 200 | | |
@@ -53,13 +53,13 @@ Scope: Best Practices Passing and Silver MUST and SHOULD/SUGGESTED items, and OS
 | release_notes | Human-readable release notes | Planned | `.agents/DOCUMENTATION.md` requires `docs/releases/v1.0.0.md` | | DEV-63 |
 | release_notes_vulns | Release notes list CVE-assigned run-time vulnerabilities fixed | Planned | No vulnerabilities fixed yet; N/A only if none exist at release | | DEV-63 |
 | report_process | Process for submitting bug reports | Planned | No bug-report instructions outside `SECURITY.md` | | Add bug-report guidance and issue templates |
-| report_tracker | Issue tracker used (SHOULD) | Owner | GitHub Issues presumed | Owner confirms | |
+| report_tracker | Issue tracker used (SHOULD) | Met | GitHub Issues enabled (`has_issues: true`, verified 2026-11-24) | | |
 | report_responses | Acknowledge majority of bug reports from the last 2–12 months | N/A (none yet) | No public bug reports known. Re-check at application time | | Track response times once reports exist |
 | enhancement_responses | Respond to majority of enhancement requests (SHOULD) | N/A (none yet) | As above | | As above |
-| report_archive | Public archive for reports and responses | Owner | GitHub Issues presumed | Owner confirms | |
-| vulnerability_report_process | Publish vulnerability reporting process on the project site | Met (pending merge) | `.github/SECURITY.md` | | |
-| vulnerability_report_private | Private reporting channel described | Met (pending merge), Owner | `SECURITY.md` links to the GitHub private advisory form. An anonymous request to that URL returns a redirect, so enablement is not verified | Owner enables and verifies private vulnerability reporting | |
-| vulnerability_report_response | Initial response within 14 days for reports from the last 6 months | Met (pending merge) | `SECURITY.md` states 14 days. No reports yet | | |
+| report_archive | Public archive for reports and responses | Met | GitHub Issues enabled and publicly readable (`has_issues: true`, verified 2026-11-24) | | |
+| vulnerability_report_process | Publish vulnerability reporting process on the project site | Partial (pending merge) | `.github/SECURITY.md` documents the process. The reporting channel it names is not yet enabled (see next row) | | Re-check once the channel works |
+| vulnerability_report_private | Private reporting channel described and reachable | Partial, Owner | Verified 2026-11-24: `gh api repos/CallHarborMCP/callharbor/private-vulnerability-reporting` returns `{"enabled":false}`. The advisory form does not accept reports while disabled. Not Met | Owner enables private vulnerability reporting (Settings → Code security, or `PUT /repos/CallHarborMCP/callharbor/private-vulnerability-reporting`), then the PR records the `{"enabled":true}` result | Re-verify API state before any Met claim |
+| vulnerability_report_response | Initial response within 14 days for reports from the last 6 months | Partial (pending merge) | `SECURITY.md` states 14 days. The commitment is documented, but no reporting channel is enabled yet. No reports exist | | Met once the channel works |
 | build | Working build system that rebuilds from source | N/A (now) | No application code. Required once Go/React code lands (`go build`, `npm run build`) | | Required in DEV-2 and the first frontend PR |
 | build_common_tools | Common build tools (SHOULD) | N/A (now) | As above | | As above |
 | build_floss_tools | Buildable with FLOSS tools (SHOULD) | Met for the planned stack | Go, Node and npm are FLOSS | | |
@@ -116,9 +116,9 @@ Scope: Best Practices Passing and Silver MUST and SHOULD/SUGGESTED items, and OS
 | internationalization (SHOULD) | i18n support | N/A (justified for the project sites) | Public docs are English. Call speech language is a product setting, not an i18n requirement of the project | | |
 | sites_password_security | Project sites store external user passwords as iterated hashes | N/A | GitHub hosts the project sites; the project does not run a public site with passwords | | |
 | maintenance_or_update | Maintain older versions or document upgrades | N/A (none yet) | No prior versions | | Upgrade documentation from v1.x |
-| report_tracker (Silver) | Issue tracker used for individual issues | Owner | GitHub Issues presumed | Owner confirms | |
+| report_tracker (Silver) | Issue tracker used for individual issues | Met | GitHub Issues enabled (`has_issues: true`, verified 2026-11-24) | | |
 | vulnerability_report_credit | Credit reporters of vulnerabilities resolved in the last 12 months | N/A (none yet) | No resolved reports | | `SECURITY.md` states credit policy |
-| vulnerability_response_process | Documented process for responding to reports | Met (pending merge) | `.github/SECURITY.md` | | |
+| vulnerability_response_process | Documented process for responding to reports | Partial (pending merge) | `.github/SECURITY.md` documents the process. Its reporting channel is not enabled | | Met once the channel works |
 | coding_standards | Identify and require a style guide for each language | Planned | `.agents/CODE_QUALITY.md` is internal | | Public `CONTRIBUTING` names the style guides (Go, TypeScript) |
 | coding_standards_enforced | Automatically enforced style | Partial | `gofmt` is enforced by `verify-local.sh`. ESLint and Prettier are planned | | DEV-33 |
 | build_standard_variables, build_preserve_debug, build_non_recursive | Build conventions for native binaries | N/A | No native build | | Recheck if a native build is introduced |
@@ -127,7 +127,7 @@ Scope: Best Practices Passing and Silver MUST and SHOULD/SUGGESTED items, and OS
 | installation_standard_variables | Honour standard install location variables | N/A | Container-based deployment, not a system installer | | |
 | installation_development_quick | Quick developer environment setup | Met | `mise install`, then `mise exec -- bash scripts/verify-local.sh --quick` in `README.md` | | |
 | external_dependencies | Dependencies listed in a machine-readable way | Partial | `.mise.toml` lists tools. `go.mod`, `package-lock.json` and Dockerfiles do not exist yet | | Lockfiles with the first code PRs |
-| dependency_monitoring | Monitor and check dependencies for known vulnerabilities | Partial | `renovate.json` enables vulnerability alerts with `minimumReleaseAge` 0 days. GitHub Dependabot alerts and a scanner in CI are not verified | Owner confirms Dependabot alerts | Add `govulncheck` and `npm audit` to CI (DEV-33) |
+| dependency_monitoring | Monitor and check dependencies for known vulnerabilities | Partial | `renovate.json` sets `minimumReleaseAge` to 3 days generally, and 0 days only for `vulnerabilityAlerts`. GitHub Dependabot alerts and a scanner in CI are not verified | Owner confirms Dependabot alerts | Add `govulncheck` and `npm audit` to CI (DEV-33) |
 | updateable_reused_components | Easy update of reused components | Met | Renovate covers Go modules, npm, `.mise.toml`, Docker and GitHub Actions per `README.md` | Owner grants Renovate app access | |
 | automated_integration_testing | Automated tests on each check-in for at least one branch | Met | `required.yml` runs on push and pull request to `main` | | |
 | regression_tests_added50 | Regression tests for at least 50% of bugs fixed in the last 6 months | N/A (no bugs fixed yet) | No product code | | Applies from first bug fix |
@@ -168,7 +168,7 @@ Scope: Best Practices Passing and Silver MUST and SHOULD/SUGGESTED items, and OS
 | osps_br_07_01 | Prevent unencrypted secrets in version control | Met (partial) | Tracked-file scan found none. `.gitignore` excludes secret file patterns. Pre-commit or CI secret scanning not in place | | Add secret scanning to CI (DEV-33) |
 | osps_do_01_01 | Documentation includes user guides for all basic functionality | Planned | Required for release | | DEV-31, DEV-63 |
 | osps_do_02_01 | Documentation includes a guide for reporting defects | Planned | Only vulnerability reporting exists | | Bug-report guide |
-| osps_gv_02_01 | Mechanisms for public discussion of changes and usage obstacles | Owner | GitHub Issues and pull requests presumed | Owner confirms | |
+| osps_gv_02_01 | Mechanisms for public discussion of changes and usage obstacles | Met | GitHub Issues enabled (`has_issues: true`, verified 2026-11-24) and pull requests in use | | |
 | osps_gv_03_01 | Documentation explains the contribution process | Planned | No contribution documentation | | `CONTRIBUTING` |
 | osps_le_02_01 | Source licence meets OSI or FSF definition | Planned | No licence file on `main` | Owner confirms Apache-2.0 | Add `LICENSE` |
 | osps_le_02_02 | Released software assets licence meets OSI or FSF | Planned | No release | | DEV-63 |
@@ -180,7 +180,7 @@ Scope: Best Practices Passing and Silver MUST and SHOULD/SUGGESTED items, and OS
 | osps_qa_04_01 | Multi-repository projects document their codebases | N/A | Single repository | | |
 | osps_qa_05_01 | No generated executable artifacts in version control | Met | No binaries tracked | | Keep build outputs in `.gitignore` |
 | osps_qa_05_02 | No unreviewable binary artifacts in version control | Met | No binaries tracked. Screenshots will be reviewable images, see `.agents/DOCUMENTATION.md` | | |
-| osps_vm_02_01 | Project documentation contains security contacts | Met (pending merge) | `.github/SECURITY.md` provides the private reporting route | | |
+| osps_vm_02_01 | Project documentation contains security contacts | Partial (pending merge) | `.github/SECURITY.md` names a reporting route that is not yet enabled (API `enabled: false`). Not Met until the route works | Owner enables private vulnerability reporting | Re-verify after enablement |
 
 OSPS Level 2 and 3 controls were not assessed in this report.
 
@@ -195,9 +195,9 @@ OSPS Level 2 and 3 controls were not assessed in this report.
 ## Owner actions required
 
 1. Confirm the Apache-2.0 licence and the `LICENSE` file.
-2. Enable and verify GitHub private vulnerability reporting for `CallHarborMCP/callharbor`.
+2. Enable GitHub private vulnerability reporting for `CallHarborMCP/callharbor` (currently `enabled: false`). Until then the rows above stay Partial.
 3. Enforce organisation 2FA, the collaborator permission default, and branch protection or a ruleset on `main`, including blocking direct commits and branch deletion.
-4. Confirm GitHub Issues and Dependabot alerts are enabled.
+4. Confirm Dependabot alerts are enabled (GitHub Issues is verified enabled).
 5. Name the key roles, the code of conduct and governance model, and a second maintainer (bus factor).
 6. Attest the secure-design knowledge of at least one primary developer.
 7. Document the access continuity arrangement and keep its secrets out of the repository.
