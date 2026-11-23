@@ -10,8 +10,6 @@ Use GitHub private vulnerability reporting for this repository:
 
 https://github.com/CallHarborMCP/callharbor/security/advisories/new
 
-Status: private vulnerability reporting is not yet enabled for this repository, so the form above is not reachable at the moment. Do not post vulnerability details in public issues, pull requests or discussions. The maintainers will publish a working private reporting channel before the first release.
-
 Include the affected commit or version, a description of the impact, reproduction steps or a proof of concept, and any suggested mitigation. Do not include real credentials, call audio, transcripts or personal data; describe synthetic reproduction data instead.
 
 ## Supported versions

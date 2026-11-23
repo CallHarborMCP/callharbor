@@ -24,9 +24,9 @@ Scope: Best Practices Passing and Silver MUST and SHOULD/SUGGESTED items, and OS
 ## Summary
 
 - Met now: public HTTPS git repository, public history with author attribution, a pinned toolchain (`.mise.toml`), Renovate configuration, a CI workflow that runs on push and pull request, no secret patterns found by a manual scan of tracked files (no secret scanner runs in CI yet), and no tracked binaries.
-- Partial after merge: a public vulnerability reporting process (`.github/SECURITY.md`). Its private channel is disabled on the repository (API `enabled: false`, verified 2026-11-24), so it is not Met until the owner enables it.
+- Met after merge: the public vulnerability reporting process (`.github/SECURITY.md`). Private vulnerability reporting is enabled on the repository (API `{"enabled":true}`, verified 2026-11-24).
 - Blocking gaps before any badge claim: no `LICENSE` file on `main`, no `CONTRIBUTING`, code of conduct or governance documents, no product tests, and no release.
-- Owner actions: enable and verify private vulnerability reporting, the 2FA and collaborator-permission settings, branch protection, and the human attestations on secure design and access continuity.
+- Owner actions: the 2FA and collaborator-permission settings, branch protection, and the human attestations on secure design and access continuity.
 
 ## Passing (MUST items)
 
@@ -57,9 +57,9 @@ Scope: Best Practices Passing and Silver MUST and SHOULD/SUGGESTED items, and OS
 | report_responses | Acknowledge majority of bug reports from the last 2–12 months | N/A (none yet) | No public bug reports known. Re-check at application time | | Track response times once reports exist |
 | enhancement_responses | Respond to majority of enhancement requests (SHOULD) | N/A (none yet) | As above | | As above |
 | report_archive | Public archive for reports and responses | Met | GitHub Issues enabled and publicly readable (`has_issues: true`, verified 2026-11-24) | | |
-| vulnerability_report_process | Publish vulnerability reporting process on the project site | Partial (pending merge) | `.github/SECURITY.md` documents the process. The reporting channel it names is not yet enabled (see next row) | | Re-check once the channel works |
-| vulnerability_report_private | Private reporting channel described and reachable | Partial, Owner | Verified 2026-11-24: `gh api repos/CallHarborMCP/callharbor/private-vulnerability-reporting` returns `{"enabled":false}`. The advisory form does not accept reports while disabled. Not Met | Owner enables private vulnerability reporting (Settings → Code security, or `PUT /repos/CallHarborMCP/callharbor/private-vulnerability-reporting`), then the PR records the `{"enabled":true}` result | Re-verify API state before any Met claim |
-| vulnerability_report_response | Initial response within 14 days for reports from the last 6 months | Partial (pending merge) | `SECURITY.md` states 14 days. The commitment is documented, but no reporting channel is enabled yet. No reports exist | | Met once the channel works |
+| vulnerability_report_process | Publish vulnerability reporting process on the project site | Met (pending merge) | `.github/SECURITY.md` documents the process and names the enabled private reporting channel | | |
+| vulnerability_report_private | Private reporting channel described and reachable | Met (pending merge) | Verified 2026-11-24: `gh api repos/CallHarborMCP/callharbor/private-vulnerability-reporting` returns `{"enabled":true}`. The advisory form returns 302 to GitHub login anonymously, as expected for a working form | | Re-verify API state at each release |
+| vulnerability_report_response | Initial response within 14 days for reports from the last 6 months | Met (pending merge) | `SECURITY.md` states 14 days. The channel is enabled. No reports exist yet | | |
 | build | Working build system that rebuilds from source | N/A (now) | No application code. Required once Go/React code lands (`go build`, `npm run build`) | | Required in DEV-2 and the first frontend PR |
 | build_common_tools | Common build tools (SHOULD) | N/A (now) | As above | | As above |
 | build_floss_tools | Buildable with FLOSS tools (SHOULD) | Met for the planned stack | Go, Node and npm are FLOSS | | |
@@ -118,7 +118,7 @@ Scope: Best Practices Passing and Silver MUST and SHOULD/SUGGESTED items, and OS
 | maintenance_or_update | Maintain older versions or document upgrades | N/A (none yet) | No prior versions | | Upgrade documentation from v1.x |
 | report_tracker (Silver) | Issue tracker used for individual issues | Met | GitHub Issues enabled (`has_issues: true`, verified 2026-11-24) | | |
 | vulnerability_report_credit | Credit reporters of vulnerabilities resolved in the last 12 months | N/A (none yet) | No resolved reports | | `SECURITY.md` states credit policy |
-| vulnerability_response_process | Documented process for responding to reports | Partial (pending merge) | `.github/SECURITY.md` documents the process. Its reporting channel is not enabled | | Met once the channel works |
+| vulnerability_response_process | Documented process for responding to reports | Met (pending merge) | `.github/SECURITY.md` documents the process, and its reporting channel is enabled | | |
 | coding_standards | Identify and require a style guide for each language | Planned | `.agents/CODE_QUALITY.md` is internal | | Public `CONTRIBUTING` names the style guides (Go, TypeScript) |
 | coding_standards_enforced | Automatically enforced style | Partial | `gofmt` is enforced by `verify-local.sh`. ESLint and Prettier are planned | | DEV-33 |
 | build_standard_variables, build_preserve_debug, build_non_recursive | Build conventions for native binaries | N/A | No native build | | Recheck if a native build is introduced |
@@ -180,7 +180,7 @@ Scope: Best Practices Passing and Silver MUST and SHOULD/SUGGESTED items, and OS
 | osps_qa_04_01 | Multi-repository projects document their codebases | N/A | Single repository | | |
 | osps_qa_05_01 | No generated executable artifacts in version control | Met | No binaries tracked | | Keep build outputs in `.gitignore` |
 | osps_qa_05_02 | No unreviewable binary artifacts in version control | Met | No binaries tracked. Screenshots will be reviewable images, see `.agents/DOCUMENTATION.md` | | |
-| osps_vm_02_01 | Project documentation contains security contacts | Partial (pending merge) | `.github/SECURITY.md` names a reporting route that is not yet enabled (API `enabled: false`). Not Met until the route works | Owner enables private vulnerability reporting | Re-verify after enablement |
+| osps_vm_02_01 | Project documentation contains security contacts | Met (pending merge) | `.github/SECURITY.md` names a reporting route, and the route is enabled (API `{"enabled":true}`, verified 2026-11-24) | | |
 
 OSPS Level 2 and 3 controls were not assessed in this report.
 
@@ -195,13 +195,12 @@ OSPS Level 2 and 3 controls were not assessed in this report.
 ## Owner actions required
 
 1. Confirm the Apache-2.0 licence and the `LICENSE` file.
-2. Enable GitHub private vulnerability reporting for `CallHarborMCP/callharbor` (currently `enabled: false`). Until then the rows above stay Partial.
-3. Enforce organisation 2FA, the collaborator permission default, and branch protection or a ruleset on `main`, including blocking direct commits and branch deletion.
-4. Confirm Dependabot alerts are enabled (GitHub Issues is verified enabled).
-5. Name the key roles, the code of conduct and governance model, and a second maintainer (bus factor).
-6. Attest the secure-design knowledge of at least one primary developer.
-7. Document the access continuity arrangement and keep its secrets out of the repository.
-8. Confirm the 14-day initial response and 90-day disclosure defaults in `.github/SECURITY.md`.
+2. Enforce organisation 2FA, the collaborator permission default, and branch protection or a ruleset on `main`, including blocking direct commits and branch deletion.
+3. Confirm Dependabot alerts are enabled (GitHub Issues is verified enabled).
+4. Name the key roles, the code of conduct and governance model, and a second maintainer (bus factor).
+5. Attest the secure-design knowledge of at least one primary developer.
+6. Document the access continuity arrangement and keep its secrets out of the repository.
+7. Confirm the 14-day initial response and 90-day disclosure defaults in `.github/SECURITY.md`.
 
 ## Planned work
 
