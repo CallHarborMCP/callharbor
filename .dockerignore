@@ -1,0 +1,14 @@
+.git
+.github
+.agents
+.paperclip
+docs
+data
+recordings
+*.db
+*.db-*
+*.sqlite*
+.env
+.env.*
+*.pem
+*.key
