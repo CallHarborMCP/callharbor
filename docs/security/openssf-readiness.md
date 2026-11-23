@@ -23,7 +23,7 @@ Scope: Best Practices Passing and Silver MUST and SHOULD/SUGGESTED items, and OS
 
 ## Summary
 
-- Met now: public HTTPS git repository, public history with author attribution, a pinned toolchain (`.mise.toml`), Renovate configuration, a CI workflow that runs on push and pull request, a secrets scan of tracked files, and no tracked binaries.
+- Met now: public HTTPS git repository, public history with author attribution, a pinned toolchain (`.mise.toml`), Renovate configuration, a CI workflow that runs on push and pull request, no secret patterns found by a manual scan of tracked files (no secret scanner runs in CI yet), and no tracked binaries.
 - Met after merge: a public vulnerability reporting process (`.github/SECURITY.md`).
 - Blocking gaps before any badge claim: no `LICENSE` file on `main`, no `CONTRIBUTING`, code of conduct or governance documents, no product tests, and no release.
 - Owner actions: enable and verify private vulnerability reporting, the 2FA and collaborator-permission settings, branch protection, and the human attestations on secure design and access continuity.
