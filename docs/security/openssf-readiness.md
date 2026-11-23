@@ -8,14 +8,13 @@ Status: pre-code readiness assessment. This is not a certification, badge claim 
 | --- | --- | --- |
 | OpenSSF Best Practices criteria | https://www.bestpractices.dev/en/criteria (Passing, Silver, Gold text; the page shows no version identifier) | Read 2026-11-24 |
 | OSPS Baseline | Current version v2026.08.28 (https://baseline.openssf.org/) | Read 2026-11-24 |
-| Repository state | `main` at `d042a19` (includes PR #47, the readiness report and `SECURITY.md`), plus the DEV-35 governance branch | 2026-11-24 |
+| Repository state | `main` at `997dcd3` (includes PRs #47 and #48: readiness report, `SECURITY.md`, `LICENSE`, `CONTRIBUTING.md`, `CODE_OF_CONDUCT.md`, `GOVERNANCE.md`) | 2026-11-24 |
 
 Scope: Best Practices Passing and Silver MUST and SHOULD/SUGGESTED items, and OSPS Baseline Level 1 (24 controls). Gold and OSPS Level 2 and 3 are out of scope for this report.
 
 ## Status legend
 
 - **Met**: verified in the repository or in public GitHub state as of the assessment date.
-- **Met**: satisfied by the open pull request for the governance files, not yet on `main`.
 - **Partial**: some evidence exists; a gap remains.
 - **Planned**: not yet satisfied; the planned work is named.
 - **Owner**: requires a GitHub organisation or repository administrator action, or a human attestation. Agents cannot verify or perform it.
@@ -24,7 +23,7 @@ Scope: Best Practices Passing and Silver MUST and SHOULD/SUGGESTED items, and OS
 ## Summary
 
 - Met on `main`: public HTTPS git repository, public history with author attribution, a pinned toolchain (`.mise.toml`), Renovate configuration, a CI workflow that runs on push and pull request, no secret patterns found by a manual scan of tracked files (no secret scanner runs in CI yet), no tracked binaries, the public vulnerability reporting process (`.github/SECURITY.md`) and private vulnerability reporting (API `{"enabled":true}`, verified 2026-11-24).
-- Met after the governance PR merges: Apache-2.0 `LICENSE`, `CONTRIBUTING.md` (including DCO sign-off), `CODE_OF_CONDUCT.md` (Contributor Covenant 2.1) and `GOVERNANCE.md`.
+- Met: Apache-2.0 `LICENSE`, `CONTRIBUTING.md` (including DCO sign-off), `CODE_OF_CONDUCT.md` (Contributor Covenant 2.1) and `GOVERNANCE.md`.
 - Remaining gaps before any badge claim: a second maintainer (bus factor), the access-continuity plan, owner-only settings, product tests, and a release.
 - Owner actions: the 2FA and collaborator-permission settings, branch protection, the human attestations on secure design and access continuity, a second maintainer, and confirmation of the Code of Conduct enforcement contact.
 
@@ -33,10 +32,10 @@ Scope: Best Practices Passing and Silver MUST and SHOULD/SUGGESTED items, and OS
 | ID | Requirement (abridged) | Status | Evidence / gap | Owner | Planned work |
 | --- | --- | --- | --- | --- | --- |
 | description_good | Site describes what the software does | Partial | `README.md` describes the product and states that the repository is not yet a working application | | Keep README accurate at each release |
-| interact | Site explains how to obtain, report feedback and contribute | Met (pending merge) | `CONTRIBUTING.md` explains reporting, proposing changes and development setup | | |
-| contribution | Contribution process explained | Met (pending merge) | `CONTRIBUTING.md` | | |
-| floss_license | Software released as FLOSS | Met (pending merge) | Apache-2.0 `LICENSE`, text copied from the system Apache-2.0 licence file. Owner confirmed Apache-2.0 (interaction 84af1fb5) | | |
-| license_location | License in standard location in repository | Met (pending merge) | `LICENSE` at the repository root | | |
+| interact | Site explains how to obtain, report feedback and contribute | Met | `CONTRIBUTING.md` explains reporting, proposing changes and development setup | | |
+| contribution | Contribution process explained | Met | `CONTRIBUTING.md` | | |
+| floss_license | Software released as FLOSS | Met | Apache-2.0 `LICENSE`, text copied from the system Apache-2.0 licence file. Owner confirmed Apache-2.0 (interaction 84af1fb5) | | |
+| license_location | License in standard location in repository | Met | `LICENSE` at the repository root | | |
 | documentation_basics | Basic user/developer documentation | Partial | `.agents/*.md` are internal contracts. Public docs are required by `.agents/DOCUMENTATION.md` | | Public `docs/` for the V1 release |
 | documentation_interface | Reference docs for external interface | Planned | `.agents/API_CONTRACT.md` is internal | | Public API reference at V1 |
 | sites_https | Project sites support HTTPS | Met | `https://github.com/CallHarborMCP/callharbor` responds over HTTPS | | |
@@ -67,7 +66,7 @@ Scope: Best Practices Passing and Silver MUST and SHOULD/SUGGESTED items, and OS
 | test_invocation | Standard, documented test invocation (SHOULD) | Met | `README.md`: `mise exec -- bash scripts/verify-local.sh` | | |
 | test_most | Tests cover most branches and functionality (SUGGESTED) | Planned | No product code | | DEV-33 |
 | test_continuous_integration | CI runs tests on change (SHOULD) | Met | `.github/workflows/required.yml` runs on push and pull request to `main` | | |
-| test_policy | Written policy: tests added with major new functionality | Met (pending merge) | `CONTRIBUTING.md` requires tests for new behaviour at the level in `.agents/TEST_STRATEGY.md`. Repository test suite not yet present | | Test suite (DEV-33) |
+| test_policy | Written policy: tests added with major new functionality | Met | `CONTRIBUTING.md` requires tests for new behaviour at the level in `.agents/TEST_STRATEGY.md`. Repository test suite not yet present | | Test suite (DEV-33) |
 | tests_are_added | Evidence that the policy was followed in recent major changes | N/A (now) | No major functional changes yet | | Evidence from the first feature PR |
 | warnings | Compiler warnings or linter enabled | Partial | `verify-local.sh` runs `gofmt` and `go vet` when `go.mod` exists. Lint and typecheck run for `web/` when it exists | | DEV-33 |
 | warnings_fixed | Warnings addressed | N/A (now) | No code | | |
@@ -99,10 +98,10 @@ Scope: Best Practices Passing and Silver MUST and SHOULD/SUGGESTED items, and OS
 | ID | Requirement (abridged) | Status | Evidence / gap | Owner | Planned work |
 | --- | --- | --- | --- | --- | --- |
 | achieve_passing | Passing badge first | Blocked | Depends on the Passing items above | | |
-| contribution_requirements | Contribution page includes acceptable-contribution requirements | Met (pending merge) | `CONTRIBUTING.md` section "Acceptable contributions" | | |
-| dco (SHOULD) | Developer Certificate of Origin or equivalent | Met (pending merge) | `CONTRIBUTING.md` requires `git commit -s` sign-off under DCO 1.1 | | Existing commits are not retroactively signed off |
-| governance | Documented governance and decision model | Met (pending merge) | `GOVERNANCE.md`. Owner delegated the model to the team (interaction 84af1fb5). It states the single-maintainer reality | | |
-| code_of_conduct | Code of conduct in standard location | Met (pending merge) | `CODE_OF_CONDUCT.md` is Contributor Covenant 2.1, approved by owner. Enforcement contact routes through `.github/SECURITY.md` | Owner confirms enforcement contact | |
+| contribution_requirements | Contribution page includes acceptable-contribution requirements | Met | `CONTRIBUTING.md` section "Acceptable contributions" | | |
+| dco (SHOULD) | Developer Certificate of Origin or equivalent | Met | `CONTRIBUTING.md` requires `git commit -s` sign-off under DCO 1.1 | | Existing commits are not retroactively signed off |
+| governance | Documented governance and decision model | Met | `GOVERNANCE.md`. Owner delegated the model to the team (interaction 84af1fb5). It states the single-maintainer reality | | |
+| code_of_conduct | Code of conduct in standard location | Met | `CODE_OF_CONDUCT.md` is Contributor Covenant 2.1, approved by owner. Enforcement contact routes through `.github/SECURITY.md` | Owner confirms enforcement contact | |
 | roles_responsibilities | Public key roles and responsibilities | Partial | `GOVERNANCE.md` lists maintainer and contributor roles. Only one maintainer is named | Owner names a second maintainer | Update `GOVERNANCE.md` when roles change |
 | access_continuity | Project continues if one person is unavailable within a week | Owner | No documented key, account or recovery process | Owner sets up recovery access | Document the continuity plan without publishing secrets |
 | bus_factor (SHOULD) | Bus factor of 2 or more | Owner | One maintainer evident in commit history | Owner adds a second maintainer | |
@@ -133,7 +132,7 @@ Scope: Best Practices Passing and Silver MUST and SHOULD/SUGGESTED items, and OS
 | regression_tests_added50 | Regression tests for at least 50% of bugs fixed in the last 6 months | N/A (no bugs fixed yet) | No product code | | Applies from first bug fix |
 | test_statement_coverage80 | At least 80% statement coverage | Planned | No coverage measured yet | | DEV-33: `go test -coverprofile` and Vitest coverage |
 | test_policy_mandated | Formal policy requiring tests for major functionality | Partial | Internal `TEST_STRATEGY.md` only | | Public policy (DEV-33) |
-| tests_documented_added | Change-proposal instructions include the test policy | Met (pending merge) | `CONTRIBUTING.md` "Acceptable contributions" and "Proposing changes" | | |
+| tests_documented_added | Change-proposal instructions include the test policy | Met | `CONTRIBUTING.md` "Acceptable contributions" and "Proposing changes" | | |
 | warnings_strict | Maximally strict warnings | Planned | Partial lint, see Passing | | DEV-33 |
 | implement_secure_design | Secure design principles implemented | Planned | `.agents/GUARDRAILS.md` and `SECURITY.md` define requirements. No code | | Feature PRs |
 | crypto_weaknesses (Silver, interface) | Default mechanisms avoid weak algorithms | Planned | See Passing | | |
@@ -169,10 +168,10 @@ Scope: Best Practices Passing and Silver MUST and SHOULD/SUGGESTED items, and OS
 | osps_do_01_01 | Documentation includes user guides for all basic functionality | Planned | Required for release | | DEV-31, DEV-63 |
 | osps_do_02_01 | Documentation includes a guide for reporting defects | Planned | Only vulnerability reporting exists | | Bug-report guide |
 | osps_gv_02_01 | Mechanisms for public discussion of changes and usage obstacles | Met | GitHub Issues enabled (`has_issues: true`, verified 2026-11-24) and pull requests in use | | |
-| osps_gv_03_01 | Documentation explains the contribution process | Met (pending merge) | `CONTRIBUTING.md` | | |
-| osps_le_02_01 | Source licence meets OSI or FSF definition | Met (pending merge) | Apache-2.0 is OSI-approved. Owner confirmed (interaction 84af1fb5) | | |
+| osps_gv_03_01 | Documentation explains the contribution process | Met | `CONTRIBUTING.md` | | |
+| osps_le_02_01 | Source licence meets OSI or FSF definition | Met | Apache-2.0 is OSI-approved. Owner confirmed (interaction 84af1fb5) | | |
 | osps_le_02_02 | Released software assets licence meets OSI or FSF | Planned | No release | | DEV-63 |
-| osps_le_03_01 | Source licence in `LICENSE`, `COPYING` or `LICENSES/` | Met (pending merge) | `LICENSE` at the repository root | | |
+| osps_le_03_01 | Source licence in `LICENSE`, `COPYING` or `LICENSES/` | Met | `LICENSE` at the repository root | | |
 | osps_le_03_02 | Released assets include licence | Planned | No release | | DEV-63 |
 | osps_qa_01_01 | Repository is publicly readable at a static URL | Met | `https://github.com/CallHarborMCP/callharbor` | | |
 | osps_qa_01_02 | Publicly readable change record with author and time | Met | git history | | |
