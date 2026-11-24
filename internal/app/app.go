@@ -53,7 +53,7 @@ func Run(ctx context.Context, cfg config.Config, logger *slog.Logger, ln net.Lis
 	if err != nil {
 		return fmt.Errorf("open database: %w", err)
 	}
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 	if err := store.Migrate(ctx); err != nil {
 		return fmt.Errorf("migrate database: %w", err)
 	}

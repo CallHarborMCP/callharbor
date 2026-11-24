@@ -144,7 +144,7 @@ func (s *Store) CreateFirstAdmin(ctx context.Context, u User, audit AuditEvent) 
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 	var n int
 	if err := tx.QueryRowContext(ctx, "SELECT COUNT(*) FROM users").Scan(&n); err != nil {
 		return err
@@ -166,7 +166,7 @@ func (s *Store) CreateUser(ctx context.Context, u User, audit AuditEvent) error 
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 	if err := insertUser(ctx, tx, u); err != nil {
 		return err
 	}
@@ -181,7 +181,7 @@ func (s *Store) ListUsers(ctx context.Context) ([]User, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	var users []User
 	for rows.Next() {
 		u, err := scanUser(rows)
@@ -208,7 +208,7 @@ func (s *Store) UpdateUser(ctx context.Context, id string, role *string, active 
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 	target, err := scanUser(tx.QueryRowContext(ctx, "SELECT "+userColumns+" FROM users WHERE id = ?", id))
 	if err != nil {
 		return err
@@ -252,7 +252,7 @@ func (s *Store) SetPasswordHash(ctx context.Context, id, hash, now string, audit
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 	res, err := tx.ExecContext(ctx, "UPDATE users SET password_hash = ?, updated_at = ? WHERE id = ?", hash, now, id)
 	if err != nil {
 		return err
@@ -303,7 +303,7 @@ func (s *Store) RevokeSession(ctx context.Context, tokenHash, now string, audit 
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 	if _, err := tx.ExecContext(ctx,
 		"UPDATE sessions SET revoked_at = ? WHERE token_hash = ? AND revoked_at IS NULL", now, tokenHash); err != nil {
 		return err
@@ -337,7 +337,7 @@ func (s *Store) UpdateThrottle(ctx context.Context, key, now string, mutate func
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 	var cur Throttle
 	var locked sql.NullString
 	err = tx.QueryRowContext(ctx,
