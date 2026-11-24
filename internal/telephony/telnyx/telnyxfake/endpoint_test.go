@@ -18,11 +18,17 @@ import (
 	"github.com/CallHarborMCP/callharbor/internal/audio"
 	"github.com/CallHarborMCP/callharbor/internal/realtime"
 	"github.com/CallHarborMCP/callharbor/internal/realtime/livews"
+	"github.com/CallHarborMCP/callharbor/internal/realtime/realtimews"
 	"github.com/CallHarborMCP/callharbor/internal/telephony/telnyx"
 	"github.com/CallHarborMCP/callharbor/internal/voicebridge"
 )
 
 var g711Leg = audio.Format{Encoding: audio.PCMU, SampleRate: 8000}
+
+type providerSession interface {
+	AppendAudio(ctx context.Context, b []byte) error
+	Next(ctx context.Context) (realtime.Event, error)
+}
 
 type liveFake struct {
 	mu       sync.Mutex
@@ -77,6 +83,61 @@ func (f *liveFake) received() [][]byte {
 	return append([][]byte(nil), f.inbound...)
 }
 
+type realtimeFake struct {
+	mu       sync.Mutex
+	inbound  [][]byte
+	outbound []byte
+}
+
+func (f *realtimeFake) handler(t *testing.T) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("model") == "" {
+			http.Error(w, "missing model", http.StatusBadRequest)
+			return
+		}
+		c, err := websocket.Accept(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer func() { _ = c.CloseNow() }()
+		ctx := r.Context()
+		_ = c.Write(ctx, websocket.MessageText, []byte(`{"type":"session.created","event_id":"evt_created","session":{"id":"sess_e2e","type":"realtime"}}`))
+		for {
+			_, b, err := c.Read(ctx)
+			if err != nil {
+				return
+			}
+			var m map[string]any
+			if err := json.Unmarshal(b, &m); err != nil {
+				t.Errorf("provider got invalid JSON: %v", err)
+				return
+			}
+			switch m["type"] {
+			case "session.update":
+				s, _ := m["session"].(map[string]any)
+				upd, _ := json.Marshal(map[string]any{"type": "session.updated", "event_id": "evt_updated", "session": s})
+				_ = c.Write(ctx, websocket.MessageText, upd)
+				_ = c.Write(ctx, websocket.MessageText, []byte(`{"type":"response.output_audio.delta","event_id":"evt_delta","response_id":"resp_e2e","item_id":"item_e2e","output_index":0,"content_index":0,"delta":"`+base64.StdEncoding.EncodeToString(f.outbound)+`"}`))
+			case "input_audio_buffer.append":
+				raw, err := base64.StdEncoding.DecodeString(m["audio"].(string))
+				if err != nil {
+					t.Errorf("provider got bad base64: %v", err)
+					return
+				}
+				f.mu.Lock()
+				f.inbound = append(f.inbound, raw)
+				f.mu.Unlock()
+			}
+		}
+	}
+}
+
+func (f *realtimeFake) received() [][]byte {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([][]byte(nil), f.inbound...)
+}
+
 func mediaFrame(t *testing.T, track string, payload []byte, ts int) []byte {
 	t.Helper()
 	b, err := json.Marshal(map[string]any{
@@ -89,27 +150,14 @@ func mediaFrame(t *testing.T, track string, payload []byte, ts int) []byte {
 	return b
 }
 
-func TestSignedStreamBridgesAudioBothWaysThroughLive(t *testing.T) {
+func runSignedCall(t *testing.T, connect func(ctx context.Context) (providerSession, error), agent, caller []byte, received func() [][]byte) {
+	t.Helper()
 	priv, pub := newKeys(t)
 	now := time.Now()
 	v, err := telnyx.NewVerifier(pub, telnyx.DefaultTolerance, func() time.Time { return now })
 	if err != nil {
 		t.Fatal(err)
 	}
-
-	agent := make([]byte, 160)
-	for i := range agent {
-		agent[i] = audio.LinearToUlaw(int16(i * 96))
-	}
-	caller := make([]byte, 160)
-	for i := range caller {
-		caller[i] = audio.LinearToUlaw(int16(i * 64))
-	}
-
-	fake := &liveFake{outbound: agent}
-	provider := httptest.NewServer(fake.handler(t))
-	t.Cleanup(provider.Close)
-	endpoint := "ws" + strings.TrimPrefix(provider.URL, "http") + "/v1/live/sessions"
 
 	dtmf := make(chan string, 1)
 	var me *telnyx.MediaEndpoint
@@ -130,7 +178,7 @@ func TestSignedStreamBridgesAudioBothWaysThroughLive(t *testing.T) {
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
-		s, err := livews.Connect(ctx, livews.Config{Endpoint: endpoint, APIKey: "sk-test", Model: "gpt-live-1.1", Voice: "marin", Instructions: "Test.", Format: g711Leg})
+		s, err := connect(ctx)
 		if err != nil {
 			return nil, err
 		}
@@ -206,7 +254,7 @@ func TestSignedStreamBridgesAudioBothWaysThroughLive(t *testing.T) {
 
 	deadline := time.Now().Add(5 * time.Second)
 	for {
-		in := fake.received()
+		in := received()
 		if len(in) >= 1 {
 			if !bytes.Equal(in[0], caller) {
 				t.Fatal("caller audio not byte-exact to provider")
@@ -218,4 +266,46 @@ func TestSignedStreamBridgesAudioBothWaysThroughLive(t *testing.T) {
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
+}
+
+func testAudio(seed int) (agent, caller []byte) {
+	agent = make([]byte, 160)
+	caller = make([]byte, 160)
+	for i := range agent {
+		agent[i] = audio.LinearToUlaw(int16(i * (96 + seed)))
+		caller[i] = audio.LinearToUlaw(int16(i * (64 + seed)))
+	}
+	return agent, caller
+}
+
+func TestSignedStreamBridgesAudioBothWaysThroughLive(t *testing.T) {
+	agent, caller := testAudio(0)
+	fake := &liveFake{outbound: agent}
+	provider := httptest.NewServer(fake.handler(t))
+	t.Cleanup(provider.Close)
+	endpoint := "ws" + strings.TrimPrefix(provider.URL, "http") + "/v1/live/sessions"
+
+	runSignedCall(t, func(ctx context.Context) (providerSession, error) {
+		s, err := livews.Connect(ctx, livews.Config{Endpoint: endpoint, APIKey: "sk-test", Model: "gpt-live-1.1", Voice: "marin", Instructions: "Test.", Format: g711Leg})
+		if err != nil {
+			return nil, err
+		}
+		return s, nil
+	}, agent, caller, fake.received)
+}
+
+func TestSignedStreamBridgesAudioBothWaysThroughRealtime(t *testing.T) {
+	agent, caller := testAudio(1)
+	fake := &realtimeFake{outbound: agent}
+	provider := httptest.NewServer(fake.handler(t))
+	t.Cleanup(provider.Close)
+	endpoint := "ws" + strings.TrimPrefix(provider.URL, "http") + "/v1/realtime"
+
+	runSignedCall(t, func(ctx context.Context) (providerSession, error) {
+		s, err := realtimews.Connect(ctx, realtimews.Config{Endpoint: endpoint, APIKey: "sk-test", Model: "gpt-realtime-2.1", Voice: "marin", Instructions: "Test.", Format: g711Leg})
+		if err != nil {
+			return nil, err
+		}
+		return s, nil
+	}, agent, caller, fake.received)
 }
