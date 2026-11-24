@@ -12,12 +12,23 @@ fi
 bash -n scripts/verify-release-artifacts.sh
 sha256sum -c .agents/LOCKED_SHA256SUMS
 
+gitleaks git --no-banner --exit-code 1 --log-opts=HEAD .
+gitleaks dir --no-banner --exit-code 1 .
+
 if [[ -f go.mod ]]; then
   gofiles="$(find . -type f -name '*.go' -not -path './vendor/*' -print0 | xargs -0 -r gofmt -l)"
   [[ -z "$gofiles" ]] || { printf 'Go formatting errors:\n%s\n' "$gofiles" >&2; exit 1; }
   go vet ./...
-  go test -race ./...
+  golangci-lint run ./...
+  gosec -quiet ./...
+  govulncheck ./...
   go build ./...
+  COVERAGE_MIN=80
+  go test -race -count=1 -covermode=atomic -coverprofile=coverage-go.out ./...
+  go_total="$(go tool cover -func=coverage-go.out | awk '/^total:/ {sub("%", "", $NF); print $NF}')"
+  printf 'Go statement coverage: %s%% (minimum %s%%)\n' "$go_total" "$COVERAGE_MIN"
+  awk -v got="$go_total" -v min="$COVERAGE_MIN" 'BEGIN { exit !(got + 0 >= min + 0) }' \
+    || { echo "Go coverage below ${COVERAGE_MIN}%" >&2; exit 1; }
 fi
 
 if [[ -f web/package.json ]]; then

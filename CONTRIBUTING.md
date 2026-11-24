@@ -36,8 +36,18 @@ Run the full command without `--quick` only when you need the production Docker 
 
 ## Code style
 
-- Go code must be formatted with `gofmt` and pass `go vet` and `go test -race`.
+- Go code must be formatted with `gofmt` and pass `go vet`, `golangci-lint`, `gosec`, `govulncheck` and `go test -race`.
 - TypeScript and React code must pass the lint and type checks configured in the repository once they exist. The style guides and enforced tooling are described in `.agents/CODE_QUALITY.md`.
+- Secrets must never be committed. `gitleaks` scans the full git history and the working tree.
+
+## Testing policy
+
+- New functionality must include automated tests at the level described in `.agents/TEST_STRATEGY.md`.
+- Bug fixes must include a regression test that fails before the fix and passes after it.
+- Go statement coverage must be at least 80%, measured with `go test -coverprofile` and enforced by `scripts/verify-local.sh` and the `required` check. React coverage is required once the frontend lands.
+- Tests must not be weakened, skipped or removed to make a change pass.
+- Exclude code from coverage only when it is generated, test or vendor code. Each exclusion needs a written reason in the pull request.
+- `scripts/verify-local.sh` runs the static analysis, secret scanning, vulnerability checks and tests above. The `required` workflow runs the same script on every pull request and blocks merge when it fails.
 
 ## Sign-off (Developer Certificate of Origin)
 

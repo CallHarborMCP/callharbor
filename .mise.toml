@@ -1,3 +1,7 @@
 [tools]
-go = "1.27.3"
+go = "1.27.4"
 node = "26.13.0"
+"aqua:golangci/golangci-lint" = "2.15.0"
+"aqua:securego/gosec" = "2.30.0"
+"aqua:gitleaks/gitleaks" = "8.30.0"
+"go:golang.org/x/vuln/cmd/govulncheck" = "1.9.0"

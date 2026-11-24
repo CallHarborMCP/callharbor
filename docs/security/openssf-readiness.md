@@ -22,7 +22,7 @@ Scope: Best Practices Passing and Silver MUST and SHOULD/SUGGESTED items, and OS
 
 ## Summary
 
-- Met on `main`: public HTTPS git repository, public history with author attribution, a pinned toolchain (`.mise.toml`), Renovate configuration, a CI workflow that runs on push and pull request, no secret patterns found by a manual scan of tracked files (no secret scanner runs in CI yet), no tracked binaries, the public vulnerability reporting process (`.github/SECURITY.md`) and private vulnerability reporting (API `{"enabled":true}`, verified 2026-11-24).
+- Met on `main`: public HTTPS git repository, public history with author attribution, a pinned toolchain (`.mise.toml`), Renovate configuration, a CI workflow that runs on push and pull request, no secret patterns found by `gitleaks` over the working tree and history reachable from `HEAD` (run in `scripts/verify-local.sh` and the `required` check), no tracked binaries, the public vulnerability reporting process (`.github/SECURITY.md`) and private vulnerability reporting (API `{"enabled":true}`, verified 2026-11-24).
 - Met: Apache-2.0 `LICENSE`, `CONTRIBUTING.md` (including DCO sign-off), `CODE_OF_CONDUCT.md` (Contributor Covenant 2.1) and `GOVERNANCE.md`.
 - Remaining gaps before any badge claim: a second maintainer (bus factor), the access-continuity plan, owner-only settings, product tests, and a release.
 - Owner actions: the 2FA and collaborator-permission settings, branch protection, the human attestations on secure design and access continuity, and a second maintainer.
@@ -69,7 +69,7 @@ Scope: Best Practices Passing and Silver MUST and SHOULD/SUGGESTED items, and OS
 | test_continuous_integration | CI runs tests on change (SHOULD) | Met | `.github/workflows/required.yml` runs on push and pull request to `main` | | |
 | test_policy | Written policy: tests added with major new functionality | Met | `CONTRIBUTING.md` requires tests for new behaviour at the level in `.agents/TEST_STRATEGY.md`. Repository test suite not yet present | | Test suite (DEV-33) |
 | tests_are_added | Evidence that the policy was followed in recent major changes | N/A (now) | No major functional changes yet | | Evidence from the first feature PR |
-| warnings | Compiler warnings or linter enabled | Partial | `verify-local.sh` runs `gofmt` and `go vet` when `go.mod` exists. Lint and typecheck run for `web/` when it exists | | DEV-33 |
+| warnings | Compiler warnings or linter enabled | Partial | `verify-local.sh` runs `gofmt`, `go vet` and `golangci-lint` (0 issues) for Go. Lint and typecheck run for `web/` when it exists | | ESLint and typecheck with the first frontend PR (DEV-33) |
 | warnings_fixed | Warnings addressed | N/A (now) | No code | | |
 | know_secure_design | At least one primary developer knows secure design | Owner | Requires a human attestation. An agent claim is not evidence | Owner attests | |
 | know_common_errors | Primary developer knows common vulnerability classes and mitigations | Owner (partial evidence) | `.agents/SECURITY.md` lists SSRF, CSRF, webhook signature/replay, stream hijack, and at-rest key protection | Owner attests | |
@@ -86,9 +86,9 @@ Scope: Best Practices Passing and Silver MUST and SHOULD/SUGGESTED items, and OS
 | delivery_unsigned | Hashes not used from HTTP without signature | Planned | No releases yet | | Signed checksums and manifest (DEV-31, DEV-63) |
 | vulnerabilities_fixed_60_days | No medium+ publicly known unpatched vulnerabilities over 60 days | Met (none known) | No product release; no known vulnerabilities in the repository | | Re-check per release |
 | vulnerabilities_critical_fixed (SHOULD) | Fix critical vulnerabilities rapidly | N/A (none) | No reports | | |
-| no_leaked_credentials | No valid private credentials in the public repository | Met for the tracked tree | Pattern scan of tracked files found no credentials. `.gitignore` excludes `.env*`, `*.pem`, `*.key`, `*.db` and `recordings/`. History was not scanned with a dedicated tool | | Add a secret scanner to CI (DEV-33) |
-| static_analysis | Static analysis tool applied before release | Planned | `verify-local.sh` runs `go vet` only | | Add `golangci-lint`/`gosec` and ESLint security rules (DEV-33) |
-| static_analysis_common_vulnerabilities (SUGGESTED) | Rules for common vulnerabilities | Planned | As above | | As above |
+| no_leaked_credentials | No valid private credentials in the public repository | Met for the tracked tree and history reachable from `HEAD` | `gitleaks git` (history from `HEAD`) and `gitleaks dir` (working tree) run in `verify-local.sh` and the `required` check, with no leaks found. `.gitignore` excludes `.env*`, `*.pem`, `*.key`, `*.db` and `recordings/`. Refs other than `HEAD` are not scanned | | Scan any new branch history before merge (feat/dev-61 findings handled in that PR) |
+| static_analysis | Static analysis tool applied before release | Partial | `verify-local.sh` runs `go vet`, `golangci-lint` (0 issues), `gosec` and `govulncheck` for Go on every PR. ESLint is not configured because no `web/` code exists | | ESLint and TypeScript analysis with the first frontend PR (DEV-33) |
+| static_analysis_common_vulnerabilities (SUGGESTED) | Rules for common vulnerabilities | Partial | `gosec` rules run on Go in `verify-local.sh`. ESLint security rules are planned | | ESLint security rules with the first frontend PR (DEV-33) |
 | static_analysis_fixed | Confirmed medium+ findings fixed | N/A (none yet) | No analysis run | | Applies once analysis runs |
 | dynamic_analysis | Dynamic analysis before release (SUGGESTED) | Planned | Playwright and Docker E2E are planned | | DEV-33 |
 | dynamic_analysis_unsafe | Dynamic tooling for memory-unsafe languages | N/A | Go and TypeScript are memory-safe. Go `-race` is used | | |
@@ -127,11 +127,11 @@ Scope: Best Practices Passing and Silver MUST and SHOULD/SUGGESTED items, and OS
 | installation_standard_variables | Honour standard install location variables | N/A | Container-based deployment, not a system installer | | |
 | installation_development_quick | Quick developer environment setup | Met | `mise install`, then `mise exec -- bash scripts/verify-local.sh --quick` in `README.md` | | |
 | external_dependencies | Dependencies listed in a machine-readable way | Partial | `.mise.toml` lists tools. `go.mod`, `package-lock.json` and Dockerfiles do not exist yet | | Lockfiles with the first code PRs |
-| dependency_monitoring | Monitor and check dependencies for known vulnerabilities | Partial | `renovate.json` sets `minimumReleaseAge` to 3 days generally, and 0 days only for `vulnerabilityAlerts`. GitHub Dependabot alerts and a scanner in CI are not verified | Owner confirms Dependabot alerts | Add `govulncheck` and `npm audit` to CI (DEV-33) |
+| dependency_monitoring | Monitor and check dependencies for known vulnerabilities | Partial | `renovate.json` sets `minimumReleaseAge` to 3 days generally, and 0 days only for `vulnerabilityAlerts`. `govulncheck` runs for Go in `verify-local.sh` (no vulnerabilities found). `npm audit` is not yet wired because no `web/` code exists. GitHub Dependabot alerts are not verified | Owner confirms Dependabot alerts | `npm audit` with the first frontend PR (DEV-33) |
 | updateable_reused_components | Easy update of reused components | Met | Renovate covers Go modules, npm, `.mise.toml`, Docker and GitHub Actions per `README.md` | Owner grants Renovate app access | |
 | automated_integration_testing | Automated tests on each check-in for at least one branch | Met | `required.yml` runs on push and pull request to `main` | | |
 | regression_tests_added50 | Regression tests for at least 50% of bugs fixed in the last 6 months | N/A (no bugs fixed yet) | No product code | | Applies from first bug fix |
-| test_statement_coverage80 | At least 80% statement coverage | Planned | No coverage measured yet | | DEV-33: `go test -coverprofile` and Vitest coverage |
+| test_statement_coverage80 | At least 80% statement coverage | Partial | Go: 91.5% statement coverage from `go test -coverprofile`, enforced at 80% minimum by `verify-local.sh` and the `required` check. React: Planned, no frontend code yet | | Vitest coverage with the first frontend PR (DEV-33) |
 | test_policy_mandated | Formal policy requiring tests for major functionality | Partial | Internal `TEST_STRATEGY.md` only | | Public policy (DEV-33) |
 | tests_documented_added | Change-proposal instructions include the test policy | Met | `CONTRIBUTING.md` "Acceptable contributions" and "Proposing changes" | | |
 | warnings_strict | Maximally strict warnings | Planned | Partial lint, see Passing | | DEV-33 |
@@ -165,7 +165,7 @@ Scope: Best Practices Passing and Silver MUST and SHOULD/SUGGESTED items, and OS
 | osps_br_01_03 | Untrusted code snapshots cannot reach privileged credentials | Met (partial) | `pull_request` triggers do not expose repository secrets to fork PRs. `contents: read` is set. Owner verifies fork-PR workflow approval | Owner confirms GitHub fork-PR setting | |
 | osps_br_03_01 | Official project URIs use encrypted channels | Met | Repository and documentation URLs use HTTPS | | |
 | osps_br_03_02 | Official distribution channels are authenticated | Planned | No release channel yet. GHCR images need signing and digest verification | | DEV-31, DEV-63 |
-| osps_br_07_01 | Prevent unencrypted secrets in version control | Met (partial) | Tracked-file scan found none. `.gitignore` excludes secret file patterns. Pre-commit or CI secret scanning not in place | | Add secret scanning to CI (DEV-33) |
+| osps_br_07_01 | Prevent unencrypted secrets in version control | Met (partial) | `gitleaks` runs in CI and in `verify-local.sh` over the working tree and history from `HEAD`, with no leaks found. `.gitignore` excludes secret file patterns. No pre-commit hook | | Pre-commit hook optional |
 | osps_do_01_01 | Documentation includes user guides for all basic functionality | Planned | Required for release | | DEV-31, DEV-63 |
 | osps_do_02_01 | Documentation includes a guide for reporting defects | Planned | Only vulnerability reporting exists | | Bug-report guide |
 | osps_gv_02_01 | Mechanisms for public discussion of changes and usage obstacles | Met | GitHub Issues enabled (`has_issues: true`, verified 2026-11-24) and pull requests in use | | |
@@ -190,7 +190,7 @@ OSPS Level 2 and 3 controls were not assessed in this report.
 - No OSPS Baseline attestation has been registered.
 - No OpenSSF Scorecard result has been produced or checked against the project.
 - No release, signed artifact, SBOM or threat model exists.
-- No CallHarbor application, test suite or coverage figure exists.
+- No CallHarbor frontend, release or signed artifact exists. The Go backend coverage figure (91.5%) is measured on the PR branch, not on a release.
 
 ## Owner actions required
 
@@ -204,6 +204,6 @@ OSPS Level 2 and 3 controls were not assessed in this report.
 ## Planned work
 
 - Test suite, coding-standard names and secret scanning (DEV-33). Second maintainer and bus-factor plan (owner).
-- Go and frontend coverage artifacts, secret scanning, `govulncheck`, `npm audit`, `gosec` and ESLint security rules in CI (DEV-33).
+- Frontend coverage artifacts, `npm audit`, ESLint security rules and TypeScript analysis with the first frontend PR (DEV-33). Go coverage, `gosec`, `govulncheck` and `gitleaks` are already enforced.
 - Badges and the Scorecard workflow (DEV-36).
 - Signed releases, checksums, SBOM, release notes and the public threat model (DEV-31, DEV-63).

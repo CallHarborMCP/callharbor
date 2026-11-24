@@ -21,5 +21,12 @@ jobs:
       - uses: jdx/mise-action@v5
       - name: Run standard product tests
         run: mise exec -- bash scripts/verify-local.sh
+      - name: Upload Go coverage artifact
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: go-coverage
+          path: coverage-go.out
+          retention-days: 14
       # Feature PRs must add actual reproducible product tests to verify-local.sh.
       # Telnyx calls and paid AI are never used in CI.
