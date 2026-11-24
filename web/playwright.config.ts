@@ -4,6 +4,7 @@ const port = 4173;
 
 export default defineConfig({
   testDir: "./tests-e2e",
+  testIgnore: process.env.CALLHARBOR_CAPTURE_SCREENSHOTS ? [] : ["**/screenshots.spec.ts"],
   fullyParallel: false,
   workers: 1,
   forbidOnly: !!process.env.CI,
