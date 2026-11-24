@@ -18,5 +18,7 @@ private/
 recordings/
 .data/
 data/
+web/static/*
+!web/static/.gitkeep
 __pycache__/
 *.pyc

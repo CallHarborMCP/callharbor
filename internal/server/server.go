@@ -19,16 +19,29 @@ type Server struct {
 	ready   atomic.Bool
 }
 
-func New(logger *slog.Logger, assets fs.FS) *Server {
+func New(logger *slog.Logger, assets fs.FS, routes ...func(*http.ServeMux)) *Server {
 	s := &Server{}
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", handleHealth)
 	mux.HandleFunc("GET /readyz", s.handleReady)
-	mux.Handle("GET /", http.FileServerFS(assets))
+	for _, register := range routes {
+		register(mux)
+	}
+	mux.Handle("GET /", staticHandler(assets))
 
 	s.handler = observability.AccessLog(logger, securityHeaders(mux))
 	return s
+}
+
+func staticHandler(assets fs.FS) http.Handler {
+	files := http.FileServerFS(assets)
+	if _, err := fs.Stat(assets, "index.html"); err != nil {
+		return http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			writeJSON(w, http.StatusServiceUnavailable, `{"error":"web UI not built"}`)
+		})
+	}
+	return files
 }
 
 func (s *Server) Handler() http.Handler {
