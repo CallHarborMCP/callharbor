@@ -28,7 +28,7 @@ func TestSignedStreamDeliversDTMFAndErrorFrames(t *testing.T) {
 	t.Cleanup(srv.Close)
 	streamURL := "ws" + strings.TrimPrefix(srv.URL, "http") + "/media?token=frames"
 	me, err = telnyx.NewMediaEndpoint(v, streamURL, func(start telnyx.Frame, send telnyx.Send) (telnyx.MediaSink, error) {
-		b, err := voicebridge.New(start.Format, g711Leg, 5*time.Millisecond, 2*time.Second)
+		b, err := voicebridge.New(start.Format, pcmuLeg, 5*time.Millisecond, 2*time.Second)
 		if err != nil {
 			return nil, err
 		}

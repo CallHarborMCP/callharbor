@@ -23,7 +23,10 @@ import (
 	"github.com/CallHarborMCP/callharbor/internal/voicebridge"
 )
 
-var g711Leg = audio.Format{Encoding: audio.PCMU, SampleRate: 8000}
+var (
+	pcmuLeg = audio.Format{Encoding: audio.PCMU, SampleRate: 8000}
+	pcmaLeg = audio.Format{Encoding: audio.PCMA, SampleRate: 8000}
+)
 
 type providerSession interface {
 	AppendAudio(ctx context.Context, b []byte) error
@@ -150,7 +153,7 @@ func mediaFrame(t *testing.T, track string, payload []byte, ts int) []byte {
 	return b
 }
 
-func runSignedCall(t *testing.T, connect func(ctx context.Context) (providerSession, error), agent, caller []byte, received func() [][]byte) {
+func runSignedCall(t *testing.T, leg audio.Format, connect func(ctx context.Context, leg audio.Format) (providerSession, error), agent, caller []byte, received func() [][]byte) {
 	t.Helper()
 	priv, pub := newKeys(t)
 	now := time.Now()
@@ -168,7 +171,7 @@ func runSignedCall(t *testing.T, connect func(ctx context.Context) (providerSess
 	streamURL := "ws" + strings.TrimPrefix(srv.URL, "http") + "/media?token=e2e"
 
 	me, err = telnyx.NewMediaEndpoint(v, streamURL, func(start telnyx.Frame, send telnyx.Send) (telnyx.MediaSink, error) {
-		b, err := voicebridge.New(start.Format, g711Leg, 5*time.Millisecond, 2*time.Second)
+		b, err := voicebridge.New(start.Format, leg, 5*time.Millisecond, 2*time.Second)
 		if err != nil {
 			return nil, err
 		}
@@ -178,7 +181,7 @@ func runSignedCall(t *testing.T, connect func(ctx context.Context) (providerSess
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
-		s, err := connect(ctx)
+		s, err := connect(ctx, leg)
 		if err != nil {
 			return nil, err
 		}
@@ -214,7 +217,7 @@ func runSignedCall(t *testing.T, connect func(ctx context.Context) (providerSess
 	}
 	defer func() { _ = s.Close() }()
 
-	start := []byte(`{"event":"start","stream_id":"e2e-1","sequence_number":"1","start":{"call_control_id":"v3:e2e","client_state":"","media_format":{"encoding":"PCMU","sample_rate":8000,"channels":1}}}`)
+	start := []byte(fmt.Sprintf(`{"event":"start","stream_id":"e2e-1","sequence_number":"1","start":{"call_control_id":"v3:e2e","client_state":"","media_format":{"encoding":%q,"sample_rate":8000,"channels":1}}}`, leg.Encoding))
 	if err := s.Send(ctx, start); err != nil {
 		t.Fatal(err)
 	}
@@ -268,25 +271,32 @@ func runSignedCall(t *testing.T, connect func(ctx context.Context) (providerSess
 	}
 }
 
-func testAudio(seed int) (agent, caller []byte) {
+func testAudio(leg audio.Format, seed int) (agent, caller []byte) {
 	agent = make([]byte, 160)
 	caller = make([]byte, 160)
 	for i := range agent {
-		agent[i] = audio.LinearToUlaw(int16(i * (96 + seed)))
-		caller[i] = audio.LinearToUlaw(int16(i * (64 + seed)))
+		agent[i] = encodeG711(leg, int16(i*(96+seed)))
+		caller[i] = encodeG711(leg, int16(i*(64+seed)))
 	}
 	return agent, caller
 }
 
+func encodeG711(leg audio.Format, s int16) byte {
+	if leg.Encoding == audio.PCMA {
+		return audio.LinearToAlaw(s)
+	}
+	return audio.LinearToUlaw(s)
+}
+
 func TestSignedStreamBridgesAudioBothWaysThroughLive(t *testing.T) {
-	agent, caller := testAudio(0)
+	agent, caller := testAudio(pcmuLeg, 0)
 	fake := &liveFake{outbound: agent}
 	provider := httptest.NewServer(fake.handler(t))
 	t.Cleanup(provider.Close)
 	endpoint := "ws" + strings.TrimPrefix(provider.URL, "http") + "/v1/live/sessions"
 
-	runSignedCall(t, func(ctx context.Context) (providerSession, error) {
-		s, err := livews.Connect(ctx, livews.Config{Endpoint: endpoint, APIKey: "sk-test", Model: "gpt-live-1.1", Voice: "marin", Instructions: "Test.", Format: g711Leg})
+	runSignedCall(t, pcmuLeg, func(ctx context.Context, leg audio.Format) (providerSession, error) {
+		s, err := livews.Connect(ctx, livews.Config{Endpoint: endpoint, APIKey: "sk-test", Model: "gpt-live-1.1", Voice: "marin", Instructions: "Test.", Format: leg})
 		if err != nil {
 			return nil, err
 		}
@@ -295,14 +305,46 @@ func TestSignedStreamBridgesAudioBothWaysThroughLive(t *testing.T) {
 }
 
 func TestSignedStreamBridgesAudioBothWaysThroughRealtime(t *testing.T) {
-	agent, caller := testAudio(1)
+	agent, caller := testAudio(pcmuLeg, 1)
 	fake := &realtimeFake{outbound: agent}
 	provider := httptest.NewServer(fake.handler(t))
 	t.Cleanup(provider.Close)
 	endpoint := "ws" + strings.TrimPrefix(provider.URL, "http") + "/v1/realtime"
 
-	runSignedCall(t, func(ctx context.Context) (providerSession, error) {
-		s, err := realtimews.Connect(ctx, realtimews.Config{Endpoint: endpoint, APIKey: "sk-test", Model: "gpt-realtime-2.1", Voice: "marin", Instructions: "Test.", Format: g711Leg})
+	runSignedCall(t, pcmuLeg, func(ctx context.Context, leg audio.Format) (providerSession, error) {
+		s, err := realtimews.Connect(ctx, realtimews.Config{Endpoint: endpoint, APIKey: "sk-test", Model: "gpt-realtime-2.1", Voice: "marin", Instructions: "Test.", Format: leg})
+		if err != nil {
+			return nil, err
+		}
+		return s, nil
+	}, agent, caller, fake.received)
+}
+
+func TestSignedStreamPCMABridgesAudioThroughLive(t *testing.T) {
+	agent, caller := testAudio(pcmaLeg, 2)
+	fake := &liveFake{outbound: agent}
+	provider := httptest.NewServer(fake.handler(t))
+	t.Cleanup(provider.Close)
+	endpoint := "ws" + strings.TrimPrefix(provider.URL, "http") + "/v1/live/sessions"
+
+	runSignedCall(t, pcmaLeg, func(ctx context.Context, leg audio.Format) (providerSession, error) {
+		s, err := livews.Connect(ctx, livews.Config{Endpoint: endpoint, APIKey: "sk-test", Model: "gpt-live-1.1", Voice: "marin", Instructions: "Test.", Format: leg})
+		if err != nil {
+			return nil, err
+		}
+		return s, nil
+	}, agent, caller, fake.received)
+}
+
+func TestSignedStreamPCMABridgesAudioThroughRealtime(t *testing.T) {
+	agent, caller := testAudio(pcmaLeg, 3)
+	fake := &realtimeFake{outbound: agent}
+	provider := httptest.NewServer(fake.handler(t))
+	t.Cleanup(provider.Close)
+	endpoint := "ws" + strings.TrimPrefix(provider.URL, "http") + "/v1/realtime"
+
+	runSignedCall(t, pcmaLeg, func(ctx context.Context, leg audio.Format) (providerSession, error) {
+		s, err := realtimews.Connect(ctx, realtimews.Config{Endpoint: endpoint, APIKey: "sk-test", Model: "gpt-realtime-2.1", Voice: "marin", Instructions: "Test.", Format: leg})
 		if err != nil {
 			return nil, err
 		}
