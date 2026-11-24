@@ -27,7 +27,7 @@ export function AppearanceSettings() {
   return (
     <section aria-labelledby="appearance-heading" className="ch-panel">
       <h2 id="appearance-heading">Appearance</h2>
-      <p className="ch-muted">Saved for your account in this browser. Not yet synced across devices.</p>
+      <p className="ch-muted">Saved to your account and applied on every device you sign in on.</p>
 
       <div className="ch-setting" role="group" aria-labelledby="theme-label">
         <span id="theme-label" className="ch-setting-label">Theme</span>

@@ -43,7 +43,10 @@ function App() {
   }, []);
 
   return (
-    <AppearanceProvider userId={gate === "signed-in" && session ? session.user.id : null}>
+    <AppearanceProvider
+      userId={gate === "signed-in" && session ? session.user.id : null}
+      csrfToken={gate === "signed-in" && session ? session.csrf_token : null}
+    >
       <Screen
         gate={gate}
         session={session}

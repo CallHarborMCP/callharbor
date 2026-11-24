@@ -18,7 +18,7 @@ Spacing, radius, control size (44px minimum tap target) and motion durations are
 - Model and validation: `appearance.ts`. Unknown values fall back to defaults per field.
 - Provider: `AppearanceProvider.tsx` applies attributes and follows OS scheme changes.
 - Settings UI: `AppearanceSettings.tsx`, English-only copy.
-- Storage: per user, keyed by user ID in `localStorage`. Another user on the same browser does not inherit choices.
+- Storage: per user on the server (`GET`/`PUT /api/preferences/appearance`, table `user_preferences`). The choice follows the account across devices. `localStorage` holds only a per-user cache for the first paint and is overwritten by the server value on sign-in.
 
 Limitation: preferences are not yet synced across devices. Server persistence needs a per-user preferences API, which is not implemented.
 

@@ -1,12 +1,12 @@
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { AppearanceProvider } from "./AppearanceProvider";
 import { AppearanceSettings } from "./AppearanceSettings";
 import { storageKey } from "./appearance";
 
-function renderSettings(userId: string | null = "user-1") {
+function renderSettings(userId: string | null = "user-1", csrfToken: string | null = "csrf-token") {
   return render(
-    <AppearanceProvider userId={userId}>
+    <AppearanceProvider userId={userId} csrfToken={csrfToken}>
       <AppearanceSettings />
     </AppearanceProvider>,
   );
@@ -32,7 +32,14 @@ describe("AppearanceSettings", () => {
     expect(pressed("Density", "Comfortable")).toHaveAttribute("aria-pressed", "true");
   });
 
-  it("applies and persists each choice for the signed-in user", () => {
+  it("applies each choice immediately and saves it to the server for the signed-in user", async () => {
+    const saved: unknown[] = [];
+    const fetchMock = vi.fn(async (_url: string, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body ?? "{}")) as unknown;
+      saved.push(body);
+      return new Response(JSON.stringify(body), { status: 200, headers: { "Content-Type": "application/json" } });
+    });
+    vi.stubGlobal("fetch", fetchMock);
     renderSettings("user-1");
 
     fireEvent.click(pressed("Theme", "Dark"));
@@ -44,12 +51,22 @@ describe("AppearanceSettings", () => {
     expect(document.documentElement.dataset.preset).toBe("harbor");
     expect(document.documentElement.dataset.accent).toBe("violet");
     expect(document.documentElement.dataset.density).toBe("compact");
-    expect(JSON.parse(window.localStorage.getItem(storageKey("user-1")) ?? "{}")).toEqual({
-      theme: "dark",
-      preset: "harbor",
-      accent: "violet",
-      density: "compact",
-    });
+
+    const final = { theme: "dark", preset: "harbor", accent: "violet", density: "compact" };
+    await vi.waitFor(() => expect(saved.at(-1)).toEqual(final));
+    expect(fetchMock).toHaveBeenLastCalledWith(
+      "/api/preferences/appearance",
+      expect.objectContaining({ method: "PUT" }),
+    );
+    await vi.waitFor(() =>
+      expect(JSON.parse(window.localStorage.getItem(storageKey("user-1")) ?? "{}")).toEqual({
+        theme: "dark",
+        preset: "harbor",
+        accent: "violet",
+        density: "compact",
+      }),
+    );
+    vi.unstubAllGlobals();
   });
 
   it("restores the saved choices on the next render", () => {

@@ -42,6 +42,31 @@ export function parseAppearance(value: unknown): Appearance {
   };
 }
 
+export async function fetchAppearance(): Promise<Appearance> {
+  const response = await fetch("/api/preferences/appearance", {
+    method: "GET",
+    credentials: "same-origin",
+    headers: { Accept: "application/json" },
+  });
+  if (!response.ok) {
+    throw new Error("appearance unavailable");
+  }
+  return parseAppearance(await response.json());
+}
+
+export async function putAppearance(csrfToken: string, appearance: Appearance): Promise<Appearance> {
+  const response = await fetch("/api/preferences/appearance", {
+    method: "PUT",
+    credentials: "same-origin",
+    headers: { Accept: "application/json", "Content-Type": "application/json", "X-CSRF-Token": csrfToken },
+    body: JSON.stringify(parseAppearance(appearance)),
+  });
+  if (!response.ok) {
+    throw new Error("appearance not saved");
+  }
+  return parseAppearance(await response.json());
+}
+
 export function storageKey(userId: string): string {
   return `${STORAGE_KEY_PREFIX}${userId}`;
 }
