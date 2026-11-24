@@ -141,7 +141,7 @@ Source: `internal/realtime/voice.go`, tested in `TestCapabilityMatrix`.
 | R12 | Live `session.output_audio.delta` example has `start_ms`/`end_ms`, but the schema says they are omitted on the primary WS | O-LIVE | Timing is ignored on audio. |
 | R13 | Live `error.code` is a required string in the schema, but the guide mentions `null` codes | O-LIVE live-conversations | Both accepted (test). |
 | R14 | Live `usage.seconds` is an integer in the reference, a float in O-PY | O-LIVE, O-PY `session_usage.py` | Parsed as float (test). |
-| R15 | Live pre-start error, close codes, max session length, whether output stops immediately on barge-in | O-LIVE (absent) | Fail closed on any non-`session.started` first event. Barge-in silencing is local (Telnyx `clear`). |
+| R15 | Live pre-start error, close codes, max session length, whether output stops immediately on barge-in | O-LIVE (absent) | Fail closed on any non-`session.started` first event. Barge-in silencing is local (Telnyx `clear`). GPT-Live sends no speech-start event in the pinned fixtures, so `input_audio_buffer.speech_started` is rejected fail-closed (`livews` negative test); the bridge cuts playout on an explicit local call, not a provider signal. |
 | R16 | Whether GPT-Live transcription carries any extra charge | O-LIVE pricing (silent) | Must be confirmed by the owner from billing before claiming "no extra cost". |
 | R17 | Arbitrary model aliases or gateways (e.g. `gpt-live-1-codex`) | PRODUCT_SCOPE | Supported only if the handshake echoes the same model and format. Otherwise fail closed (`model alias rewritten` test). |
 
