@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"time"
 
 	"github.com/CallHarborMCP/callharbor/internal/realtime"
 )
@@ -31,11 +32,26 @@ type EventSink func(realtime.Event)
 // ErrProviderError reports a provider error event that ended the call.
 var ErrProviderError = errors.New("voice: provider error")
 
+// GracefulCloseTimeout bounds how long a locally stopped call waits for the
+// provider's close acknowledgement before dropping the socket.
+const GracefulCloseTimeout = 5 * time.Second
+
+// Closer is implemented by sessions whose protocol has a documented close
+// handshake. RequestClose sends the close without reading, so the downlink
+// reader observes the acknowledgement.
+type Closer interface {
+	RequestClose(ctx context.Context) error
+}
+
 // Result is the outcome of a completed call run.
 type Result struct {
 	// Closed is true only when the provider sent its documented close event.
 	// A disconnect is never reported as a clean close.
 	Closed bool
+	// UsageSeconds is the provider-confirmed usage from the close event.
+	UsageSeconds float64
+	// UsageConfirmed is true only when UsageSeconds came from a close event.
+	UsageConfirmed bool
 }
 
 // Run drives the session until the provider closes, reports an error, the
@@ -62,11 +78,12 @@ func Run(ctx context.Context, sess realtime.Session, bridge AudioBridge, sink Ev
 		}
 	}()
 
-	res, downErr := pumpDownlink(runCtx, sess, bridge, sink)
+	res, downErr := runDownlink(runCtx, ctx, sess, bridge, sink)
 
 	cancel()
-	closeErr := sess.Close()
 	uplinkWG.Wait()
+
+	closeErr := sess.Close()
 
 	if upErr != nil && !errors.Is(upErr, context.Canceled) {
 		return res, fmt.Errorf("voice: uplink: %w", upErr)
@@ -78,6 +95,61 @@ func Run(ctx context.Context, sess realtime.Session, bridge AudioBridge, sink Ev
 		return res, fmt.Errorf("voice: close session: %w", closeErr)
 	}
 	return res, nil
+}
+
+// runDownlink reads events until the provider closes, fails, or the run stops.
+// On a caller stop with a healthy provider it requests the protocol close and
+// keeps reading until session.closed arrives or GracefulCloseTimeout passes.
+// Reads run on a context detached from cancellation, because cancelling a
+// socket read closes the connection and would prevent the graceful close.
+func runDownlink(runCtx, callerCtx context.Context, sess realtime.Session, bridge AudioBridge, sink EventSink) (Result, error) {
+	readCtx, stopRead := context.WithCancel(context.WithoutCancel(runCtx))
+	defer stopRead()
+	type step struct {
+		res Result
+		err error
+	}
+	done := make(chan step, 1)
+	go func() {
+		res, err := pumpDownlink(readCtx, sess, bridge, sink)
+		done <- step{res, err}
+	}()
+	select {
+	case s := <-done:
+		return s.res, s.err
+	case <-runCtx.Done():
+	}
+	if callerCtx.Err() == nil {
+		stopRead()
+		<-done
+		return Result{}, runCtx.Err()
+	}
+	rc, ok := sess.(Closer)
+	if !ok {
+		stopRead()
+		<-done
+		return Result{}, callerCtx.Err()
+	}
+	reqCtx, reqCancel := context.WithTimeout(context.Background(), GracefulCloseTimeout)
+	defer reqCancel()
+	if err := rc.RequestClose(reqCtx); err != nil {
+		stopRead()
+		<-done
+		return Result{}, callerCtx.Err()
+	}
+	timer := time.NewTimer(GracefulCloseTimeout)
+	defer timer.Stop()
+	select {
+	case s := <-done:
+		if s.res.Closed {
+			return s.res, nil
+		}
+		return Result{}, callerCtx.Err()
+	case <-timer.C:
+		stopRead()
+		<-done
+		return Result{}, callerCtx.Err()
+	}
 }
 
 func pumpUplink(ctx context.Context, sess realtime.Session, bridge AudioBridge) error {
@@ -111,7 +183,7 @@ func pumpDownlink(ctx context.Context, sess realtime.Session, bridge AudioBridge
 		case realtime.EventError:
 			return Result{}, fmt.Errorf("%w: %s %s", ErrProviderError, ev.ErrCode, ev.ErrMessage)
 		case realtime.EventClosed:
-			return Result{Closed: true}, nil
+			return Result{Closed: true, UsageSeconds: ev.UsageSeconds, UsageConfirmed: ev.UsageSeconds > 0}, nil
 		}
 	}
 }

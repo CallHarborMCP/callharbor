@@ -3,11 +3,17 @@ package storage
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/url"
 	"strings"
+
+	"github.com/CallHarborMCP/callharbor/internal/realtime"
 )
+
+// MaxInstructions bounds the per-profile system instructions.
+const MaxInstructions = 8192
 
 // AIProtocol is the explicit AI voice protocol stored on a profile. It is
 // never inferred from the model or endpoint.
@@ -24,16 +30,18 @@ var ErrAIProfileNotFound = errors.New("storage: ai profile not found")
 // AIProfile is one user-owned AI voice configuration. APISecretID references
 // an owner-scoped secret; the secret value is never stored here.
 type AIProfile struct {
-	ID          string
-	OwnerUserID string
-	Name        string
-	Protocol    AIProtocol
-	EndpointURL string
-	Model       string
-	Voice       string
-	APISecretID string
-	CreatedAt   string
-	UpdatedAt   string
+	ID           string
+	OwnerUserID  string
+	Name         string
+	Protocol     AIProtocol
+	EndpointURL  string
+	Model        string
+	Voice        string
+	Instructions string
+	Headers      map[string]string
+	APISecretID  string
+	CreatedAt    string
+	UpdatedAt    string
 }
 
 // ValidateAIProfile fails closed on an unknown protocol or an endpoint that
@@ -60,7 +68,24 @@ func ValidateAIProfile(p AIProfile) error {
 	if strings.TrimSpace(p.Model) == "" || strings.TrimSpace(p.Voice) == "" {
 		return errors.New("storage: model and voice are required")
 	}
+	if len(p.Instructions) > MaxInstructions {
+		return fmt.Errorf("storage: instructions exceed %d bytes", MaxInstructions)
+	}
+	if _, err := realtime.ValidateHeaders(p.Headers); err != nil {
+		return fmt.Errorf("storage: %w", err)
+	}
 	return nil
+}
+
+func encodeHeaders(h map[string]string) (string, error) {
+	if len(h) == 0 {
+		return "{}", nil
+	}
+	b, err := json.Marshal(h)
+	if err != nil {
+		return "", fmt.Errorf("storage: encode headers: %w", err)
+	}
+	return string(b), nil
 }
 
 func isLoopbackHost(h string) bool {
@@ -72,11 +97,15 @@ func (s *Store) CreateAIProfile(ctx context.Context, p AIProfile) error {
 	if err := ValidateAIProfile(p); err != nil {
 		return err
 	}
-	_, err := s.db.ExecContext(ctx, `INSERT INTO ai_profiles
-		(id, owner_user_id, name, protocol, endpoint_url, model, voice, api_secret_id, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+	hdr, err := encodeHeaders(p.Headers)
+	if err != nil {
+		return err
+	}
+	_, err = s.db.ExecContext(ctx, `INSERT INTO ai_profiles
+		(id, owner_user_id, name, protocol, endpoint_url, model, voice, instructions, headers_json, api_secret_id, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		p.ID, p.OwnerUserID, p.Name, string(p.Protocol), p.EndpointURL, p.Model, p.Voice,
-		nullableString(p.APISecretID), p.CreatedAt, p.UpdatedAt)
+		p.Instructions, hdr, nullableString(p.APISecretID), p.CreatedAt, p.UpdatedAt)
 	if err != nil {
 		return fmt.Errorf("storage: create ai profile: %w", err)
 	}
@@ -86,16 +115,19 @@ func (s *Store) CreateAIProfile(ctx context.Context, p AIProfile) error {
 // GetAIProfile returns a profile only when it belongs to ownerUserID.
 func (s *Store) GetAIProfile(ctx context.Context, ownerUserID, id string) (AIProfile, error) {
 	var p AIProfile
-	var proto string
+	var proto, hdr string
 	var secret sql.NullString
-	err := s.db.QueryRowContext(ctx, `SELECT id, owner_user_id, name, protocol, endpoint_url, model, voice, api_secret_id, created_at, updated_at
+	err := s.db.QueryRowContext(ctx, `SELECT id, owner_user_id, name, protocol, endpoint_url, model, voice, instructions, headers_json, api_secret_id, created_at, updated_at
 		FROM ai_profiles WHERE id = ? AND owner_user_id = ?`, id, ownerUserID).
-		Scan(&p.ID, &p.OwnerUserID, &p.Name, &proto, &p.EndpointURL, &p.Model, &p.Voice, &secret, &p.CreatedAt, &p.UpdatedAt)
+		Scan(&p.ID, &p.OwnerUserID, &p.Name, &proto, &p.EndpointURL, &p.Model, &p.Voice, &p.Instructions, &hdr, &secret, &p.CreatedAt, &p.UpdatedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return AIProfile{}, ErrAIProfileNotFound
 	}
 	if err != nil {
 		return AIProfile{}, fmt.Errorf("storage: get ai profile: %w", err)
+	}
+	if err := json.Unmarshal([]byte(hdr), &p.Headers); err != nil {
+		return AIProfile{}, fmt.Errorf("storage: decode headers: %w", err)
 	}
 	p.Protocol = AIProtocol(proto)
 	p.APISecretID = secret.String

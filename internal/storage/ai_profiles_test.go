@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -28,6 +29,8 @@ func TestAIProfileRoundTripIsOwnerScoped(t *testing.T) {
 	ctx := context.Background()
 
 	want := aiProfile("alice-ai-2", "alice", "live_ws", "wss://ai.example.test/live")
+	want.Instructions = "Be brief."
+	want.Headers = map[string]string{"X-Tenant": "alice"}
 	if err := s.CreateAIProfile(ctx, want); err != nil {
 		t.Fatalf("CreateAIProfile: %v", err)
 	}
@@ -35,7 +38,9 @@ func TestAIProfileRoundTripIsOwnerScoped(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetAIProfile: %v", err)
 	}
-	if got != want {
+	if got.ID != want.ID || got.Protocol != want.Protocol || got.EndpointURL != want.EndpointURL ||
+		got.Model != want.Model || got.Voice != want.Voice || got.APISecretID != want.APISecretID ||
+		got.Instructions != want.Instructions || got.Headers["X-Tenant"] != "alice" || len(got.Headers) != 1 {
 		t.Fatalf("round trip = %+v, want %+v", got, want)
 	}
 	if _, err := s.GetAIProfile(ctx, "bob", "alice-ai-2"); !errors.Is(err, ErrAIProfileNotFound) {
@@ -61,6 +66,21 @@ func TestAIProfileRejectsUnsafeConfig(t *testing.T) {
 			return p
 		}(),
 		"missing voice": func() AIProfile { p := aiProfile("p8", "alice", "live_ws", "wss://a.test/x"); p.Voice = ""; return p }(),
+		"reserved auth header": func() AIProfile {
+			p := aiProfile("p9", "alice", "realtime_ws", "wss://a.test/x")
+			p.Headers = map[string]string{"Authorization": "Bearer stolen"}
+			return p
+		}(),
+		"header value with CRLF": func() AIProfile {
+			p := aiProfile("p10", "alice", "realtime_ws", "wss://a.test/x")
+			p.Headers = map[string]string{"X-Tenant": "a\r\nX-Evil: 1"}
+			return p
+		}(),
+		"oversized instructions": func() AIProfile {
+			p := aiProfile("p11", "alice", "live_ws", "wss://a.test/x")
+			p.Instructions = strings.Repeat("a", MaxInstructions+1)
+			return p
+		}(),
 	}
 	for name, p := range cases {
 		if err := s.CreateAIProfile(ctx, p); err == nil {

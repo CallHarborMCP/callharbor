@@ -228,10 +228,18 @@ func (s *Session) Close() error {
 	return s.conn.Close(websocket.StatusNormalClosure, "")
 }
 
+// RequestClose sends session.close without reading. The session's single
+// reader then observes session.closed, so usage is confirmed without a second
+// concurrent reader on the socket.
+func (s *Session) RequestClose(ctx context.Context) error {
+	return s.write(ctx, []byte(`{"type":"session.close","event_id":"ch_close"}`))
+}
+
 // CloseGracefully sends session.close and waits for session.closed so final
-// usage is confirmed; the caller bounds ctx.
+// usage is confirmed; the caller bounds ctx. It must not run concurrently with
+// another reader.
 func (s *Session) CloseGracefully(ctx context.Context) (realtime.Event, error) {
-	if err := s.write(ctx, []byte(`{"type":"session.close","event_id":"ch_close"}`)); err != nil {
+	if err := s.RequestClose(ctx); err != nil {
 		return realtime.Event{}, err
 	}
 	for {

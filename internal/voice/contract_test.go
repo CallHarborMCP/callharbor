@@ -122,6 +122,38 @@ func fakeLiveProvider(t *testing.T, events ...string) string {
 	return "ws" + strings.TrimPrefix(srv.URL, "http") + "/v1/live/sessions"
 }
 
+// fakeLiveHoldProvider keeps the Live session open after startup and answers
+// session.close with session.closed carrying confirmed usage. It records
+// whether the engine asked for a graceful close.
+func fakeLiveHoldProvider(t *testing.T, closeSeen chan<- struct{}) string {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		c, err := websocket.Accept(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer func() { _ = c.CloseNow() }()
+		ctx := r.Context()
+		if _, _, err := c.Read(ctx); err != nil {
+			return
+		}
+		_ = c.Write(ctx, websocket.MessageText, []byte(`{"type":"session.started","event_id":"evt_started","session":{"id":"live_1","model":"model-1","status":"active"}}`))
+		for {
+			_, b, err := c.Read(ctx)
+			if err != nil {
+				return
+			}
+			if strings.Contains(string(b), `"type":"session.close"`) {
+				closeSeen <- struct{}{}
+				_ = c.Write(ctx, websocket.MessageText, []byte(`{"type":"session.closed","event_id":"evt_closed","reason":"close_requested","usage":{"seconds":7}}`))
+				return
+			}
+		}
+	}))
+	t.Cleanup(srv.Close)
+	return "ws" + strings.TrimPrefix(srv.URL, "http") + "/v1/live/sessions"
+}
+
 func liveAudio() string {
 	return `{"type":"session.output_audio.delta","delta":"` + base64.StdEncoding.EncodeToString(make([]byte, 160)) + `"}`
 }
@@ -221,6 +253,43 @@ func TestLiveCallContract(t *testing.T) {
 			t.Fatalf("res=%+v err=%v", res, err)
 		}
 	})
+}
+
+func TestLocalHangupFinalizesLiveWithConfirmedUsage(t *testing.T) {
+	closeSeen := make(chan struct{}, 1)
+	ep := fakeLiveHoldProvider(t, closeSeen)
+	ctx, cancel := context.WithCancel(context.Background())
+	sess, err := dialers().Dial(context.Background(), profileFor(realtime.ProtocolLive, ep), realtime.Requirements{Format: pcmu})
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	time.AfterFunc(50*time.Millisecond, cancel)
+	res, err := voice.Run(ctx, sess, &recordingBridge{}, nil)
+	if err != nil {
+		t.Fatalf("err = %v, want nil after confirmed graceful close", err)
+	}
+	select {
+	case <-closeSeen:
+	case <-time.After(5 * time.Second):
+		t.Fatal("provider never received session.close on local hangup")
+	}
+	if !res.Closed || !res.UsageConfirmed || res.UsageSeconds != 7 {
+		t.Fatalf("res=%+v, want clean close with confirmed usage 7s", res)
+	}
+}
+
+func TestLocalHangupRealtimeHasNoGracefulClose(t *testing.T) {
+	ep := fakeRealtimeProvider(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	sess, err := dialers().Dial(context.Background(), profileFor(realtime.ProtocolRealtime, ep), realtime.Requirements{Format: pcmu})
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	time.AfterFunc(50*time.Millisecond, cancel)
+	res, _ := voice.Run(ctx, sess, &recordingBridge{}, nil)
+	if res.Closed || res.UsageConfirmed {
+		t.Fatalf("realtime local hangup reported closed/confirmed usage: %+v", res)
+	}
 }
 
 func TestAlternateAdapterBoundary(t *testing.T) {
