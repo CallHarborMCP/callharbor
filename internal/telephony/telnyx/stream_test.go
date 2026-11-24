@@ -39,7 +39,7 @@ func (c *clock) Add(d time.Duration) {
 	c.mu.Unlock()
 }
 
-type harness struct {
+type wsHarness struct {
 	t       *testing.T
 	clk     *clock
 	auth    *telnyx.StreamAuth
@@ -50,14 +50,14 @@ type harness struct {
 	baseURL string
 }
 
-func newHarness(t *testing.T, mutate func(*telnyx.StreamConfig)) *harness {
+func newWSHarness(t *testing.T, mutate func(*telnyx.StreamConfig)) *wsHarness {
 	t.Helper()
-	return newHarnessWithAccept(t, mutate, nil)
+	return newWSHarnessWithAccept(t, mutate, nil)
 }
 
-// newHarnessWithAccept runs before (not after) the serve loop starts, so a
+// newWSHarnessWithAccept runs before (not after) the serve loop starts, so a
 // test can queue or clear outbound audio with no race against the loop.
-func newHarnessWithAccept(t *testing.T, mutate func(*telnyx.StreamConfig), pre func(*telnyx.MediaSession)) *harness {
+func newWSHarnessWithAccept(t *testing.T, mutate func(*telnyx.StreamConfig), pre func(*telnyx.MediaSession)) *wsHarness {
 	t.Helper()
 	seed := make([]byte, ed25519.SeedSize)
 	for i := range seed {
@@ -69,7 +69,7 @@ func newHarnessWithAccept(t *testing.T, mutate func(*telnyx.StreamConfig), pre f
 	if err != nil {
 		t.Fatal(err)
 	}
-	h := &harness{t: t, clk: clk, auth: telnyx.NewStreamAuth(), priv: priv, verif: v, sess: make(chan *telnyx.MediaSession, 4)}
+	h := &wsHarness{t: t, clk: clk, auth: telnyx.NewStreamAuth(), priv: priv, verif: v, sess: make(chan *telnyx.MediaSession, 4)}
 	cfg := telnyx.StreamConfig{
 		Format: pcmu8k, InboundQueue: 64, JitterFrames: 2, OutboundQueue: 8,
 		MaxChunkBytes: 1600, IdleTimeout: 5 * time.Second, WriteTimeout: 2 * time.Second, ExpireEvery: 10 * time.Millisecond,
@@ -97,7 +97,7 @@ func newHarnessWithAccept(t *testing.T, mutate func(*telnyx.StreamConfig), pre f
 
 // dial performs a Telnyx-style signed media WebSocket handshake for a fresh
 // per-call token and returns the client connection.
-func (h *harness) dial(callID string, ts time.Time) (*websocket.Conn, string) {
+func (h *wsHarness) dial(callID string, ts time.Time) (*websocket.Conn, string) {
 	h.t.Helper()
 	tok, err := h.auth.Issue(callID, time.Minute, h.clk.Now())
 	if err != nil {
@@ -106,7 +106,7 @@ func (h *harness) dial(callID string, ts time.Time) (*websocket.Conn, string) {
 	return h.dialToken(tok, ts, nil)
 }
 
-func (h *harness) dialToken(tok string, ts time.Time, mutate func(http.Header)) (*websocket.Conn, string) {
+func (h *wsHarness) dialToken(tok string, ts time.Time, mutate func(http.Header)) (*websocket.Conn, string) {
 	h.t.Helper()
 	u := h.baseURL + tok
 	hdr := telnyx.Sign(h.priv, ts, []byte(u))
@@ -124,7 +124,7 @@ func (h *harness) dialToken(tok string, ts time.Time, mutate func(http.Header)) 
 	return c, ""
 }
 
-func (h *harness) session() *telnyx.MediaSession {
+func (h *wsHarness) session() *telnyx.MediaSession {
 	h.t.Helper()
 	select {
 	case s := <-h.sess:
@@ -146,7 +146,7 @@ func send(t *testing.T, c *websocket.Conn, v any) {
 	}
 }
 
-func startFrame(callID, stream string, enc string, rate int) map[string]any {
+func wsStartFrame(callID, stream string, enc string, rate int) map[string]any {
 	return map[string]any{
 		"event": "start", "sequence_number": "1", "stream_id": stream,
 		"start": map[string]any{
@@ -172,7 +172,7 @@ func silence(n int) []byte {
 }
 
 func TestStreamAuthRequiresSignedHandshakeAndSingleUseToken(t *testing.T) {
-	h := newHarness(t, nil)
+	h := newWSHarness(t, nil)
 	now := h.clk.Now()
 	tok, err := h.auth.Issue("v2:call-1", time.Minute, now)
 	if err != nil {
@@ -206,7 +206,7 @@ func TestStreamAuthRequiresSignedHandshakeAndSingleUseToken(t *testing.T) {
 }
 
 func TestStreamAuthRejectsSignatureOverDifferentURL(t *testing.T) {
-	h := newHarness(t, nil)
+	h := newWSHarness(t, nil)
 	now := h.clk.Now()
 	tok, _ := h.auth.Issue("v2:call-2", time.Minute, now)
 	other := h.baseURL + "other-token"
@@ -239,7 +239,7 @@ func TestStreamAuthTokenExpiry(t *testing.T) {
 }
 
 func TestMediaLifecycleInboundOutboundAndStop(t *testing.T) {
-	h := newHarness(t, nil)
+	h := newWSHarness(t, nil)
 	now := h.clk.Now()
 	c, msg := h.dial("v2:call-3", now)
 	if c == nil {
@@ -250,7 +250,7 @@ func TestMediaLifecycleInboundOutboundAndStop(t *testing.T) {
 	ctx := context.Background()
 
 	send(t, c, map[string]any{"event": "connected", "version": "1.0.0"})
-	send(t, c, startFrame("v2:call-3", "st-1", "PCMU", 8000))
+	send(t, c, wsStartFrame("v2:call-3", "st-1", "PCMU", 8000))
 	for i := 0; i < 5; i++ {
 		send(t, c, wsMediaFrame("st-1", "inbound", uint32(160*i), silence(160)))
 	}
@@ -333,7 +333,7 @@ func readText(t *testing.T, ctx context.Context, c *websocket.Conn) string {
 }
 
 func TestLossIsReportedAsGapAndDuplicatesDropped(t *testing.T) {
-	h := newHarness(t, func(c *telnyx.StreamConfig) { c.JitterFrames = 0 })
+	h := newWSHarness(t, func(c *telnyx.StreamConfig) { c.JitterFrames = 0 })
 	now := h.clk.Now()
 	c, msg := h.dial("v2:call-4", now)
 	if c == nil {
@@ -342,7 +342,7 @@ func TestLossIsReportedAsGapAndDuplicatesDropped(t *testing.T) {
 	defer func() { _ = c.CloseNow() }()
 	s := h.session()
 	send(t, c, map[string]any{"event": "connected"})
-	send(t, c, startFrame("v2:call-4", "st-2", "PCMU", 8000))
+	send(t, c, wsStartFrame("v2:call-4", "st-2", "PCMU", 8000))
 	send(t, c, wsMediaFrame("st-2", "inbound", 0, silence(160)))
 	send(t, c, wsMediaFrame("st-2", "inbound", 0, silence(160)))
 	send(t, c, wsMediaFrame("st-2", "inbound", 480, silence(160)))
@@ -358,7 +358,7 @@ func TestLossIsReportedAsGapAndDuplicatesDropped(t *testing.T) {
 }
 
 func TestDuplicateInJitterBufferCountedOnce(t *testing.T) {
-	h := newHarness(t, func(c *telnyx.StreamConfig) { c.JitterFrames = 4 })
+	h := newWSHarness(t, func(c *telnyx.StreamConfig) { c.JitterFrames = 4 })
 	c, msg := h.dial("v2:call-5", h.clk.Now())
 	if c == nil {
 		t.Fatal(msg)
@@ -366,7 +366,7 @@ func TestDuplicateInJitterBufferCountedOnce(t *testing.T) {
 	defer func() { _ = c.CloseNow() }()
 	s := h.session()
 	send(t, c, map[string]any{"event": "connected"})
-	send(t, c, startFrame("v2:call-5", "st-3", "PCMU", 8000))
+	send(t, c, wsStartFrame("v2:call-5", "st-3", "PCMU", 8000))
 	send(t, c, wsMediaFrame("st-3", "inbound", 160, silence(160)))
 	send(t, c, wsMediaFrame("st-3", "inbound", 160, silence(160)))
 	send(t, c, wsMediaFrame("st-3", "inbound", 0, silence(160)))
@@ -386,19 +386,19 @@ func TestProtocolViolationsCloseSession(t *testing.T) {
 		},
 		"start for other call": func(c *websocket.Conn) {
 			send(t, c, map[string]any{"event": "connected"})
-			send(t, c, startFrame("v2:other", "st", "PCMU", 8000))
+			send(t, c, wsStartFrame("v2:other", "st", "PCMU", 8000))
 		},
 		"format mismatch": func(c *websocket.Conn) {
 			send(t, c, map[string]any{"event": "connected"})
-			send(t, c, startFrame("v2:call-6", "st", "L16", 16000))
+			send(t, c, wsStartFrame("v2:call-6", "st", "L16", 16000))
 		},
 		"binary frame": func(c *websocket.Conn) {
 			_ = c.Write(context.Background(), websocket.MessageBinary, []byte{1, 2, 3})
 		},
 		"duplicate start": func(c *websocket.Conn) {
 			send(t, c, map[string]any{"event": "connected"})
-			send(t, c, startFrame("v2:call-6", "st", "PCMU", 8000))
-			send(t, c, startFrame("v2:call-6", "st", "PCMU", 8000))
+			send(t, c, wsStartFrame("v2:call-6", "st", "PCMU", 8000))
+			send(t, c, wsStartFrame("v2:call-6", "st", "PCMU", 8000))
 		},
 		"malformed json": func(c *websocket.Conn) {
 			_ = c.Write(context.Background(), websocket.MessageText, []byte(`{"event":`))
@@ -414,13 +414,13 @@ func TestProtocolViolationsCloseSession(t *testing.T) {
 		},
 		"unknown mark echo": func(c *websocket.Conn) {
 			send(t, c, map[string]any{"event": "connected"})
-			send(t, c, startFrame("v2:call-6", "st", "PCMU", 8000))
+			send(t, c, wsStartFrame("v2:call-6", "st", "PCMU", 8000))
 			send(t, c, map[string]any{"event": "mark", "stream_id": "st", "mark": map[string]any{"name": "forged"}})
 		},
 	}
 	for name, run := range cases {
 		t.Run(name, func(t *testing.T) {
-			h := newHarness(t, nil)
+			h := newWSHarness(t, nil)
 			c, msg := h.dial("v2:call-6", h.clk.Now())
 			if c == nil {
 				t.Fatal(msg)
@@ -440,7 +440,7 @@ func TestProtocolViolationsCloseSession(t *testing.T) {
 }
 
 func TestIdleStreamTimesOut(t *testing.T) {
-	h := newHarness(t, func(c *telnyx.StreamConfig) { c.IdleTimeout = 50 * time.Millisecond })
+	h := newWSHarness(t, func(c *telnyx.StreamConfig) { c.IdleTimeout = 50 * time.Millisecond })
 	c, msg := h.dial("v2:call-7", h.clk.Now())
 	if c == nil {
 		t.Fatal(msg)
@@ -458,7 +458,7 @@ func TestIdleStreamTimesOut(t *testing.T) {
 }
 
 func TestEnqueueRejectsInvalidChunks(t *testing.T) {
-	h := newHarness(t, func(c *telnyx.StreamConfig) { c.OutboundQueue = 2 })
+	h := newWSHarness(t, func(c *telnyx.StreamConfig) { c.OutboundQueue = 2 })
 	c, msg := h.dial("v2:call-8", h.clk.Now())
 	if c == nil {
 		t.Fatal(msg)
@@ -466,7 +466,7 @@ func TestEnqueueRejectsInvalidChunks(t *testing.T) {
 	defer func() { _ = c.CloseNow() }()
 	s := h.session()
 	send(t, c, map[string]any{"event": "connected"})
-	send(t, c, startFrame("v2:call-8", "st-8", "PCMU", 8000))
+	send(t, c, wsStartFrame("v2:call-8", "st-8", "PCMU", 8000))
 	src := audio.SourceRef{ItemID: "item_9"}
 	if err := s.Enqueue(src, nil); err == nil {
 		t.Fatal("empty chunk accepted")
@@ -483,7 +483,7 @@ func TestEnqueueRejectsInvalidChunks(t *testing.T) {
 
 func TestBargeInClearPrecedesLaterChunksAndDiscardsQueued(t *testing.T) {
 	src := audio.SourceRef{ItemID: "item_barge"}
-	h := newHarnessWithAccept(t, nil, func(s *telnyx.MediaSession) {
+	h := newWSHarnessWithAccept(t, nil, func(s *telnyx.MediaSession) {
 		if err := s.Enqueue(src, silence(160)); err != nil {
 			t.Error(err)
 		}
@@ -503,7 +503,7 @@ func TestBargeInClearPrecedesLaterChunksAndDiscardsQueued(t *testing.T) {
 	s := h.session()
 	ctx := context.Background()
 	send(t, c, map[string]any{"event": "connected"})
-	send(t, c, startFrame("v2:call-9", "st-9", "PCMU", 8000))
+	send(t, c, wsStartFrame("v2:call-9", "st-9", "PCMU", 8000))
 
 	if got := readText(t, ctx, c); !strings.Contains(got, `"event":"clear"`) {
 		t.Fatalf("first frame after Clear must be clear, got %s", got)
@@ -527,7 +527,7 @@ func TestBargeInClearPrecedesLaterChunksAndDiscardsQueued(t *testing.T) {
 }
 
 func TestBargeInFlushesEchoesOfClearedChunks(t *testing.T) {
-	h := newHarness(t, nil)
+	h := newWSHarness(t, nil)
 	c, msg := h.dial("v2:call-10", h.clk.Now())
 	if c == nil {
 		t.Fatal(msg)
@@ -536,7 +536,7 @@ func TestBargeInFlushesEchoesOfClearedChunks(t *testing.T) {
 	s := h.session()
 	ctx := context.Background()
 	send(t, c, map[string]any{"event": "connected"})
-	send(t, c, startFrame("v2:call-10", "st-10", "PCMU", 8000))
+	send(t, c, wsStartFrame("v2:call-10", "st-10", "PCMU", 8000))
 
 	src := audio.SourceRef{ItemID: "item_flush"}
 	if err := s.Enqueue(src, silence(800)); err != nil {
@@ -573,7 +573,7 @@ func TestBargeInFlushesEchoesOfClearedChunks(t *testing.T) {
 }
 
 func TestStalledPeerFailsWithinWriteTimeout(t *testing.T) {
-	h := newHarness(t, func(c *telnyx.StreamConfig) {
+	h := newWSHarness(t, func(c *telnyx.StreamConfig) {
 		c.WriteTimeout = 100 * time.Millisecond
 		c.OutboundQueue = 512
 		c.MaxChunkBytes = 32000
@@ -585,7 +585,7 @@ func TestStalledPeerFailsWithinWriteTimeout(t *testing.T) {
 	defer func() { _ = c.CloseNow() }()
 	s := h.session()
 	send(t, c, map[string]any{"event": "connected"})
-	send(t, c, startFrame("v2:call-11", "st-11", "PCMU", 8000))
+	send(t, c, wsStartFrame("v2:call-11", "st-11", "PCMU", 8000))
 	src := audio.SourceRef{ItemID: "item_stall"}
 	big := silence(32000)
 	for i := 0; i < 512; i++ {
@@ -602,7 +602,7 @@ func TestStalledPeerFailsWithinWriteTimeout(t *testing.T) {
 }
 
 func TestEnqueueRejectsChunksShorterThanMinimum(t *testing.T) {
-	h := newHarness(t, nil)
+	h := newWSHarness(t, nil)
 	c, msg := h.dial("v2:call-12", h.clk.Now())
 	if c == nil {
 		t.Fatal(msg)
@@ -639,7 +639,7 @@ func TestNegotiatedFormatTableAcceptsOnlyExactMatch(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			h := newHarness(t, func(c *telnyx.StreamConfig) { c.Format = tc.negotiated })
+			h := newWSHarness(t, func(c *telnyx.StreamConfig) { c.Format = tc.negotiated })
 			c, msg := h.dial("v2:call-fmt", h.clk.Now())
 			if c == nil {
 				t.Fatal(msg)
@@ -647,7 +647,7 @@ func TestNegotiatedFormatTableAcceptsOnlyExactMatch(t *testing.T) {
 			defer func() { _ = c.CloseNow() }()
 			s := h.session()
 			send(t, c, map[string]any{"event": "connected"})
-			send(t, c, startFrame("v2:call-fmt", "st-f", tc.enc, tc.rate))
+			send(t, c, wsStartFrame("v2:call-fmt", "st-f", tc.enc, tc.rate))
 			if tc.wantOK {
 				send(t, c, map[string]any{"event": "stop", "stream_id": "st-f"})
 				<-s.Done()
