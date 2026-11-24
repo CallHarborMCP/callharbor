@@ -62,7 +62,7 @@ export function AIProfileForm({ csrfToken, onCreated }: AIProfileFormProps) {
     try {
       let apiSecretId: string | undefined;
       if (key.trim() !== "") {
-        apiSecretId = await createAIAPISecret(csrfToken, `${name.trim()} API key`, key.trim());
+        apiSecretId = await createAIAPISecret(csrfToken, `${name.trim()} API key ${Date.now()}`, key.trim());
       }
       await createAIProfile(csrfToken, {
         name: name.trim(),

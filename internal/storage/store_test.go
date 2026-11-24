@@ -35,7 +35,9 @@ func seedTenants(t *testing.T, s *Store) {
 			('bob', 'bob', 'user', 'hash', '` + testTime + `', '` + testTime + `')`,
 		`INSERT INTO secrets (id, owner_user_id, name, purpose, ciphertext, nonce, key_version, created_at) VALUES
 			('alice-key', 'alice', 'key', 'telnyx_api_key', x'00', x'00', 1, '` + testTime + `'),
-			('bob-key', 'bob', 'key', 'telnyx_api_key', x'00', x'00', 1, '` + testTime + `')`,
+			('bob-key', 'bob', 'key', 'telnyx_api_key', x'00', x'00', 1, '` + testTime + `'),
+			('alice-ai-key', 'alice', 'ai', 'ai_api_key', x'00', x'00', 1, '` + testTime + `'),
+			('bob-ai-key', 'bob', 'ai', 'ai_api_key', x'00', x'00', 1, '` + testTime + `')`,
 		`INSERT INTO telephony_profiles (id, owner_user_id, name, provider, caller_number, api_secret_id, created_at, updated_at) VALUES
 			('alice-tel', 'alice', 'main', 'telnyx', '+14155550100', 'alice-key', '` + testTime + `', '` + testTime + `'),
 			('bob-tel', 'bob', 'main', 'telnyx', '+14155550200', 'bob-key', '` + testTime + `', '` + testTime + `')`,

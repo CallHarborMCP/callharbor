@@ -40,11 +40,8 @@ func TestResolverIsOwnerScopedAndNeverLeaksKey(t *testing.T) {
 	}
 
 	err = f.tryBindForeignSecret(t, bobID, "ai-bob-foreign", f.aliceSecretID(t))
-	if err == nil {
-		t.Fatal("storage let bob bind alice's secret to his profile")
-	}
-	if !strings.Contains(err.Error(), "FOREIGN KEY") {
-		t.Fatalf("cross-owner bind rejected for the wrong reason: %v", err)
+	if !errors.Is(err, storage.ErrInvalidAIProfile) {
+		t.Fatalf("storage must refuse bob binding alice's secret with ErrInvalidAIProfile, got %v", err)
 	}
 
 	prof, err := res.Resolve(ctx, f.aliceID, "ai-alice")
@@ -94,18 +91,12 @@ func TestResolverRejectsWrongPurposeSecret(t *testing.T) {
 		t.Fatal(err)
 	}
 	ts := when.Format("2006-01-02T15:04:05.000Z")
-	if err := f.store.CreateAIProfile(ctx, storage.AIProfile{
+	err = f.store.CreateAIProfile(ctx, storage.AIProfile{
 		ID: "ai-wrongpurpose", OwnerUserID: f.aliceID, Name: "wp", Protocol: storage.AIProtocolRealtime,
 		EndpointURL: "wss://ai.example.test/v1", Model: "m", Voice: "v", APISecretID: telnyxSecret,
 		CreatedAt: ts, UpdatedAt: ts,
-	}); err != nil {
-		t.Fatal(err)
-	}
-	res, err := voicecall.NewResolver(f.store, f.secrets, pcmu, realtime.EndpointPolicy{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := res.Resolve(ctx, f.aliceID, "ai-wrongpurpose"); !errors.Is(err, voicecall.ErrNoAPIKey) {
-		t.Fatalf("telnyx secret used as ai key must fail closed, got %v", err)
+	})
+	if !errors.Is(err, storage.ErrInvalidAIProfile) {
+		t.Fatalf("telnyx secret used as ai key must be refused at write, got %v", err)
 	}
 }
