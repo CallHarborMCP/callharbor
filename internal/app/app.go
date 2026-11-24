@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/CallHarborMCP/callharbor/internal/aiprofile"
 	"github.com/CallHarborMCP/callharbor/internal/config"
 	"github.com/CallHarborMCP/callharbor/internal/identity"
 	"github.com/CallHarborMCP/callharbor/internal/server"
@@ -62,7 +63,9 @@ func Run(ctx context.Context, cfg config.Config, logger *slog.Logger, ln net.Lis
 		return fmt.Errorf("identity service: %w", err)
 	}
 
-	srv := server.New(logger, assets, identity.NewHandler(identitySvc).Register)
+	identityHandler := identity.NewHandler(identitySvc)
+	profiles := aiprofile.NewHandler(identityHandler, store, time.Now)
+	srv := server.New(logger, assets, identityHandler.Register, profiles.Register)
 	httpServer := &http.Server{
 		Handler:           srv.Handler(),
 		ReadHeaderTimeout: readHeaderTimeout,

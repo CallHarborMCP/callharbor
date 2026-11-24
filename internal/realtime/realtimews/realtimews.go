@@ -26,6 +26,7 @@ type Config struct {
 	Voice        string
 	Instructions string
 	Format       audio.Format
+	Headers      map[string]string
 	HTTPClient   *http.Client
 }
 
@@ -102,7 +103,10 @@ func Connect(ctx context.Context, c Config) (*Session, error) {
 	}
 	ctx, cancel := context.WithTimeout(ctx, realtime.HandshakeTimeout)
 	defer cancel()
-	h := http.Header{}
+	h, err := realtime.ValidateHeaders(c.Headers)
+	if err != nil {
+		return nil, err
+	}
 	h.Set("Authorization", "Bearer "+c.APIKey)
 	conn, _, err := websocket.Dial(ctx, u.String(), &websocket.DialOptions{HTTPHeader: h, HTTPClient: c.HTTPClient})
 	if err != nil {
@@ -243,7 +247,7 @@ func (s *Session) Cancel(ctx context.Context) error {
 func (s *Session) Next(ctx context.Context) (realtime.Event, error) {
 	m, err := s.readRaw(ctx)
 	if err != nil {
-		return realtime.Event{}, err
+		return realtime.Event{}, realtime.Transport(err)
 	}
 	return ParseServerEvent(m.raw)
 }
