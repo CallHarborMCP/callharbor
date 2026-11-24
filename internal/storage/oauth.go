@@ -437,6 +437,15 @@ func (s *Store) ListOAuthGrants(ctx context.Context, userID string) ([]OAuthGran
 	return out, rows.Err()
 }
 
+// TouchOAuthGrant records a use of a grant at now. It only writes when the
+// stored value is older than before, so concurrent callers cannot move it back.
+func (s *Store) TouchOAuthGrant(ctx context.Context, grantID, now, before string) error {
+	_, err := s.db.ExecContext(ctx,
+		"UPDATE oauth_grants SET last_used_at = ? WHERE id = ? AND (last_used_at IS NULL OR last_used_at < ?)",
+		now, grantID, before)
+	return err
+}
+
 // GetOAuthGrantByID returns a grant regardless of owner, including revoked
 // grants (RevokedAt is set). Token paths use it to check grant state.
 func (s *Store) GetOAuthGrantByID(ctx context.Context, grantID string) (OAuthGrant, error) {

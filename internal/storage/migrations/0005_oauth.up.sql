@@ -8,6 +8,8 @@ CREATE TABLE oauth_clients (
     client_name TEXT NOT NULL DEFAULT '' CHECK (length(client_name) <= 256),
     client_uri TEXT NOT NULL DEFAULT '' CHECK (length(client_uri) <= 2048),
     redirect_uris_json TEXT NOT NULL CHECK (json_valid(redirect_uris_json) AND json_type(redirect_uris_json) = 'array'),
+    grant_types_json TEXT NOT NULL DEFAULT '["authorization_code","refresh_token"]'
+        CHECK (json_valid(grant_types_json) AND json_type(grant_types_json) = 'array'),
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
     CHECK (source = 'dynamic' OR client_id LIKE 'https://%')
