@@ -1,6 +1,7 @@
 package oauth
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"net/http"
@@ -28,18 +29,25 @@ func (f *fixture) deactivate(userID string) {
 	}
 }
 
+// testAuth stands in for the identity adapter: every request is the given user.
+func testAuth(userID string) Authenticator {
+	return func(http.ResponseWriter, *http.Request) (string, bool) { return userID, true }
+}
+
 // consentFor simulates the signed-in user answering the consent screen. It
-// drives the decision through ServeDecision over real HTTP.
+// drives the decision through the JSON consent API over real HTTP.
 func (f *fixture) consentFor(requestID string, approve bool) *url.URL {
 	f.t.Helper()
-	decision := "false"
-	if approve {
-		decision = "true"
+	payload, err := json.Marshal(map[string]bool{"approve": approve})
+	if err != nil {
+		f.t.Fatal(err)
 	}
-	resp, err := http.PostForm(f.http.URL+"/oauth/consent/decision", url.Values{
-		"request": {requestID},
-		"approve": {decision},
-	})
+	req, err := http.NewRequest(http.MethodPost, f.http.URL+"/api/oauth/requests/"+requestID+"/decision", bytes.NewReader(payload))
+	if err != nil {
+		f.t.Fatal(err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		f.t.Fatal(err)
 	}

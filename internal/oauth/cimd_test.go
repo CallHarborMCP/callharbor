@@ -136,9 +136,7 @@ func (f *fixture) serve(srv *Server) {
 	}
 	mux := http.NewServeMux()
 	f.srv.Register(mux)
-	mux.Handle("POST /oauth/consent/decision", f.srv.ServeDecision(func(*http.Request) (string, bool) {
-		return f.userID, true
-	}))
+	f.srv.RegisterConsentAPI(mux, testAuth(f.userID), testAuth(f.userID))
 	f.http = httptest.NewServer(mux)
 	f.t.Cleanup(f.http.Close)
 }

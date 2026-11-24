@@ -65,13 +65,17 @@ func TestDecisionCannotBeMadeOnAnotherUsersRequest(t *testing.T) {
 	}
 }
 
-func TestServeDecisionRejectsUnauthenticatedCaller(t *testing.T) {
+func TestDecisionAPIRejectsUnauthenticatedCaller(t *testing.T) {
 	f := newFixture(t)
-	h := f.srv.ServeDecision(func(*http.Request) (string, bool) { return "", false })
+	mux := http.NewServeMux()
+	f.srv.RegisterConsentAPI(mux, testAuth(""), func(w http.ResponseWriter, _ *http.Request) (string, bool) {
+		writeNoStore(w, http.StatusUnauthorized, map[string]string{"error": "unauthenticated"})
+		return "", false
+	})
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader("request=x&approve=true"))
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	h(rec, req)
+	req := httptest.NewRequest(http.MethodPost, "/api/oauth/requests/x/decision", strings.NewReader(`{"approve":true}`))
+	req.Header.Set("Content-Type", "application/json")
+	mux.ServeHTTP(rec, req)
 	if rec.Code != http.StatusUnauthorized {
 		t.Fatalf("status = %d, want 401", rec.Code)
 	}
@@ -80,28 +84,37 @@ func TestServeDecisionRejectsUnauthenticatedCaller(t *testing.T) {
 	}
 }
 
-func TestServeDecisionRejectsUnknownRequestAsNotFound(t *testing.T) {
+func TestDecisionAPIRejectsUnknownRequestAsNotFound(t *testing.T) {
 	f := newFixture(t)
-	h := f.srv.ServeDecision(func(*http.Request) (string, bool) { return f.userID, true })
+	mux := http.NewServeMux()
+	f.srv.RegisterConsentAPI(mux, testAuth(f.userID), testAuth(f.userID))
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader("request=cho_q_missing&approve=true"))
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	h(rec, req)
+	req := httptest.NewRequest(http.MethodPost, "/api/oauth/requests/cho_q_missing/decision", strings.NewReader(`{"approve":true}`))
+	req.Header.Set("Content-Type", "application/json")
+	mux.ServeHTTP(rec, req)
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("status = %d, want 404", rec.Code)
 	}
 }
 
-func TestServeDecisionRejectsMalformedBody(t *testing.T) {
+func TestDecisionAPIRejectsMalformedBody(t *testing.T) {
 	f := newFixture(t)
-	h := f.srv.ServeDecision(func(*http.Request) (string, bool) { return f.userID, true })
-	rec := httptest.NewRecorder()
-	// A lone percent sign is not valid form encoding.
-	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader("request=%zz"))
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	h(rec, req)
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("status = %d, want 400", rec.Code)
+	mux := http.NewServeMux()
+	f.srv.RegisterConsentAPI(mux, testAuth(f.userID), testAuth(f.userID))
+	for name, body := range map[string]string{
+		"not json":        `approve=true`,
+		"missing approve": `{}`,
+		"unknown field":   `{"approve":true,"extra":1}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			rec := httptest.NewRecorder()
+			req := httptest.NewRequest(http.MethodPost, "/api/oauth/requests/x/decision", strings.NewReader(body))
+			req.Header.Set("Content-Type", "application/json")
+			mux.ServeHTTP(rec, req)
+			if rec.Code != http.StatusBadRequest {
+				t.Fatalf("status = %d, want 400", rec.Code)
+			}
+		})
 	}
 }
 

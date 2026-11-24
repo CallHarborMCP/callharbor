@@ -107,3 +107,49 @@ func hex64(c byte) string {
 	}
 	return string(b)
 }
+
+// TestTouchOAuthGrantOnlyMovesForward: a touch writes only when the stored value
+// is older than the threshold, so a stale caller cannot move last_used_at back.
+func TestTouchOAuthGrantOnlyMovesForward(t *testing.T) {
+	s := openOAuthFixture(t)
+	ctx := context.Background()
+	seedApprovedGrant(t, s, "req-touch", "grant-touch", hex64('t'))
+
+	if err := s.TouchOAuthGrant(ctx, "grant-touch", oauthNow, "2026-11-25T09:00:00.000Z"); err != nil {
+		t.Fatal(err)
+	}
+	g, err := s.GetOAuthGrantByID(ctx, "grant-touch")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if g.LastUsedAt != oauthNow {
+		t.Fatalf("first touch last_used_at = %q, want %q", g.LastUsedAt, oauthNow)
+	}
+
+	// A touch whose threshold is older than the stored value must not write.
+	if err := s.TouchOAuthGrant(ctx, "grant-touch", oauthLater, "2026-11-25T09:59:00.000Z"); err != nil {
+		t.Fatal(err)
+	}
+	g, _ = s.GetOAuthGrantByID(ctx, "grant-touch")
+	if g.LastUsedAt != oauthNow {
+		t.Fatalf("touch inside the throttle window moved last_used_at to %q", g.LastUsedAt)
+	}
+
+	// Once the stored value is older than the threshold, the write lands.
+	if err := s.TouchOAuthGrant(ctx, "grant-touch", oauthLater, oauthLater); err != nil {
+		t.Fatal(err)
+	}
+	g, _ = s.GetOAuthGrantByID(ctx, "grant-touch")
+	if g.LastUsedAt != oauthLater {
+		t.Fatalf("touch after the window = %q, want %q", g.LastUsedAt, oauthLater)
+	}
+}
+
+// TestTouchOAuthGrantUnknownIsNoOp: touching a missing grant updates nothing
+// and reports no error, because the resource path treats the write as best effort.
+func TestTouchOAuthGrantUnknownIsNoOp(t *testing.T) {
+	s := openOAuthFixture(t)
+	if err := s.TouchOAuthGrant(context.Background(), "missing", oauthNow, oauthNow); err != nil {
+		t.Fatalf("touch of unknown grant: %v", err)
+	}
+}
