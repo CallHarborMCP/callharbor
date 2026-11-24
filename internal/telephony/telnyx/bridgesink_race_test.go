@@ -2,6 +2,7 @@ package telnyx_test
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"sync"
 	"testing"
@@ -67,6 +68,79 @@ func TestBridgeSinkConcurrentAgentAudioMarksAndInterrupts(t *testing.T) {
 	defer sendMu.Unlock()
 	if sent == 0 {
 		t.Fatal("no frames sent")
+	}
+}
+
+func TestBridgeSinkInterruptCannotOvertakeInFlightAgentAudio(t *testing.T) {
+	b, err := voicebridge.New(g711, g711, time.Millisecond, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	var mu sync.Mutex
+	var order []string
+	var calls int
+	s, err := telnyx.NewBridgeSink(b, func(ctx context.Context, msg []byte) error {
+		var m struct {
+			Event string `json:"event"`
+		}
+		if err := json.Unmarshal(msg, &m); err != nil {
+			return err
+		}
+		mu.Lock()
+		calls++
+		first := calls == 1
+		mu.Unlock()
+		if first {
+			close(entered)
+			<-release
+		}
+		mu.Lock()
+		order = append(order, m.Event)
+		mu.Unlock()
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	chunk := make([]byte, 160)
+	for i := range chunk {
+		chunk[i] = audio.LinearToUlaw(int16(i * 50))
+	}
+	ctx := context.Background()
+	audioDone := make(chan error, 1)
+	go func() {
+		audioDone <- s.AgentAudio(ctx, audio.SourceRef{ItemID: "item-a"}, chunk)
+	}()
+	<-entered
+	interruptDone := make(chan error, 1)
+	go func() {
+		interruptDone <- s.Interrupt(ctx)
+	}()
+	time.Sleep(50 * time.Millisecond)
+	close(release)
+	select {
+	case err := <-audioDone:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("agent audio never finished")
+	}
+	select {
+	case err := <-interruptDone:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("interrupt never finished")
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	want := []string{"media", "mark", "clear"}
+	if fmt.Sprint(order) != fmt.Sprint(want) {
+		t.Fatalf("wire order %v, want %v", order, want)
 	}
 }
 

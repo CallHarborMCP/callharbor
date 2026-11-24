@@ -141,6 +141,7 @@ func dispatch(ctx context.Context, sink *MediaSink, f Frame, send Send, newSink 
 // AgentAudio, which sends the converted media and its playout mark back to
 // Telnyx. Mark echoes update the playout ledger.
 type BridgeSink struct {
+	wmu        sync.Mutex
 	mu         sync.Mutex
 	bridge     *voicebridge.Bridge
 	send       Send
@@ -205,7 +206,11 @@ func (s *BridgeSink) Error(f Frame) error {
 func (s *BridgeSink) Close() error { return nil }
 
 // AgentAudio sends one provider output chunk to Telnyx followed by its mark.
+// wmu is held from the cut check through the media and mark writes, so a
+// concurrent Interrupt cannot put clear between them or before them.
 func (s *BridgeSink) AgentAudio(ctx context.Context, src audio.SourceRef, provider []byte) error {
+	s.wmu.Lock()
+	defer s.wmu.Unlock()
 	s.mu.Lock()
 	if src.ItemID != "" && s.cut[src.ItemID] {
 		s.mu.Unlock()
@@ -231,8 +236,11 @@ func (s *BridgeSink) AgentAudio(ctx context.Context, src audio.SourceRef, provid
 	return s.send(ctx, markMsg)
 }
 
-// Interrupt records a barge-in cut and sends Telnyx the clear command.
+// Interrupt records a barge-in cut and sends Telnyx the clear command. The
+// cut and clear are ordered after any agent media already being written.
 func (s *BridgeSink) Interrupt(ctx context.Context) error {
+	s.wmu.Lock()
+	defer s.wmu.Unlock()
 	s.mu.Lock()
 	s.bridge.Interrupt(time.Now())
 	if s.hasLast && s.lastItem != "" {
