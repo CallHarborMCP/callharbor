@@ -30,12 +30,12 @@ type Config struct {
 }
 
 func formatJSON(f audio.Format) (map[string]any, error) {
-	switch {
-	case f == audio.Format{Encoding: audio.L16, SampleRate: 24000, LittleEndian: true}:
+	switch f {
+	case audio.Format{Encoding: audio.L16, SampleRate: 24000, LittleEndian: true}:
 		return map[string]any{"type": "audio/pcm", "rate": 24000}, nil
-	case f == audio.Format{Encoding: audio.PCMU, SampleRate: 8000}:
+	case audio.Format{Encoding: audio.PCMU, SampleRate: 8000}:
 		return map[string]any{"type": "audio/pcmu"}, nil
-	case f == audio.Format{Encoding: audio.PCMA, SampleRate: 8000}:
+	case audio.Format{Encoding: audio.PCMA, SampleRate: 8000}:
 		return map[string]any{"type": "audio/pcma"}, nil
 	}
 	return nil, fmt.Errorf("%w: realtime_ws does not support %v", realtime.ErrCapability, f)
@@ -203,7 +203,7 @@ func (s *Session) write(ctx context.Context, b []byte) error {
 }
 
 func (s *Session) fail(err error) error {
-	s.conn.Close(websocket.StatusPolicyViolation, "protocol error")
+	_ = s.conn.Close(websocket.StatusPolicyViolation, "protocol error")
 	return err
 }
 

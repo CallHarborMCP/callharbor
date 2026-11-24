@@ -123,7 +123,6 @@ func (p *Playout) Advance(d time.Duration) {
 		if rem > budget {
 			p.played = append(p.played, e.bytes[p.headPlayed:p.headPlayed+budget]...)
 			p.headPlayed += budget
-			consumed += budget
 			break
 		}
 		p.played = append(p.played, e.bytes[p.headPlayed:]...)
