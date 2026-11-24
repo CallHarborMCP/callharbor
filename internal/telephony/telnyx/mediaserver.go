@@ -176,7 +176,9 @@ func (s *BridgeSink) Media(f Frame) error {
 
 // Mark records a playout echo from Telnyx.
 func (s *BridgeSink) Mark(name string) error {
+	s.mu.Lock()
 	_, err := s.bridge.Echo(name, time.Now())
+	s.mu.Unlock()
 	return err
 }
 
@@ -201,7 +203,9 @@ func (s *BridgeSink) Close() error { return nil }
 
 // AgentAudio sends one provider output chunk to Telnyx followed by its mark.
 func (s *BridgeSink) AgentAudio(ctx context.Context, src audio.SourceRef, provider []byte) error {
+	s.mu.Lock()
 	payload, mark, err := s.bridge.AgentAudio(src, provider, time.Now())
+	s.mu.Unlock()
 	if err != nil {
 		return err
 	}
@@ -221,6 +225,8 @@ func (s *BridgeSink) AgentAudio(ctx context.Context, src audio.SourceRef, provid
 
 // Interrupt records a barge-in cut and sends Telnyx the clear command.
 func (s *BridgeSink) Interrupt(ctx context.Context) error {
+	s.mu.Lock()
 	s.bridge.Interrupt(time.Now())
+	s.mu.Unlock()
 	return s.send(ctx, ClearMessage())
 }
