@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"sync"
 	"time"
 
 	"github.com/coder/websocket"
@@ -140,6 +141,7 @@ func dispatch(ctx context.Context, sink *MediaSink, f Frame, send Send, newSink 
 // AgentAudio, which sends the converted media and its playout mark back to
 // Telnyx. Mark echoes update the playout ledger.
 type BridgeSink struct {
+	mu         sync.Mutex
 	bridge     *voicebridge.Bridge
 	send       Send
 	ToProvider func(provider []byte) error
@@ -160,7 +162,9 @@ func (s *BridgeSink) Media(f Frame) error {
 	if f.Track != "inbound" {
 		return nil
 	}
+	s.mu.Lock()
 	p, err := s.bridge.CallerAudio(f.Payload)
+	s.mu.Unlock()
 	if err != nil {
 		return err
 	}
