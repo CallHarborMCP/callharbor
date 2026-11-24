@@ -5,16 +5,26 @@ import (
 	"testing"
 )
 
-func TestAssetsExposeEmbeddedIndex(t *testing.T) {
+func TestAssetsExposeEmbeddedDirectory(t *testing.T) {
 	assets, err := Assets()
 	if err != nil {
 		t.Fatalf("Assets: %v", err)
 	}
-	data, err := fs.ReadFile(assets, "index.html")
-	if err != nil {
-		t.Fatalf("read index.html: %v", err)
+	if _, err := fs.Stat(assets, ".gitkeep"); err != nil {
+		t.Fatalf("embedded directory missing .gitkeep: %v", err)
 	}
-	if len(data) == 0 {
-		t.Fatal("embedded index.html is empty")
+}
+
+func TestBuiltAssetsContainIndexWhenSynced(t *testing.T) {
+	assets, err := Assets()
+	if err != nil {
+		t.Fatalf("Assets: %v", err)
+	}
+	if _, err := fs.Stat(assets, "index.html"); err != nil {
+		t.Skip("web UI not built; run scripts/build-web.sh")
+	}
+	data, err := fs.ReadFile(assets, "index.html")
+	if err != nil || len(data) == 0 {
+		t.Fatalf("embedded index.html unreadable or empty: %v", err)
 	}
 }
