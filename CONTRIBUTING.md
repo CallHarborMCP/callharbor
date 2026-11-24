@@ -1,6 +1,6 @@
 # Contributing to CallHarbor
 
-Thank you for considering a contribution. CallHarbor is pre-release: the repository currently holds product specifications and verification scaffolding, not a working application.
+Thank you for considering a contribution to CallHarbor.
 
 ## Reporting problems
 
@@ -14,7 +14,7 @@ Thank you for considering a contribution. CallHarbor is pre-release: the reposit
 3. Keep each pull request focused on one change and explain why it is needed.
 4. Pull requests must pass the required CI check (`required`) and receive independent review before merge. Direct commits to `main` are not accepted.
 
-The canonical product, architecture, security and API contracts are in `.agents/`. Changes that alter product scope, security requirements or other locked contracts need explicit owner authorization and cannot be merged on the strength of a pull request alone.
+The canonical product, architecture, security and API contracts are in `.agents/`. GitHub issues define planned changes and release scope. An explicit owner-authorized issue changing a locked contract authorizes the corresponding contract and lock-manifest updates in the reviewed PR; no separate release specification is needed.
 
 ## Acceptable contributions
 
@@ -37,7 +37,7 @@ Run the full command without `--quick` only when you need the production Docker 
 ## Code style
 
 - Go code must be formatted with `gofmt` and pass `go vet`, `golangci-lint`, `gosec`, `govulncheck` and `go test -race`.
-- TypeScript and React code must pass the lint and type checks configured in the repository once they exist. The style guides and enforced tooling are described in `.agents/CODE_QUALITY.md`.
+- TypeScript and React code must pass the lint and type checks configured in the repository. The style guides and enforced tooling are described in `.agents/CODE_QUALITY.md`.
 - Secrets must never be committed. `gitleaks` scans the full git history and the working tree.
 
 ## Testing policy
