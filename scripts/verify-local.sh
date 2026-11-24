@@ -48,7 +48,7 @@ if [[ "$MODE" == --full ]]; then
     trap - EXIT
   fi
   if [[ -f web/playwright.config.ts ]]; then
-    (cd web && npx playwright test)
+    (cd web && npx playwright install --with-deps chromium && npx playwright test)
   fi
 fi
 
