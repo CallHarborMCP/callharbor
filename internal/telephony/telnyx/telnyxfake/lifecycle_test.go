@@ -294,7 +294,7 @@ func TestSignedStreamLifecycleSurfacesProviderEventsThroughRealtime(t *testing.T
 
 	gotTranscript, gotUsage, gotError := false, false, false
 	deadline := time.After(5 * time.Second)
-	for !(gotTranscript && gotUsage && gotError) {
+	for !gotTranscript || !gotUsage || !gotError {
 		select {
 		case ev := <-events:
 			switch {
