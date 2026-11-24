@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
+	"net/url"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -16,6 +17,10 @@ const (
 	EnvDataDir         = "CALLHARBOR_DATA_DIR"
 	EnvLogLevel        = "CALLHARBOR_LOG_LEVEL"
 	EnvShutdownTimeout = "CALLHARBOR_SHUTDOWN_TIMEOUT"
+	// EnvPublicURL is the absolute public origin of this installation, for
+	// example https://callharbor.example.com. It is the OAuth issuer and the
+	// MCP resource base. When unset, OAuth and MCP routes are not mounted.
+	EnvPublicURL = "CALLHARBOR_PUBLIC_URL"
 
 	defaultListenAddr      = ":8080"
 	defaultDataDir         = "/data"
@@ -28,6 +33,9 @@ type Config struct {
 	DataDir         string
 	LogLevel        slog.Level
 	ShutdownTimeout time.Duration
+	// PublicURL is the normalized origin (scheme://host[:port], no trailing
+	// slash). Empty means OAuth/MCP routes are disabled.
+	PublicURL string
 }
 
 func Load(getenv func(string) string) (Config, error) {
@@ -68,10 +76,63 @@ func Load(getenv func(string) string) (Config, error) {
 		}
 	}
 
+	if raw := strings.TrimSpace(getenv(EnvPublicURL)); raw != "" {
+		origin, err := parsePublicURL(raw)
+		if err != nil {
+			errs = append(errs, fmt.Errorf("%s: %w", EnvPublicURL, err))
+		} else {
+			cfg.PublicURL = origin
+		}
+	}
+
 	if err := errors.Join(errs...); err != nil {
 		return Config{}, fmt.Errorf("invalid configuration: %w", err)
 	}
 	return cfg, nil
+}
+
+// parsePublicURL accepts an absolute origin. https is required except for
+// loopback hosts, which may use http for local development. Paths, queries,
+// fragments, userinfo and empty hosts are rejected. A trailing slash is
+// normalized away.
+func parsePublicURL(raw string) (string, error) {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return "", errors.New("must be an absolute origin such as https://callharbor.example.com")
+	}
+	if u.Opaque != "" || u.User != nil || u.Host == "" || u.RawQuery != "" || u.Fragment != "" || u.ForceQuery {
+		return "", errors.New("must be an origin with no userinfo, query or fragment")
+	}
+	if u.Path != "" && u.Path != "/" {
+		return "", errors.New("must not contain a path")
+	}
+	host := u.Hostname()
+	if host == "" {
+		return "", errors.New("must include a host")
+	}
+	switch u.Scheme {
+	case "https":
+	case "http":
+		if !isLoopbackHost(host) {
+			return "", errors.New("http is allowed only for loopback hosts; use https")
+		}
+	default:
+		return "", errors.New("scheme must be https (or http for loopback hosts)")
+	}
+	if p := u.Port(); p != "" {
+		if n, err := strconv.Atoi(p); err != nil || n < 1 || n > 65535 {
+			return "", errors.New("port must be between 1 and 65535")
+		}
+	}
+	return u.Scheme + "://" + u.Host, nil
+}
+
+func isLoopbackHost(host string) bool {
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }
 
 func validateListenAddr(addr string) error {

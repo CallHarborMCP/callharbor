@@ -240,6 +240,9 @@ func (s *Store) UpdateUser(ctx context.Context, id string, role *string, active 
 			"UPDATE sessions SET revoked_at = ? WHERE user_id = ? AND revoked_at IS NULL", now, id); err != nil {
 			return err
 		}
+		if err := revokeUserOAuthGrants(ctx, tx, id, now); err != nil {
+			return err
+		}
 	}
 	if err := insertAudit(ctx, tx, audit); err != nil {
 		return err

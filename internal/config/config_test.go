@@ -101,3 +101,48 @@ func TestLoadReportsAllErrorsTogether(t *testing.T) {
 		}
 	}
 }
+
+func TestLoadPublicURL(t *testing.T) {
+	valid := map[string]string{
+		"https://callharbor.example.com":  "https://callharbor.example.com",
+		"https://callharbor.example.com/": "https://callharbor.example.com",
+		"https://Example.com:8443/":       "https://Example.com:8443",
+		"http://127.0.0.1:8080":           "http://127.0.0.1:8080",
+		"http://localhost:8080/":          "http://localhost:8080",
+		"http://[::1]:8080":               "http://[::1]:8080",
+	}
+	for in, want := range valid {
+		cfg, err := Load(env(map[string]string{EnvPublicURL: in}))
+		if err != nil {
+			t.Errorf("Load(%q) error = %v", in, err)
+			continue
+		}
+		if cfg.PublicURL != want {
+			t.Errorf("Load(%q).PublicURL = %q, want %q", in, cfg.PublicURL, want)
+		}
+	}
+
+	unset, err := Load(env(nil))
+	if err != nil || unset.PublicURL != "" {
+		t.Fatalf("unset PublicURL = %q, err = %v; want empty", unset.PublicURL, err)
+	}
+
+	invalid := []string{
+		"http://callharbor.example.com",
+		"https://callharbor.example.com/mcp",
+		"https://callharbor.example.com?x=1",
+		"https://callharbor.example.com#frag",
+		"https://user:pw@callharbor.example.com",
+		"ftp://callharbor.example.com",
+		"callharbor.example.com",
+		"https://",
+		"https://callharbor.example.com:99999",
+	}
+	for _, in := range invalid {
+		if _, err := Load(env(map[string]string{EnvPublicURL: in})); err == nil {
+			t.Errorf("Load(%q) error = nil, want rejection", in)
+		} else if !strings.Contains(err.Error(), EnvPublicURL) {
+			t.Errorf("Load(%q) error %q does not name %s", in, err, EnvPublicURL)
+		}
+	}
+}
