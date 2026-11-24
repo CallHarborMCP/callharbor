@@ -12,7 +12,6 @@ import (
 
 type fakeSession struct {
 	events    chan realtime.Event
-	nextErr   error
 	closed    chan struct{}
 	closeOnce sync.Once
 	appendMu  sync.Mutex
