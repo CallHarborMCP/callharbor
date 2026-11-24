@@ -1,6 +1,7 @@
 import { useState, type FormEvent } from "react";
 import {
   AIProfileError,
+  createAIAPISecret,
   createAIProfile,
   MAX_INSTRUCTIONS,
   PROTOCOL_LABELS,
@@ -32,6 +33,7 @@ export function AIProfileForm({ csrfToken, onCreated }: AIProfileFormProps) {
   const [model, setModel] = useState("");
   const [voice, setVoice] = useState("");
   const [instructions, setInstructions] = useState("");
+  const [apiKey, setAPIKey] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
@@ -56,7 +58,12 @@ export function AIProfileForm({ csrfToken, onCreated }: AIProfileFormProps) {
     }
     setError(null);
     setBusy(true);
+    const key = apiKey;
     try {
+      let apiSecretId: string | undefined;
+      if (key.trim() !== "") {
+        apiSecretId = await createAIAPISecret(csrfToken, `${name.trim()} API key`, key.trim());
+      }
       await createAIProfile(csrfToken, {
         name: name.trim(),
         protocol,
@@ -64,6 +71,7 @@ export function AIProfileForm({ csrfToken, onCreated }: AIProfileFormProps) {
         model: model.trim(),
         voice: voice.trim(),
         instructions,
+        api_secret_id: apiSecretId,
       });
       onCreated(name.trim());
       setName("");
@@ -74,6 +82,7 @@ export function AIProfileForm({ csrfToken, onCreated }: AIProfileFormProps) {
     } catch (caught) {
       setError(describe(caught));
     } finally {
+      setAPIKey("");
       setBusy(false);
     }
   }
@@ -118,6 +127,16 @@ export function AIProfileForm({ csrfToken, onCreated }: AIProfileFormProps) {
         <div>
           <label htmlFor="profile-voice">Voice</label>
           <input id="profile-voice" autoComplete="off" value={voice} onChange={(event) => setVoice(event.target.value)} />
+        </div>
+        <div>
+          <label htmlFor="profile-api-key">API key</label>
+          <input
+            id="profile-api-key"
+            type="password"
+            autoComplete="new-password"
+            value={apiKey}
+            onChange={(event) => setAPIKey(event.target.value)}
+          />
         </div>
         <div>
           <label htmlFor="profile-instructions">Instructions</label>

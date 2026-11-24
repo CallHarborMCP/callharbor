@@ -57,6 +57,67 @@ describe("AIProfileForm", () => {
     expect(body.protocol).toBe("live_ws");
   });
 
+  it("stores the API key as a secret first and binds only its id on the profile", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ id: "sec_123", name: "x", purpose: "ai_api_key" }), { status: 201 }))
+      .mockResolvedValueOnce(new Response("{}", { status: 201 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const onCreated = vi.fn();
+    render(<AIProfileForm csrfToken="csrf-2" onCreated={onCreated} />);
+
+    fill("Name", "Front desk");
+    fill("Endpoint URL", "wss://api.example.com/live");
+    fill("Model", "gpt-live");
+    fill("Voice", "alloy");
+    fill("API key", "sk-form-secret-0042");
+    fireEvent.click(screen.getByRole("button", { name: "Save profile" }));
+
+    await waitFor(() => expect(onCreated).toHaveBeenCalledWith("Front desk"));
+    expect(fetchMock.mock.calls[0]?.[0]).toBe("/api/secrets");
+    expect(fetchMock.mock.calls[1]?.[0]).toBe("/api/ai-profiles");
+    const secretBody = String(fetchMock.mock.calls[0]?.[1]?.body);
+    expect(secretBody).toContain("sk-form-secret-0042");
+    const profileBody = String(fetchMock.mock.calls[1]?.[1]?.body);
+    expect(profileBody).toContain('"api_secret_id":"sec_123"');
+    expect(profileBody).not.toContain("sk-form-secret-0042");
+    expect((screen.getByLabelText("API key") as HTMLInputElement).value).toBe("");
+  });
+
+  it("creates a profile without a secret when no API key is entered", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response("{}", { status: 201 }));
+    vi.stubGlobal("fetch", fetchMock);
+    render(<AIProfileForm csrfToken="csrf-3" onCreated={() => {}} />);
+
+    fill("Name", "No key");
+    fill("Endpoint URL", "wss://api.example.com/live");
+    fill("Model", "m");
+    fill("Voice", "v");
+    fireEvent.click(screen.getByRole("button", { name: "Save profile" }));
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+    expect(fetchMock.mock.calls[0]?.[0]).toBe("/api/ai-profiles");
+  });
+
+  it("never shows the API key in an error and clears it after a failed save", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ error: { code: "secrets_unavailable" } }), { status: 503 }));
+    vi.stubGlobal("fetch", fetchMock);
+    render(<AIProfileForm csrfToken="csrf-4" onCreated={() => {}} />);
+
+    fill("Name", "Fails");
+    fill("Endpoint URL", "wss://api.example.com/live");
+    fill("Model", "m");
+    fill("Voice", "v");
+    fill("API key", "sk-must-not-show-77");
+    fireEvent.click(screen.getByRole("button", { name: "Save profile" }));
+
+    await waitFor(() => expect(screen.getByRole("alert")).toBeTruthy());
+    expect(document.body.textContent).not.toContain("sk-must-not-show-77");
+    expect((screen.getByLabelText("API key") as HTMLInputElement).value).toBe("");
+  });
+
   it("blocks plain ws to a remote host before sending", () => {
     const fetchMock = vi.fn();
     vi.stubGlobal("fetch", fetchMock);
