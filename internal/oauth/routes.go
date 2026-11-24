@@ -9,6 +9,7 @@ func (s *Server) Register(mux *http.ServeMux) {
 	mux.HandleFunc("GET /oauth/authorize", s.handleAuthorize)
 	mux.HandleFunc("POST /oauth/token", s.handleToken)
 	mux.HandleFunc("POST /oauth/revoke", s.handleRevoke)
+	mux.HandleFunc("POST /oauth/register", s.handleRegister)
 	mux.HandleFunc("GET /.well-known/oauth-authorization-server", s.handleMetadata)
 	mux.HandleFunc("GET /.well-known/openid-configuration", s.handleMetadata)
 }

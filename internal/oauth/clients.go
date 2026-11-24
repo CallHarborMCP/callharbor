@@ -26,19 +26,24 @@ func (r storeResolver) ResolveClient(ctx context.Context, clientID string) (Clie
 	if err := json.Unmarshal([]byte(c.RedirectURIs), &uris); err != nil {
 		return Client{}, fmt.Errorf("oauth: stored redirect_uris: %w", err)
 	}
+	var grants []string
+	if err := json.Unmarshal([]byte(c.GrantTypes), &grants); err != nil {
+		return Client{}, fmt.Errorf("oauth: stored grant_types: %w", err)
+	}
 	return Client{
-		ID:           c.ClientID,
-		Name:         c.ClientName,
-		URI:          c.ClientURI,
-		RedirectURIs: uris,
-		// Stored clients have no grant-type column, so they get the default.
+		ID:               c.ClientID,
+		Name:             c.ClientName,
+		URI:              c.ClientURI,
+		RedirectURIs:     uris,
+		GrantTypes:       grants,
 		MetadataDocument: c.Source == "metadata_document",
 	}, nil
 }
 
 // compositeResolver sends metadata-document URLs to CIMD and everything else
-// to storage. Every resolved metadata client is mirrored into oauth_clients,
-// because the authorization request and grant rows join that table.
+// to storage. A metadata client is mirrored into oauth_clients when it is
+// fetched, not on cache hits, because the authorization request and grant
+// rows join that table.
 type compositeResolver struct {
 	store Store
 	cimd  *cimdResolver
@@ -68,13 +73,31 @@ func (r *compositeResolver) ResolveClient(ctx context.Context, clientID string) 
 	if !isCIMDClientID(clientID) {
 		return r.db.ResolveClient(ctx, clientID)
 	}
-	c, err := r.cimd.ResolveClient(ctx, clientID)
+	c, fetched, err := r.cimd.resolve(ctx, clientID)
 	if err != nil {
 		return Client{}, ErrUnknownClient
 	}
+	if fetched {
+		if err := r.mirror(ctx, c); err != nil {
+			return Client{}, ErrUnknownClient
+		}
+	}
+	return c, nil
+}
+
+// mirror writes a freshly fetched metadata client into oauth_clients.
+func (r *compositeResolver) mirror(ctx context.Context, c Client) error {
 	uris, err := json.Marshal(c.RedirectURIs)
 	if err != nil {
-		return Client{}, fmt.Errorf("oauth: encode redirect_uris: %w", err)
+		return fmt.Errorf("oauth: encode redirect_uris: %w", err)
+	}
+	// An empty list stays empty so storage applies the default pair; a nil
+	// slice would otherwise encode as JSON null, which the column rejects.
+	var grants []byte
+	if len(c.GrantTypes) > 0 {
+		if grants, err = json.Marshal(c.GrantTypes); err != nil {
+			return fmt.Errorf("oauth: encode grant_types: %w", err)
+		}
 	}
 	now := formatTime(r.now())
 	if err := r.store.UpsertOAuthClient(ctx, storage.OAuthClient{
@@ -83,10 +106,12 @@ func (r *compositeResolver) ResolveClient(ctx context.Context, clientID string) 
 		ClientName:   c.Name,
 		ClientURI:    c.URI,
 		RedirectURIs: string(uris),
-		CreatedAt:    now,
-		UpdatedAt:    now,
+		GrantTypes:   string(grants),
+
+		CreatedAt: now,
+		UpdatedAt: now,
 	}); err != nil {
-		return Client{}, fmt.Errorf("oauth: mirror metadata client: %w", err)
+		return fmt.Errorf("oauth: mirror metadata client: %w", err)
 	}
-	return c, nil
+	return nil
 }

@@ -119,23 +119,24 @@ func policyControl(p realtime.EndpointPolicy) func(string, string, syscall.RawCo
 	}
 }
 
-// ResolveClient returns the cached or freshly fetched client. Every failure
-// maps to ErrUnknownClient, so authorize renders JSON and never redirects.
-func (r *cimdResolver) ResolveClient(ctx context.Context, clientID string) (Client, error) {
+// resolve returns the cached or freshly fetched client. fetched reports a cache
+// miss that hit the network, so the caller can persist it once. Failures are
+// returned as errors; the composite resolver maps them to ErrUnknownClient.
+func (r *cimdResolver) resolve(ctx context.Context, clientID string) (Client, bool, error) {
 	now := r.clock()
 	r.mu.Lock()
 	if e, ok := r.cache[clientID]; ok && now.Before(e.expires) {
 		r.mu.Unlock()
-		return e.client, nil
+		return e.client, false, nil
 	}
 	r.mu.Unlock()
 
 	c, ttl, err := r.fetch(ctx, clientID)
 	if err != nil {
-		return Client{}, ErrUnknownClient
+		return Client{}, false, err
 	}
 	r.store(clientID, c, now.Add(ttl))
-	return c, nil
+	return c, true, nil
 }
 
 func (r *cimdResolver) store(clientID string, c Client, expires time.Time) {
@@ -209,23 +210,11 @@ func validateCIMD(clientID string, doc cimdMetadata) (Client, error) {
 	if doc.TokenEndpointAuthMethod != "" && doc.TokenEndpointAuthMethod != string(oidc.AuthMethodNone) {
 		return Client{}, errors.New("oauth: metadata auth method must be none")
 	}
-	if len(doc.GrantTypes) > 0 {
-		hasCode := false
-		for _, g := range doc.GrantTypes {
-			switch g {
-			case "authorization_code":
-				hasCode = true
-			case "refresh_token":
-			default:
-				return Client{}, errors.New("oauth: metadata grant_type not supported")
-			}
-		}
-		if !hasCode {
-			return Client{}, errors.New("oauth: metadata grant_types must include authorization_code")
-		}
+	if err := checkGrantTypes(doc.GrantTypes); err != nil {
+		return Client{}, err
 	}
-	if len(doc.ResponseTypes) > 0 && (len(doc.ResponseTypes) != 1 || doc.ResponseTypes[0] != "code") {
-		return Client{}, errors.New("oauth: metadata response_types must be [code]")
+	if err := checkResponseTypes(doc.ResponseTypes); err != nil {
+		return Client{}, err
 	}
 	if utf8.RuneCountInString(doc.ClientName) > cimdMaxNameRunes {
 		return Client{}, errors.New("oauth: metadata client_name too long")
@@ -241,6 +230,36 @@ func validateCIMD(clientID string, doc cimdMetadata) (Client, error) {
 		GrantTypes:       append([]string(nil), doc.GrantTypes...),
 		MetadataDocument: true,
 	}, nil
+}
+
+// checkGrantTypes accepts an absent list, or a list drawn from
+// {authorization_code, refresh_token} that includes authorization_code.
+func checkGrantTypes(grants []string) error {
+	if len(grants) == 0 {
+		return nil
+	}
+	hasCode := false
+	for _, g := range grants {
+		switch g {
+		case "authorization_code":
+			hasCode = true
+		case "refresh_token":
+		default:
+			return errors.New("oauth: grant_type not supported")
+		}
+	}
+	if !hasCode {
+		return errors.New("oauth: grant_types must include authorization_code")
+	}
+	return nil
+}
+
+// checkResponseTypes accepts an absent list or exactly [code].
+func checkResponseTypes(types []string) error {
+	if len(types) > 0 && (len(types) != 1 || types[0] != "code") {
+		return errors.New("oauth: response_types must be [code]")
+	}
+	return nil
 }
 
 // cacheTTL reads max-age from a Cache-Control header, clamped to [0, 1h].

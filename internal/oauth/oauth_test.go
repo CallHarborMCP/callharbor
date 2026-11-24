@@ -3,7 +3,7 @@ package oauth
 import (
 	"context"
 	"encoding/json"
-	"fmt"
+
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -47,15 +47,7 @@ func (c *fixedClock) Advance(d time.Duration) {
 type registeredResolver struct{ store *storage.Store }
 
 func (r registeredResolver) ResolveClient(ctx context.Context, clientID string) (Client, error) {
-	c, err := r.store.GetOAuthClient(ctx, clientID)
-	if err != nil {
-		return Client{}, ErrUnknownClient
-	}
-	var uris []string
-	if err := json.Unmarshal([]byte(c.RedirectURIs), &uris); err != nil {
-		return Client{}, fmt.Errorf("oauth: stored redirect_uris: %w", err)
-	}
-	return Client{ID: c.ClientID, Name: c.ClientName, URI: c.ClientURI, RedirectURIs: uris}, nil
+	return storeResolver{store: r.store}.ResolveClient(ctx, clientID)
 }
 
 // fixture is a real SQLite store with a user, a registered client, and an

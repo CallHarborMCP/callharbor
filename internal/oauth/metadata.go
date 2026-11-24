@@ -31,6 +31,7 @@ func (s *Server) AuthorizationServerMetadata() Metadata {
 		AuthorizationEndpoint:             issuer + "/oauth/authorize",
 		TokenEndpoint:                     issuer + "/oauth/token",
 		RevocationEndpoint:                issuer + "/oauth/revoke",
+		RegistrationEndpoint:              issuer + "/oauth/register",
 		ClientIDMetadataDocumentSupported: true,
 		ScopesSupported:                   []string{ScopeRead, ScopeCall},
 		ResponseTypesSupported: []string{

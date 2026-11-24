@@ -1,6 +1,7 @@
 package oauth
 
 import (
+	"context"
 	"crypto/x509"
 	"encoding/json"
 	"net/http"
@@ -10,6 +11,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/CallHarborMCP/callharbor/internal/storage"
 )
 
 // metadataServer is a TLS test server that serves one client metadata document
@@ -121,8 +124,16 @@ func newCIMDFixture(t *testing.T, meta *metadataServer, allowPrivate bool) (*fix
 // resolver. The store, user and clock are unchanged.
 func (f *fixture) resetResolver(clients ClientResolver) {
 	f.t.Helper()
-	f.srv = NewServer(f.cfg, f.store, clients, f.clock.Now)
-	f.http.Close()
+	f.serve(NewServer(f.cfg, f.store, clients, f.clock.Now))
+}
+
+// serve replaces the fixture's server and HTTP front end with srv.
+func (f *fixture) serve(srv *Server) {
+	f.t.Helper()
+	f.srv = srv
+	if f.http != nil {
+		f.http.Close()
+	}
 	mux := http.NewServeMux()
 	f.srv.Register(mux)
 	mux.Handle("POST /oauth/consent/decision", f.srv.ServeDecision(func(*http.Request) (string, bool) {
@@ -367,5 +378,105 @@ func TestCIMDTTLExpiryRefetches(t *testing.T) {
 	resolve()
 	if n := meta.hits(); n != 2 {
 		t.Fatalf("fetches after expiry = %d, want 2", n)
+	}
+}
+
+// upsertCounter counts client upserts. Only UpsertOAuthClient is overridden;
+// every other Store method is the embedded real SQLite store.
+type upsertCounter struct {
+	*storage.Store
+	mu      sync.Mutex
+	upserts int
+}
+
+func (c *upsertCounter) UpsertOAuthClient(ctx context.Context, cl storage.OAuthClient) error {
+	c.mu.Lock()
+	c.upserts++
+	c.mu.Unlock()
+	return c.Store.UpsertOAuthClient(ctx, cl)
+}
+
+// TestCIMDMirrorsOnFetchOnly: the client row is written on the cache miss and
+// not again on cache hits.
+func TestCIMDMirrorsOnFetchOnly(t *testing.T) {
+	meta := newMetadataServer()
+	ts := httptest.NewTLSServer(meta)
+	t.Cleanup(ts.Close)
+	pool := x509.NewCertPool()
+	pool.AddCert(ts.Certificate())
+	f := newFixture(t)
+	cid := ts.URL + "/client.json"
+	setDoc(meta, cimdDoc(cid, nil))
+	counter := &upsertCounter{Store: f.store}
+	f.srv = NewServer(f.cfg, counter, newClientResolver(counter, f.clock.Now, cimdOptions{allowPrivate: true, rootCAs: pool}), f.clock.Now)
+	for i := 0; i < 3; i++ {
+		if _, err := f.srv.clients.ResolveClient(f.ctx, cid); err != nil {
+			t.Fatal(err)
+		}
+	}
+	counter.mu.Lock()
+	defer counter.mu.Unlock()
+	if counter.upserts != 1 {
+		t.Fatalf("upserts = %d, want 1 (fetch only)", counter.upserts)
+	}
+}
+
+// flakyResolver delegates to the real resolver until fail is set, then refuses
+// every client. It models a metadata document that disappears or becomes
+// unfetchable between authorization and a token request.
+type flakyResolver struct {
+	inner ClientResolver
+	fail  bool
+}
+
+func (r *flakyResolver) ResolveClient(ctx context.Context, clientID string) (Client, error) {
+	if r.fail {
+		return Client{}, ErrUnknownClient
+	}
+	return r.inner.ResolveClient(ctx, clientID)
+}
+
+// TestTokenTimeResolveFailureIsInvalidClient: if the client cannot be resolved
+// at refresh time, the answer is invalid_client (RFC 6749 section 5.2).
+func TestTokenTimeResolveFailureIsInvalidClient(t *testing.T) {
+	f := newFixture(t)
+	refresh := f.refreshTokenForDefaultClient(t)
+	flaky := &flakyResolver{inner: storeResolver{store: f.store}, fail: true}
+	f.serve(NewServer(f.cfg, f.store, flaky, f.clock.Now))
+	status, body := f.exchange(url.Values{
+		"grant_type":    {"refresh_token"},
+		"refresh_token": {refresh},
+		"client_id":     {testClientID},
+	})
+	// No Authorization header was sent, so RFC 6749 section 5.2 does not
+	// require 401; invalid_client is returned with 400.
+	if status != http.StatusBadRequest || body["error"] != "invalid_client" {
+		t.Fatalf("status=%d body=%v, want 400 invalid_client", status, body)
+	}
+}
+
+// TestRefreshRefusedWhenClientLostRefreshGrant: the client's registered grants
+// no longer include refresh_token, so refresh is unauthorized_client even
+// though the token itself is still valid.
+func TestRefreshRefusedWhenClientLostRefreshGrant(t *testing.T) {
+	f := newFixture(t)
+	refresh := f.refreshTokenForDefaultClient(t)
+	stored, err := f.store.GetOAuthClient(f.ctx, testClientID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stored.GrantTypes = `["authorization_code"]`
+	if err := f.store.UpsertOAuthClient(f.ctx, stored); err != nil {
+		t.Fatal(err)
+	}
+	// Resolve through storage so the stored grant types are what the gate sees.
+	f.serve(NewServer(f.cfg, f.store, storeResolver{store: f.store}, f.clock.Now))
+	status, body := f.exchange(url.Values{
+		"grant_type":    {"refresh_token"},
+		"refresh_token": {refresh},
+		"client_id":     {testClientID},
+	})
+	if status != http.StatusBadRequest || body["error"] != "unauthorized_client" {
+		t.Fatalf("status=%d body=%v, want 400 unauthorized_client", status, body)
 	}
 }

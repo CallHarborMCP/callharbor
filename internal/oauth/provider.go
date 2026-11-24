@@ -78,6 +78,8 @@ var ErrUnknownClient = errors.New("oauth: unknown client")
 type Store interface {
 	GetOAuthClient(ctx context.Context, clientID string) (storage.OAuthClient, error)
 	UpsertOAuthClient(ctx context.Context, c storage.OAuthClient) error
+	InsertDynamicOAuthClient(ctx context.Context, c storage.OAuthClient, audit storage.AuditEvent) error
+	CountDynamicOAuthClients(ctx context.Context, sinceISO string) (int, error)
 	InsertOAuthAuthRequest(ctx context.Context, r storage.OAuthAuthRequest) error
 	GetOAuthAuthRequest(ctx context.Context, id string) (storage.OAuthAuthRequest, error)
 	DecideOAuthAuthRequest(ctx context.Context, id, userID, now string) error

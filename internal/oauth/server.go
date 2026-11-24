@@ -27,14 +27,26 @@ type Server struct {
 	clients ClientResolver
 	clock   Clock
 	decoder *schema.Decoder
+	// registry limits dynamic registrations per client IP. registryCap is the
+	// global ceiling on dynamic clients; tests lower it through newServer.
+	registry    *registrationLimiter
+	registryCap int
 }
 
 // NewServer builds the authorization server. The configured public origin
 // must already be normalized by config.Load.
 func NewServer(cfg Config, store Store, clients ClientResolver, clock Clock) *Server {
+	return newServer(cfg, store, clients, clock, registerGlobalCap)
+}
+
+// newServer is NewServer with an explicit dynamic-client cap.
+func newServer(cfg Config, store Store, clients ClientResolver, clock Clock, registryCap int) *Server {
 	dec := schema.NewDecoder()
 	dec.IgnoreUnknownKeys(true)
-	return &Server{cfg: cfg, store: store, clients: clients, clock: clock, decoder: dec}
+	return &Server{
+		cfg: cfg, store: store, clients: clients, clock: clock, decoder: dec,
+		registry: newRegistrationLimiter(clock), registryCap: registryCap,
+	}
 }
 
 // formatTime renders t in the database timestamp layout, in UTC.

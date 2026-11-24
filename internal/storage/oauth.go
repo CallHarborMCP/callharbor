@@ -15,6 +15,7 @@ type OAuthClient struct {
 	ClientName   string
 	ClientURI    string
 	RedirectURIs string // JSON array
+	GrantTypes   string // JSON array; empty means the default pair
 	CreatedAt    string
 	UpdatedAt    string
 }
@@ -88,21 +89,40 @@ var ErrOAuthCodeConsumed = errors.New("oauth code already consumed")
 var ErrOAuthRequestNotDecidable = errors.New("oauth authorization request is not pending")
 
 func (s *Store) UpsertOAuthClient(ctx context.Context, c OAuthClient) error {
+	grants := c.GrantTypes
+	if grants == "" {
+		grants = `["authorization_code","refresh_token"]`
+	}
 	_, err := s.db.ExecContext(ctx, `INSERT INTO oauth_clients
-		(client_id, source, client_name, client_uri, redirect_uris_json, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?)
+		(client_id, source, client_name, client_uri, redirect_uris_json, grant_types_json, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT (client_id) DO UPDATE SET client_name = excluded.client_name, client_uri = excluded.client_uri,
-		redirect_uris_json = excluded.redirect_uris_json, updated_at = excluded.updated_at`,
-		c.ClientID, c.Source, c.ClientName, c.ClientURI, c.RedirectURIs, c.CreatedAt, c.UpdatedAt)
+		redirect_uris_json = excluded.redirect_uris_json, grant_types_json = excluded.grant_types_json,
+		updated_at = excluded.updated_at`,
+		c.ClientID, c.Source, c.ClientName, c.ClientURI, c.RedirectURIs, grants, c.CreatedAt, c.UpdatedAt)
 	return err
 }
 
 func (s *Store) GetOAuthClient(ctx context.Context, clientID string) (OAuthClient, error) {
 	var c OAuthClient
-	err := s.db.QueryRowContext(ctx, `SELECT client_id, source, client_name, client_uri, redirect_uris_json, created_at, updated_at
+	err := s.db.QueryRowContext(ctx, `SELECT client_id, source, client_name, client_uri, redirect_uris_json, grant_types_json, created_at, updated_at
 		FROM oauth_clients WHERE client_id = ?`, clientID).Scan(
-		&c.ClientID, &c.Source, &c.ClientName, &c.ClientURI, &c.RedirectURIs, &c.CreatedAt, &c.UpdatedAt)
+		&c.ClientID, &c.Source, &c.ClientName, &c.ClientURI, &c.RedirectURIs, &c.GrantTypes, &c.CreatedAt, &c.UpdatedAt)
 	return c, notFound(err)
+}
+
+// InsertDynamicOAuthClient stores a dynamically registered client and its audit
+// event in one transaction. A new client_id is never an update.
+func (s *Store) InsertDynamicOAuthClient(ctx context.Context, c OAuthClient, audit AuditEvent) error {
+	return s.inTx(ctx, func(tx *sql.Tx) error {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO oauth_clients
+			(client_id, source, client_name, client_uri, redirect_uris_json, grant_types_json, created_at, updated_at)
+			VALUES (?, 'dynamic', ?, ?, ?, ?, ?, ?)`,
+			c.ClientID, c.ClientName, c.ClientURI, c.RedirectURIs, c.GrantTypes, c.CreatedAt, c.UpdatedAt); err != nil {
+			return err
+		}
+		return insertAudit(ctx, tx, audit)
+	})
 }
 
 func (s *Store) CountDynamicOAuthClients(ctx context.Context, sinceISO string) (int, error) {

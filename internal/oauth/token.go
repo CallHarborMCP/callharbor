@@ -135,7 +135,9 @@ func (s *Server) exchangeCode(ctx context.Context, req *oidc.AccessTokenRequest,
 
 	client, err := s.clients.ResolveClient(ctx, row.ClientID)
 	if err != nil {
-		return nil, oidc.ErrInvalidGrant().WithDescription("client is unavailable")
+		// RFC 6749 section 5.2: the client failed to authenticate or is no
+		// longer known, so the server answers invalid_client.
+		return nil, oidc.ErrInvalidClient().WithDescription("client is unavailable")
 	}
 	return s.redeem(ctx, row, grant, now, clientMayRefresh(client))
 }
@@ -186,6 +188,13 @@ func (s *Server) refresh(ctx context.Context, req *oidc.RefreshTokenRequest, res
 	}
 	if err := s.checkUserActive(ctx, row.UserID); err != nil {
 		return nil, err
+	}
+	client, err := s.clients.ResolveClient(ctx, row.ClientID)
+	if err != nil {
+		return nil, oidc.ErrInvalidClient().WithDescription("client is unavailable")
+	}
+	if !clientMayRefresh(client) {
+		return nil, oidc.ErrUnauthorizedClient().WithDescription("client may not use refresh_token")
 	}
 	grant := grantFromToken(row)
 	// RFC 8707: an optional resource on refresh must match the grant. The grant
