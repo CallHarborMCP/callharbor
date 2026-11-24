@@ -32,7 +32,7 @@ func (c *RTPClock) Position(ts uint32, prevEnd int64) (pos int64, gap int64, err
 		c.last = ts
 		return 0, 0, nil
 	}
-	delta := int64(int32(ts - c.last))
+	delta := int64(int32(ts - c.last)) // #nosec G115 -- RFC 3550 serial-number wraparound is intended
 	next := c.ext + delta
 	if delta > maxRTPJump {
 		return 0, 0, fmt.Errorf("audio: RTP timestamp jump of %d samples", delta)

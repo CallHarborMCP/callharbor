@@ -53,7 +53,7 @@ func (r *Resampler) Process(dst []int16, src []int16) []int16 {
 			a, b := int64(at(idx)), int64(at(idx+1))
 			v = a + (b-a)*frac/r.out
 		}
-		dst = append(dst, int16(v))
+		dst = append(dst, int16(v)) // #nosec G115 -- linear interpolation between two int16 samples stays in range
 		r.outCount++
 	}
 	r.prev = src[len(src)-1]

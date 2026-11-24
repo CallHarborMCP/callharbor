@@ -22,9 +22,9 @@ func UlawToLinear(u byte) int16 {
 	sample := ((mantissa << 3) + ulawBias) << exponent
 	sample -= ulawBias
 	if u&0x80 != 0 {
-		return int16(-sample)
+		return int16(-sample) // #nosec G115 -- G.711 μ-law magnitude ≤ 32124 fits int16
 	}
-	return int16(sample)
+	return int16(sample) // #nosec G115 -- G.711 μ-law magnitude ≤ 32124 fits int16
 }
 
 // LinearToUlaw encodes one 16-bit sample as μ-law.
@@ -43,7 +43,7 @@ func LinearToUlaw(s int16) byte {
 	for mask := 0x4000; v&mask == 0 && exponent > 0; mask >>= 1 {
 		exponent--
 	}
-	mantissa := byte(v>>(exponent+3)) & 0x0F
+	mantissa := byte(v>>(exponent+3)) & 0x0F // #nosec G115 -- masked to 4 bits
 	return ^(sign | exponent<<4 | mantissa)
 }
 
@@ -84,9 +84,9 @@ func LinearToAlaw(s int16) byte {
 	}
 	aval := byte(seg << 4)
 	if seg < 2 {
-		aval |= byte(pcm>>1) & 0x0F
+		aval |= byte(pcm>>1) & 0x0F // #nosec G115 -- masked to 4 bits
 	} else {
-		aval |= byte(pcm>>seg) & 0x0F
+		aval |= byte(pcm>>seg) & 0x0F // #nosec G115 -- masked to 4 bits
 	}
 	return aval ^ mask
 }
@@ -108,9 +108,9 @@ func Decode(dst []int16, f Format, b []byte) ([]int16, error) {
 		}
 		for i := 0; i < len(b); i += 2 {
 			if f.LittleEndian {
-				dst = append(dst, int16(binary.LittleEndian.Uint16(b[i:])))
+				dst = append(dst, int16(binary.LittleEndian.Uint16(b[i:]))) // #nosec G115 -- two's-complement L16 reinterpretation
 			} else {
-				dst = append(dst, int16(binary.BigEndian.Uint16(b[i:])))
+				dst = append(dst, int16(binary.BigEndian.Uint16(b[i:]))) // #nosec G115 -- two's-complement L16 reinterpretation
 			}
 		}
 	default:
@@ -133,9 +133,9 @@ func Encode(dst []byte, f Format, s []int16) ([]byte, error) {
 	case L16:
 		for _, v := range s {
 			if f.LittleEndian {
-				dst = binary.LittleEndian.AppendUint16(dst, uint16(v))
+				dst = binary.LittleEndian.AppendUint16(dst, uint16(v)) // #nosec G115 -- two's-complement L16 reinterpretation
 			} else {
-				dst = binary.BigEndian.AppendUint16(dst, uint16(v))
+				dst = binary.BigEndian.AppendUint16(dst, uint16(v)) // #nosec G115 -- two's-complement L16 reinterpretation
 			}
 		}
 	default:

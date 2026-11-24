@@ -315,8 +315,11 @@ func TestEchoNegative(t *testing.T) {
 		t.Fatalf("got %v", err)
 	}
 	src := audio.SourceRef{ItemID: "x"}
-	b.ledger.Send(src, 160, b.fake.Now())
-	b.ledger.Send(src, 160, b.fake.Now())
+	for range 2 {
+		if _, err := b.ledger.Send(src, 160, b.fake.Now()); err != nil {
+			t.Fatal(err)
+		}
+	}
 	if _, err := b.ledger.Echo("ch-2", b.fake.Now().Add(time.Second)); !errors.Is(err, audio.ErrMarkOutOfOrder) {
 		t.Fatalf("got %v", err)
 	}

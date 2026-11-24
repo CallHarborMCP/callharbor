@@ -150,7 +150,7 @@ func (f *fakeLive) handler(t *testing.T) http.HandlerFunc {
 		if err != nil {
 			return
 		}
-		defer c.CloseNow()
+		defer func() { _ = c.CloseNow() }()
 		ctx := r.Context()
 		started := false
 		for {
@@ -345,7 +345,7 @@ func TestConnectFailsClosed(t *testing.T) {
 			if err != nil {
 				return
 			}
-			defer c.CloseNow()
+			defer func() { _ = c.CloseNow() }()
 			_ = c.Write(r.Context(), websocket.MessageText, []byte(`{"type":"session.created","event_id":"e","session":{"id":"sess_1"}}`))
 			_, _, _ = c.Read(r.Context())
 		}))
@@ -365,7 +365,7 @@ func TestCloseWithoutClosedIsUnconfirmed(t *testing.T) {
 		_, _, _ = c.Read(r.Context())
 		_ = c.Write(r.Context(), websocket.MessageText, []byte(`{"type":"session.started","session":{"id":"live_1"}}`))
 		_, _, _ = c.Read(r.Context())
-		c.Close(websocket.StatusGoingAway, "")
+		_ = c.Close(websocket.StatusGoingAway, "")
 	}))
 	defer srv.Close()
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
