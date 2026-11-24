@@ -38,6 +38,38 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/users/{id}", h.getUser)
 	mux.HandleFunc("PATCH /api/users/{id}", h.updateUser)
 	mux.HandleFunc("PUT /api/users/{id}/password", h.resetPassword)
+	mux.HandleFunc("GET /api/preferences/appearance", h.getAppearance)
+	mux.HandleFunc("PUT /api/preferences/appearance", h.setAppearance)
+}
+
+func (h *Handler) getAppearance(w http.ResponseWriter, r *http.Request) {
+	p, ok := h.authenticate(w, r)
+	if !ok {
+		return
+	}
+	a, err := h.svc.GetAppearance(r.Context(), p)
+	if err != nil {
+		writeServiceError(w, err)
+		return
+	}
+	writeOK(w, http.StatusOK, a)
+}
+
+func (h *Handler) setAppearance(w http.ResponseWriter, r *http.Request) {
+	p, ok := h.authenticateMutating(w, r)
+	if !ok {
+		return
+	}
+	var in Appearance
+	if !decode(w, r, &in) {
+		return
+	}
+	a, err := h.svc.SetAppearance(r.Context(), p, in)
+	if err != nil {
+		writeServiceError(w, err)
+		return
+	}
+	writeOK(w, http.StatusOK, a)
 }
 
 func (h *Handler) setupStatus(w http.ResponseWriter, r *http.Request) {
