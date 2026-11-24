@@ -148,6 +148,7 @@ type BridgeSink struct {
 	lastItem   string
 	hasLast    bool
 	cut        map[string]bool
+	liveCut    bool
 	ToProvider func(provider []byte) error
 	OnDTMF     func(digit string)
 	OnError    func(f Frame)
@@ -212,7 +213,11 @@ func (s *BridgeSink) AgentAudio(ctx context.Context, src audio.SourceRef, provid
 	s.wmu.Lock()
 	defer s.wmu.Unlock()
 	s.mu.Lock()
-	if src.ItemID != "" && s.cut[src.ItemID] {
+	gated := s.liveCut
+	if src.ItemID != "" {
+		gated = s.cut[src.ItemID]
+	}
+	if gated {
 		s.mu.Unlock()
 		return nil
 	}
@@ -246,6 +251,16 @@ func (s *BridgeSink) Interrupt(ctx context.Context) error {
 	if s.hasLast && s.lastItem != "" {
 		s.cut[s.lastItem] = true
 	}
+	s.liveCut = true
 	s.mu.Unlock()
 	return s.send(ctx, ClearMessage())
+}
+
+// CallerSpoke opens a new turn after a barge-in. Agent audio without an item
+// ID, which GPT-Live never carries, stays suppressed until the caller's
+// transcript arrives. Providers that tag items are gated per item instead.
+func (s *BridgeSink) CallerSpoke() {
+	s.mu.Lock()
+	s.liveCut = false
+	s.mu.Unlock()
 }

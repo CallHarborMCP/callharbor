@@ -37,6 +37,9 @@ type liveFake struct {
 	mu       sync.Mutex
 	inbound  [][]byte
 	outbound []byte
+	followup []byte
+	resumed  []byte
+	appends  int
 }
 
 func (f *liveFake) handler(t *testing.T) http.HandlerFunc {
@@ -72,7 +75,16 @@ func (f *liveFake) handler(t *testing.T) http.HandlerFunc {
 				}
 				f.mu.Lock()
 				f.inbound = append(f.inbound, raw)
+				f.appends++
+				n := f.appends
 				f.mu.Unlock()
+				if f.followup != nil && n == 2 {
+					_ = c.Write(ctx, websocket.MessageText, []byte(`{"type":"session.output_audio.delta","delta":"`+base64.StdEncoding.EncodeToString(f.followup)+`"}`))
+				}
+				if f.resumed != nil && n == 3 {
+					_ = c.Write(ctx, websocket.MessageText, []byte(`{"type":"session.input_transcript.delta","event_id":"evt_caller","delta":"hi","start_ms":0,"end_ms":100}`))
+					_ = c.Write(ctx, websocket.MessageText, []byte(`{"type":"session.output_audio.delta","delta":"`+base64.StdEncoding.EncodeToString(f.resumed)+`"}`))
+				}
 			case "session.close":
 				_ = c.Write(ctx, websocket.MessageText, []byte(`{"type":"session.closed","event_id":"evt_closed","reason":"close_requested","usage":{"seconds":1}}`))
 			}

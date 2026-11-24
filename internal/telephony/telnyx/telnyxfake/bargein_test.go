@@ -50,6 +50,19 @@ func TestSignedStreamBargeInClearsThroughRealtime(t *testing.T) {
 	})
 }
 
+func TestSignedStreamBargeInSuppressesStreamingLiveAudio(t *testing.T) {
+	agent, _ := testAudio(pcmuLeg, 11)
+	more, _ := testAudio(pcmuLeg, 12)
+	resumed, _ := testAudio(pcmuLeg, 13)
+	fake := &liveFake{outbound: agent, followup: more, resumed: resumed}
+	provider := httptest.NewServer(fake.handler(t))
+	t.Cleanup(provider.Close)
+	endpoint := "ws" + strings.TrimPrefix(provider.URL, "http") + "/v1/live/sessions"
+	runBargeInStreaming(t, pcmuLeg, true, func(ctx context.Context, leg audio.Format) (providerSession, error) {
+		return livews.Connect(ctx, livews.Config{Endpoint: endpoint, APIKey: "sk-test", Model: "gpt-live-1.1", Voice: "marin", Instructions: "Test.", Format: leg})
+	})
+}
+
 func TestSignedStreamBargeInSuppressesStreamingRealtimeAudio(t *testing.T) {
 	agent, _ := testAudio(pcmuLeg, 7)
 	more, _ := testAudio(pcmuLeg, 8)
@@ -57,12 +70,12 @@ func TestSignedStreamBargeInSuppressesStreamingRealtimeAudio(t *testing.T) {
 	provider := httptest.NewServer(fake.handler(t))
 	t.Cleanup(provider.Close)
 	endpoint := "ws" + strings.TrimPrefix(provider.URL, "http") + "/v1/realtime"
-	runBargeInStreaming(t, pcmuLeg, func(ctx context.Context, leg audio.Format) (providerSession, error) {
+	runBargeInStreaming(t, pcmuLeg, false, func(ctx context.Context, leg audio.Format) (providerSession, error) {
 		return realtimews.Connect(ctx, realtimews.Config{Endpoint: endpoint, APIKey: "sk-test", Model: "gpt-realtime-2.1", Voice: "marin", Instructions: "Test.", Format: leg})
 	})
 }
 
-func runBargeInStreaming(t *testing.T, leg audio.Format, connect func(ctx context.Context, leg audio.Format) (providerSession, error)) {
+func runBargeInStreaming(t *testing.T, leg audio.Format, resume bool, connect func(ctx context.Context, leg audio.Format) (providerSession, error)) {
 	t.Helper()
 	priv, pub := newKeys(t)
 	now := time.Now()
@@ -105,6 +118,9 @@ func runBargeInStreaming(t *testing.T, leg audio.Format, connect func(ctx contex
 				ev, err := p.Next(context.Background())
 				if err != nil {
 					return
+				}
+				if ev.Kind == realtime.EventCallerTranscriptDelta && resume {
+					s.CallerSpoke()
 				}
 				if ev.Kind == realtime.EventAudio {
 					_ = s.AgentAudio(context.Background(), audio.SourceRef{ItemID: ev.ItemID, ContentIndex: ev.ContentIndex}, ev.Audio)
@@ -168,29 +184,48 @@ func runBargeInStreaming(t *testing.T, leg audio.Format, connect func(ctx contex
 		t.Fatalf("want clear after cut, got %s", ev)
 	}
 
+	frames := make(chan string, 16)
+	go func() {
+		defer close(frames)
+		for {
+			b, err := s.Recv(ctx)
+			if err != nil {
+				return
+			}
+			var m struct {
+				Event string `json:"event"`
+			}
+			_ = json.Unmarshal(b, &m)
+			frames <- m.Event
+		}
+	}()
+
 	_, caller2 := testAudio(leg, 9)
 	if err := s.Send(ctx, mediaFrame(t, "inbound", caller2, 640)); err != nil {
 		t.Fatal(err)
 	}
-	quiet := make(chan string, 1)
-	go func() {
-		b, err := s.Recv(ctx)
-		if err != nil {
-			quiet <- "recv-error"
-			return
-		}
-		var m struct {
-			Event string `json:"event"`
-		}
-		_ = json.Unmarshal(b, &m)
-		quiet <- m.Event
-	}()
 	select {
-	case ev := <-quiet:
+	case ev := <-frames:
 		if ev == "media" {
 			t.Fatal("agent media reached Telnyx after clear")
 		}
 	case <-time.After(500 * time.Millisecond):
+	}
+
+	if !resume {
+		return
+	}
+	_, caller3 := testAudio(leg, 10)
+	if err := s.Send(ctx, mediaFrame(t, "inbound", caller3, 960)); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case ev := <-frames:
+		if ev != "media" {
+			t.Fatalf("want agent audio to resume after caller transcript, got %s", ev)
+		}
+	case <-ctx.Done():
+		t.Fatal("agent audio never resumed after caller transcript")
 	}
 }
 
