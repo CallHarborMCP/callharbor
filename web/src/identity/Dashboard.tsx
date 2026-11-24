@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { AIProfileForm } from "./AIProfileForm";
 import { UserAdmin } from "./UserAdmin";
 import { logout, type Session } from "./session";
 
@@ -10,6 +11,7 @@ export interface DashboardProps {
 export function Dashboard({ session, onSignedOut }: DashboardProps) {
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [saved, setSaved] = useState<string | null>(null);
   const isAdmin = session.user.role === "admin";
 
   async function handleLogout() {
@@ -36,6 +38,8 @@ export function Dashboard({ session, onSignedOut }: DashboardProps) {
         </button>
         {error ? <p role="alert">{error}</p> : null}
       </header>
+      <AIProfileForm csrfToken={session.csrf_token} onCreated={setSaved} />
+      {saved ? <p role="status">{`Saved AI profile ${saved}.`}</p> : null}
       {isAdmin ? <UserAdmin csrfToken={session.csrf_token} currentUserId={session.user.id} /> : null}
     </section>
   );
