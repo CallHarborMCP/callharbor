@@ -52,6 +52,13 @@ type harness struct {
 
 func newHarness(t *testing.T, mutate func(*telnyx.StreamConfig)) *harness {
 	t.Helper()
+	return newHarnessWithAccept(t, mutate, nil)
+}
+
+// newHarnessWithAccept runs before (not after) the serve loop starts, so a
+// test can queue or clear outbound audio with no race against the loop.
+func newHarnessWithAccept(t *testing.T, mutate func(*telnyx.StreamConfig), pre func(*telnyx.MediaSession)) *harness {
+	t.Helper()
 	seed := make([]byte, ed25519.SeedSize)
 	for i := range seed {
 		seed[i] = byte(i + 7)
@@ -65,7 +72,7 @@ func newHarness(t *testing.T, mutate func(*telnyx.StreamConfig)) *harness {
 	h := &harness{t: t, clk: clk, auth: telnyx.NewStreamAuth(), priv: priv, verif: v, sess: make(chan *telnyx.MediaSession, 4)}
 	cfg := telnyx.StreamConfig{
 		Format: pcmu8k, InboundQueue: 64, JitterFrames: 2, OutboundQueue: 8,
-		MaxChunkBytes: 1600, IdleTimeout: 5 * time.Second, ExpireEvery: 10 * time.Millisecond,
+		MaxChunkBytes: 1600, IdleTimeout: 5 * time.Second, WriteTimeout: 2 * time.Second, ExpireEvery: 10 * time.Millisecond,
 		PlayoutTolerance: 5 * time.Millisecond, PlayoutGrace: 2 * time.Second, Now: clk.Now,
 	}
 	if mutate != nil {
@@ -78,7 +85,12 @@ func newHarness(t *testing.T, mutate func(*telnyx.StreamConfig)) *harness {
 	h.baseURL = "ws" + strings.TrimPrefix(srv.URL, "http") + "/telnyx/media/"
 	mux.Handle("GET /telnyx/media/{token}", &telnyx.MediaHandler{
 		Verifier: v, Auth: h.auth, BaseURL: h.baseURL, Config: cfg,
-		Accept: func(s *telnyx.MediaSession) { h.sess <- s },
+		Accept: func(s *telnyx.MediaSession) {
+			if pre != nil {
+				pre(s)
+			}
+			h.sess <- s
+		},
 	})
 	return h
 }
@@ -466,6 +478,143 @@ func TestEnqueueRejectsInvalidChunks(t *testing.T) {
 	<-s.Done()
 	if err := s.Enqueue(src, silence(160)); !errors.Is(err, telnyx.ErrStreamClosed) {
 		t.Fatalf("enqueue after close: %v", err)
+	}
+}
+
+func TestBargeInClearPrecedesLaterChunksAndDiscardsQueued(t *testing.T) {
+	src := audio.SourceRef{ItemID: "item_barge"}
+	h := newHarnessWithAccept(t, nil, func(s *telnyx.MediaSession) {
+		if err := s.Enqueue(src, silence(160)); err != nil {
+			t.Error(err)
+		}
+		if err := s.Enqueue(src, silence(160)); err != nil {
+			t.Error(err)
+		}
+		s.Clear()
+		if err := s.Enqueue(src, silence(320)); err != nil {
+			t.Error(err)
+		}
+	})
+	c, msg := h.dial("v2:call-9", h.clk.Now())
+	if c == nil {
+		t.Fatal(msg)
+	}
+	defer func() { _ = c.CloseNow() }()
+	s := h.session()
+	ctx := context.Background()
+	send(t, c, map[string]any{"event": "connected"})
+	send(t, c, startFrame("v2:call-9", "st-9", "PCMU", 8000))
+
+	if got := readText(t, ctx, c); !strings.Contains(got, `"event":"clear"`) {
+		t.Fatalf("first frame after Clear must be clear, got %s", got)
+	}
+	if got := readText(t, ctx, c); !strings.Contains(got, `"event":"media"`) {
+		t.Fatalf("post-Clear chunk not sent, got %s", got)
+	}
+	if got := readText(t, ctx, c); !strings.Contains(got, `"event":"mark"`) {
+		t.Fatalf("post-Clear mark missing, got %s", got)
+	}
+
+	send(t, c, map[string]any{"event": "stop", "stream_id": "st-9"})
+	<-s.Done()
+	if err := s.Err(); err != nil {
+		t.Fatalf("clean stop returned %v", err)
+	}
+	r := s.Result()
+	if r.Stats.OutboundDiscarded != 2 || r.Stats.OutboundChunks != 1 {
+		t.Fatalf("outbound accounting %+v", r.Stats)
+	}
+}
+
+func TestBargeInFlushesEchoesOfClearedChunks(t *testing.T) {
+	h := newHarness(t, nil)
+	c, msg := h.dial("v2:call-10", h.clk.Now())
+	if c == nil {
+		t.Fatal(msg)
+	}
+	defer func() { _ = c.CloseNow() }()
+	s := h.session()
+	ctx := context.Background()
+	send(t, c, map[string]any{"event": "connected"})
+	send(t, c, startFrame("v2:call-10", "st-10", "PCMU", 8000))
+
+	src := audio.SourceRef{ItemID: "item_flush"}
+	if err := s.Enqueue(src, silence(800)); err != nil {
+		t.Fatal(err)
+	}
+	mediaMsg := readText(t, ctx, c)
+	if !strings.Contains(mediaMsg, `"event":"media"`) {
+		t.Fatalf("expected media, got %s", mediaMsg)
+	}
+	var m struct {
+		Mark struct {
+			Name string `json:"name"`
+		} `json:"mark"`
+	}
+	markMsg := readText(t, ctx, c)
+	if err := json.Unmarshal([]byte(markMsg), &m); err != nil || m.Mark.Name == "" {
+		t.Fatalf("mark %s: %v", markMsg, err)
+	}
+
+	s.Clear()
+	if got := readText(t, ctx, c); !strings.Contains(got, `"event":"clear"`) {
+		t.Fatalf("expected clear, got %s", got)
+	}
+	send(t, c, map[string]any{"event": "mark", "stream_id": "st-10", "mark": map[string]any{"name": m.Mark.Name}})
+	send(t, c, map[string]any{"event": "stop", "stream_id": "st-10"})
+	<-s.Done()
+	r := s.Result()
+	if r.Stats.MarksFlushed != 1 || r.Stats.MarksPlayed != 0 {
+		t.Fatalf("cleared chunk echo must be flushed, got %+v", r.Stats)
+	}
+	if len(r.Items) != 1 || !r.Items[0].Interrupted || r.Items[0].Discarded <= 0 {
+		t.Fatalf("interrupted item accounting %+v", r.Items)
+	}
+}
+
+func TestStalledPeerFailsWithinWriteTimeout(t *testing.T) {
+	h := newHarness(t, func(c *telnyx.StreamConfig) {
+		c.WriteTimeout = 100 * time.Millisecond
+		c.OutboundQueue = 512
+		c.MaxChunkBytes = 32000
+	})
+	c, msg := h.dial("v2:call-11", h.clk.Now())
+	if c == nil {
+		t.Fatal(msg)
+	}
+	defer func() { _ = c.CloseNow() }()
+	s := h.session()
+	send(t, c, map[string]any{"event": "connected"})
+	send(t, c, startFrame("v2:call-11", "st-11", "PCMU", 8000))
+	src := audio.SourceRef{ItemID: "item_stall"}
+	big := silence(32000)
+	for i := 0; i < 512; i++ {
+		_ = s.Enqueue(src, big)
+	}
+	select {
+	case <-s.Done():
+	case <-time.After(5 * time.Second):
+		t.Fatal("serve loop blocked by a peer that stopped reading")
+	}
+	if !errors.Is(s.Err(), telnyx.ErrStreamStalled) {
+		t.Fatalf("err %v, want ErrStreamStalled", s.Err())
+	}
+}
+
+func TestEnqueueRejectsChunksShorterThanMinimum(t *testing.T) {
+	h := newHarness(t, nil)
+	c, msg := h.dial("v2:call-12", h.clk.Now())
+	if c == nil {
+		t.Fatal(msg)
+	}
+	defer func() { _ = c.CloseNow() }()
+	s := h.session()
+	src := audio.SourceRef{ItemID: "item_short"}
+	if err := s.Enqueue(src, silence(159)); err == nil {
+		t.Fatal("19.875 ms chunk accepted below the 20 ms minimum")
+	}
+	if err := s.Enqueue(src, silence(160)); err != nil {
+		t.Fatalf("20 ms chunk rejected: %v", err)
 	}
 }
 

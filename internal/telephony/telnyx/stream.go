@@ -25,7 +25,11 @@ var (
 	ErrStreamQueueFull    = errors.New("telnyx: outbound media queue full")
 	ErrStreamClosed       = errors.New("telnyx: media session closed")
 	ErrStreamIdle         = errors.New("telnyx: media stream idle timeout")
+	ErrStreamStalled      = errors.New("telnyx: media stream peer stopped reading")
 )
+
+// MinOutboundChunk is the shortest outbound media chunk Telnyx accepts.
+const MinOutboundChunk = 20 * time.Millisecond
 
 type streamGrant struct {
 	callControlID string
@@ -94,6 +98,7 @@ type StreamConfig struct {
 	OutboundQueue    int
 	MaxChunkBytes    int
 	IdleTimeout      time.Duration
+	WriteTimeout     time.Duration
 	ExpireEvery      time.Duration
 	PlayoutTolerance time.Duration
 	PlayoutGrace     time.Duration
@@ -107,7 +112,7 @@ func (c StreamConfig) validate() error {
 	if c.InboundQueue <= 0 || c.JitterFrames < 0 || c.OutboundQueue <= 0 || c.MaxChunkBytes <= 0 {
 		return fmt.Errorf("%w: queue bounds must be positive", ErrInvalidFrame)
 	}
-	if c.IdleTimeout <= 0 || c.ExpireEvery <= 0 || c.PlayoutGrace <= 0 || c.PlayoutTolerance < 0 {
+	if c.IdleTimeout <= 0 || c.WriteTimeout <= 0 || c.ExpireEvery <= 0 || c.PlayoutGrace <= 0 || c.PlayoutTolerance < 0 {
 		return fmt.Errorf("%w: timing bounds must be positive", ErrInvalidFrame)
 	}
 	if c.Now == nil {
@@ -238,6 +243,13 @@ func (s *MediaSession) Enqueue(src audio.SourceRef, payload []byte) error {
 	}
 	if len(payload)%s.bps != 0 {
 		return fmt.Errorf("telnyx: chunk of %d bytes is not whole %s samples", len(payload), s.cfg.Format)
+	}
+	d, err := s.cfg.Format.Duration(len(payload))
+	if err != nil {
+		return err
+	}
+	if d < MinOutboundChunk {
+		return fmt.Errorf("telnyx: chunk of %v is shorter than the %v minimum", d, MinOutboundChunk)
 	}
 	s.mu.Lock()
 	gen := s.gen
@@ -450,7 +462,7 @@ func (s *MediaSession) handle(f Frame) (bool, error) {
 	return false, nil
 }
 
-func serialBefore(a, b uint32) bool { return int32(a-b) < 0 }
+func serialBefore(a, b uint32) bool { return (a-b)&(1<<31) != 0 }
 
 // push inserts an inbound frame into the bounded reorder buffer in RTP order.
 // A frame whose timestamp is already buffered is a duplicate.
@@ -534,10 +546,10 @@ func (s *MediaSession) sendChunk(ctx context.Context, conn *websocket.Conn, it o
 	if err != nil {
 		return err
 	}
-	if err := conn.Write(ctx, websocket.MessageText, media); err != nil {
+	if err := s.write(ctx, conn, media); err != nil {
 		return err
 	}
-	if err := conn.Write(ctx, websocket.MessageText, mark); err != nil {
+	if err := s.write(ctx, conn, mark); err != nil {
 		return err
 	}
 	s.stats.OutboundChunks++
@@ -546,5 +558,19 @@ func (s *MediaSession) sendChunk(ctx context.Context, conn *websocket.Conn, it o
 
 func (s *MediaSession) doClear(ctx context.Context, conn *websocket.Conn) error {
 	s.ledger.Clear(s.cfg.Now())
-	return conn.Write(ctx, websocket.MessageText, ClearMessage())
+	return s.write(ctx, conn, ClearMessage())
+}
+
+// write bounds each outbound frame by WriteTimeout so a peer that stops reading
+// cannot block the serve loop, and with it the idle and playout timers.
+func (s *MediaSession) write(ctx context.Context, conn *websocket.Conn, b []byte) error {
+	wctx, cancel := context.WithTimeout(ctx, s.cfg.WriteTimeout)
+	defer cancel()
+	if err := conn.Write(wctx, websocket.MessageText, b); err != nil {
+		if ctx.Err() == nil && wctx.Err() != nil {
+			return fmt.Errorf("%w: write exceeded %v", ErrStreamStalled, s.cfg.WriteTimeout)
+		}
+		return err
+	}
+	return nil
 }
