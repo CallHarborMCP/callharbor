@@ -37,7 +37,7 @@ if [[ -f go.mod ]]; then
 fi
 
 if [[ -f web/package.json ]]; then
-  (cd web && npm ci && npm run lint && npm run typecheck && npm run test -- --run && npm run build)
+  (cd web && npm ci && npm run lint && npm run typecheck && npm run test -- --run && npm run build && npx playwright test tests-e2e/appearance.spec.ts)
 fi
 
 bash -n scripts/update-telnyx-contract.sh
