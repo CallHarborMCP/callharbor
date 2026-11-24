@@ -488,7 +488,7 @@ func TestBackupCapturesWALAndRestoresConsistently(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open backup: %v", err)
 	}
-	defer restored.Close()
+	defer func() { _ = restored.Close() }()
 	if err := restored.IntegrityCheck(ctx); err != nil {
 		t.Fatalf("backup integrity: %v", err)
 	}
@@ -522,7 +522,7 @@ func TestRestoredBackupRollsBackToPriorSchema(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer restored.Close()
+	defer func() { _ = restored.Close() }()
 	if v, _ := restored.SchemaVersion(ctx); v != 1 {
 		t.Fatalf("restored version = %d", v)
 	}
@@ -586,13 +586,16 @@ func copyFile(t *testing.T, src, dst string) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer in.Close()
+	defer func() { _ = in.Close() }()
 	out, err := os.Create(dst)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer out.Close()
 	if _, err := io.Copy(out, in); err != nil {
+		_ = out.Close()
+		t.Fatal(err)
+	}
+	if err := out.Close(); err != nil {
 		t.Fatal(err)
 	}
 }

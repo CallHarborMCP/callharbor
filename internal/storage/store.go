@@ -80,11 +80,15 @@ func (s *Store) IntegrityCheck(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("foreign_key_check: %w", err)
 	}
-	defer rows.Close()
 	if rows.Next() {
+		_ = rows.Close()
 		return errors.New("foreign_key_check: dangling references present")
 	}
-	return rows.Err()
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return err
+	}
+	return rows.Close()
 }
 
 // Backup writes a transactionally consistent snapshot to dst, including pages

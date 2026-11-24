@@ -64,6 +64,29 @@ func TestLoggerEmitsStructuredJSONAtConfiguredLevel(t *testing.T) {
 	}
 }
 
+func TestAccessLogKeepsFirstStatusWrittenBeforeBody(t *testing.T) {
+	var buf bytes.Buffer
+	logger := NewLogger(&buf, slog.LevelInfo)
+	handler := AccessLog(logger, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte("body"))
+		w.WriteHeader(http.StatusTeapot)
+	}))
+
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil))
+
+	var record map[string]any
+	if err := json.Unmarshal([]byte(strings.TrimSpace(buf.String())), &record); err != nil {
+		t.Fatalf("not JSON: %v", err)
+	}
+	if record["status"] != float64(http.StatusOK) {
+		t.Errorf("status = %v, want 200 implicit from body write", record["status"])
+	}
+	if rec.Body.String() != "body" {
+		t.Errorf("body = %q, want body", rec.Body.String())
+	}
+}
+
 func TestAccessLogRecordsStatusWithoutQueryString(t *testing.T) {
 	var buf bytes.Buffer
 	logger := NewLogger(&buf, slog.LevelInfo)
