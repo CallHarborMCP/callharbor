@@ -60,16 +60,16 @@ Scope: Best Practices Passing and Silver MUST and SHOULD/SUGGESTED items, and OS
 | vulnerability_report_process | Publish vulnerability reporting process on the project site | Met | `.github/SECURITY.md` documents the process and names the enabled private reporting channel | | |
 | vulnerability_report_private | Private reporting channel described and reachable | Met | Verified 2026-11-24: `gh api repos/CallHarborMCP/callharbor/private-vulnerability-reporting` returns `{"enabled":true}`. The advisory form returns 302 to GitHub login anonymously, as expected for a working form | | Re-verify API state at each release |
 | vulnerability_report_response | Initial response within 14 days for reports from the last 6 months | Met | `SECURITY.md` states 14 days. The channel is enabled. No reports exist yet | | |
-| build | Working build system that rebuilds from source | N/A (now) | No application code. Required once Go/React code lands (`go build`, `npm run build`) | | Required in DEV-2 and the first frontend PR |
+| build | Working build system that rebuilds from source | Met | `go build` and `npm run build` run in `verify-local.sh` on every PR; the React build syncs into the Go embed directory | | |
 | build_common_tools | Common build tools (SHOULD) | N/A (now) | As above | | As above |
 | build_floss_tools | Buildable with FLOSS tools (SHOULD) | Met for the planned stack | Go, Node and npm are FLOSS | | |
 | test | Automated test suite publicly released as FLOSS | Partial | `scripts/verify-local.sh` runs the checks and currently reports that application source is incomplete. No product tests exist yet | | DEV-2 and later feature PRs add tests |
 | test_invocation | Standard, documented test invocation (SHOULD) | Met | `README.md`: `mise exec -- bash scripts/verify-local.sh` | | |
-| test_most | Tests cover most branches and functionality (SUGGESTED) | Planned | No product code | | DEV-33 |
+| test_most | Tests cover most branches and functionality (SUGGESTED) | Partial | Go and React statement coverage is above 80%. Branch coverage is 80.7% for React and not measured for Go | | Add branch coverage tracking |
 | test_continuous_integration | CI runs tests on change (SHOULD) | Met | `.github/workflows/required.yml` runs on push and pull request to `main` | | |
-| test_policy | Written policy: tests added with major new functionality | Met | `CONTRIBUTING.md` requires tests for new behaviour at the level in `.agents/TEST_STRATEGY.md`. Repository test suite not yet present | | Test suite (DEV-33) |
+| test_policy | Written policy: tests added with major new functionality | Met | `CONTRIBUTING.md` requires tests for new behaviour at the level in `.agents/TEST_STRATEGY.md`. Go and React test suites run in `verify-local.sh` | | |
 | tests_are_added | Evidence that the policy was followed in recent major changes | N/A (now) | No major functional changes yet | | Evidence from the first feature PR |
-| warnings | Compiler warnings or linter enabled | Partial | `verify-local.sh` runs `gofmt`, `go vet` and `golangci-lint` (0 issues) for Go. Lint and typecheck run for `web/` when it exists | | ESLint and typecheck with the first frontend PR (DEV-33) |
+| warnings | Compiler warnings or linter enabled | Met | `verify-local.sh` runs `gofmt`, `go vet` and `golangci-lint` (0 issues) for Go, and `tsc -b` plus ESLint with 0 errors for `web/` on every PR | | |
 | warnings_fixed | Warnings addressed | N/A (now) | No code | | |
 | know_secure_design | At least one primary developer knows secure design | Owner | Requires a human attestation. An agent claim is not evidence | Owner attests | |
 | know_common_errors | Primary developer knows common vulnerability classes and mitigations | Owner (partial evidence) | `.agents/SECURITY.md` lists SSRF, CSRF, webhook signature/replay, stream hijack, and at-rest key protection | Owner attests | |
@@ -87,10 +87,10 @@ Scope: Best Practices Passing and Silver MUST and SHOULD/SUGGESTED items, and OS
 | vulnerabilities_fixed_60_days | No medium+ publicly known unpatched vulnerabilities over 60 days | Met (none known) | No product release; no known vulnerabilities in the repository | | Re-check per release |
 | vulnerabilities_critical_fixed (SHOULD) | Fix critical vulnerabilities rapidly | N/A (none) | No reports | | |
 | no_leaked_credentials | No valid private credentials in the public repository | Met for the tracked tree and history reachable from `HEAD` | `gitleaks git` (history from `HEAD`) and `gitleaks dir` (working tree) run in `verify-local.sh` and the `required` check, with no leaks found. `.gitignore` excludes `.env*`, `*.pem`, `*.key`, `*.db` and `recordings/`. Refs other than `HEAD` are not scanned | | Scan any new branch history before merge (feat/dev-61 findings handled in that PR) |
-| static_analysis | Static analysis tool applied before release | Partial | `verify-local.sh` runs `go vet`, `golangci-lint` (0 issues), `gosec` and `govulncheck` for Go on every PR. ESLint is not configured because no `web/` code exists | | ESLint and TypeScript analysis with the first frontend PR (DEV-33) |
-| static_analysis_common_vulnerabilities (SUGGESTED) | Rules for common vulnerabilities | Partial | `gosec` rules run on Go in `verify-local.sh`. ESLint security rules are planned | | ESLint security rules with the first frontend PR (DEV-33) |
+| static_analysis | Static analysis tool applied before release | Met | `verify-local.sh` runs `go vet`, `golangci-lint`, `gosec` and `govulncheck` for Go, and ESLint (`@eslint/js`, `typescript-eslint`, React hooks rules) plus `tsc -b` for `web/`, on every PR | | |
+| static_analysis_common_vulnerabilities (SUGGESTED) | Rules for common vulnerabilities | Partial | `gosec` rules run on Go in `verify-local.sh`. The frontend runs ESLint with the recommended and React rules, but no dedicated JavaScript security-rule plugin is configured yet | | Add a JavaScript security rule set (DEV-33 follow-up) |
 | static_analysis_fixed | Confirmed medium+ findings fixed | N/A (none yet) | No analysis run | | Applies once analysis runs |
-| dynamic_analysis | Dynamic analysis before release (SUGGESTED) | Planned | Playwright and Docker E2E are planned | | DEV-33 |
+| dynamic_analysis | Dynamic analysis before release (SUGGESTED) | Partial | Playwright browser tests run for the appearance and identity flows in `verify-local.sh`. The full Docker E2E runs in `--full` mode | | Extend browser coverage for the release |
 | dynamic_analysis_unsafe | Dynamic tooling for memory-unsafe languages | N/A | Go and TypeScript are memory-safe. Go `-race` is used | | |
 | dynamic_analysis_fixed | Confirmed medium+ dynamic findings fixed | N/A (none yet) | No analysis run | | |
 
@@ -119,19 +119,19 @@ Scope: Best Practices Passing and Silver MUST and SHOULD/SUGGESTED items, and OS
 | report_tracker (Silver) | Issue tracker used for individual issues | Met | GitHub Issues enabled (`has_issues: true`, verified 2026-11-24) | | |
 | vulnerability_report_credit | Credit reporters of vulnerabilities resolved in the last 12 months | N/A (none yet) | No resolved reports | | `SECURITY.md` states credit policy |
 | vulnerability_response_process | Documented process for responding to reports | Met | `.github/SECURITY.md` documents the process, and its reporting channel is enabled | | |
-| coding_standards | Identify and require a style guide for each language | Partial | `CONTRIBUTING.md` names gofmt and go vet for Go and defers TypeScript to configured tooling. No TypeScript style guide is chosen yet | | Name the TypeScript style guide with the first frontend PR (DEV-33) |
-| coding_standards_enforced | Automatically enforced style | Partial | `gofmt` is enforced by `verify-local.sh`. ESLint and Prettier are planned | | DEV-33 |
+| coding_standards | Identify and require a style guide for each language | Partial | `CONTRIBUTING.md` names gofmt and go vet for Go and the ESLint configuration for TypeScript. No named external TypeScript style guide yet | | Name the TypeScript style guide (DEV-33 follow-up) |
+| coding_standards_enforced | Automatically enforced style | Partial | `gofmt` is enforced by `verify-local.sh`, and ESLint is enforced for `web/`. Prettier is not used | | Decide whether to adopt Prettier |
 | build_standard_variables, build_preserve_debug, build_non_recursive | Build conventions for native binaries | N/A | No native build | | Recheck if a native build is introduced |
 | build_repeatable | Reproducible builds (Silver MUST) | Planned | Requires pinned toolchains and lockfiles. `.mise.toml` pins Go and Node. Reproducible-build verification not yet designed | | DEV-31 and DEV-33 |
 | installation_common | Standard install and uninstall method | Planned | Docker Compose is the release install method | | DEV-31, DEV-63 |
 | installation_standard_variables | Honour standard install location variables | N/A | Container-based deployment, not a system installer | | |
 | installation_development_quick | Quick developer environment setup | Met | `mise install`, then `mise exec -- bash scripts/verify-local.sh --quick` in `README.md` | | |
 | external_dependencies | Dependencies listed in a machine-readable way | Partial | `.mise.toml` lists tools. `go.mod`, `package-lock.json` and Dockerfiles do not exist yet | | Lockfiles with the first code PRs |
-| dependency_monitoring | Monitor and check dependencies for known vulnerabilities | Partial | `renovate.json` sets `minimumReleaseAge` to 3 days generally, and 0 days only for `vulnerabilityAlerts`. `govulncheck` runs for Go in `verify-local.sh` (no vulnerabilities found). `npm audit` is not yet wired because no `web/` code exists. GitHub Dependabot alerts are not verified | Owner confirms Dependabot alerts | `npm audit` with the first frontend PR (DEV-33) |
+| dependency_monitoring | Monitor and check dependencies for known vulnerabilities | Partial | `renovate.json` sets `minimumReleaseAge` to 3 days generally, and 0 days only for `vulnerabilityAlerts`. `govulncheck` for Go and `npm audit` (fails on any advisory) for `web/` run in `verify-local.sh`. GitHub Dependabot alerts are not verified | Owner confirms Dependabot alerts | Verify Dependabot alert state |
 | updateable_reused_components | Easy update of reused components | Met | Renovate covers Go modules, npm, `.mise.toml`, Docker and GitHub Actions per `README.md` | Owner grants Renovate app access | |
 | automated_integration_testing | Automated tests on each check-in for at least one branch | Met | `required.yml` runs on push and pull request to `main` | | |
 | regression_tests_added50 | Regression tests for at least 50% of bugs fixed in the last 6 months | N/A (no bugs fixed yet) | No product code | | Applies from first bug fix |
-| test_statement_coverage80 | At least 80% statement coverage | Partial | Go: 91.5% statement coverage from `go test -coverprofile`, enforced at 80% minimum by `verify-local.sh` and the `required` check. React: Planned, no frontend code yet | | Vitest coverage with the first frontend PR (DEV-33) |
+| test_statement_coverage80 | At least 80% statement coverage | Met | Go: statement coverage from `go test -coverprofile`, enforced at 80%. React: statement coverage from Vitest V8 (`web/coverage/`), enforced at 80% by `web/vite.config.ts` (84.8% at the DEV-33 run, which includes `main.tsx`). Both run in `verify-local.sh` and the `required` check, and are published as the `go-coverage` and `web-coverage` artifacts. Excluded from React coverage: test files and `src/fixtures/` (unused static prototype data) | | Keep both above 80% as code grows |
 | test_policy_mandated | Formal policy requiring tests for major functionality | Partial | Internal `TEST_STRATEGY.md` only | | Public policy (DEV-33) |
 | tests_documented_added | Change-proposal instructions include the test policy | Met | `CONTRIBUTING.md` "Acceptable contributions" and "Proposing changes" | | |
 | warnings_strict | Maximally strict warnings | Planned | Partial lint, see Passing | | DEV-33 |
@@ -204,6 +204,6 @@ OSPS Level 2 and 3 controls were not assessed in this report.
 ## Planned work
 
 - Test suite, coding-standard names and secret scanning (DEV-33). Second maintainer and bus-factor plan (owner).
-- Frontend coverage artifacts, `npm audit`, ESLint security rules and TypeScript analysis with the first frontend PR (DEV-33). Go coverage, `gosec`, `govulncheck` and `gitleaks` are already enforced.
+- Go and React coverage, `npm audit`, ESLint and TypeScript analysis are enforced by `verify-local.sh` and the `required` check. Remaining open items are a JavaScript security rule set and the Dependabot alert verification.
 - Badges and the Scorecard workflow (DEV-36).
 - Signed releases, checksums, SBOM, release notes and the public threat model (DEV-31, DEV-63).

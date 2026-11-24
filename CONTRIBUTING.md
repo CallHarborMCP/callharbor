@@ -44,7 +44,7 @@ Run the full command without `--quick` only when you need the production Docker 
 
 - New functionality must include automated tests at the level described in `.agents/TEST_STRATEGY.md`.
 - Bug fixes must include a regression test that fails before the fix and passes after it.
-- Go statement coverage must be at least 80%, measured with `go test -coverprofile` and enforced by `scripts/verify-local.sh` and the `required` check. React coverage is required once the frontend lands.
+- Go statement coverage must be at least 80%, measured with `go test -coverprofile` and enforced by `scripts/verify-local.sh` and the `required` check. React statement coverage is enforced at 80% by Vitest V8 in `web/vite.config.ts` and runs in `verify-local.sh`.
 - Tests must not be weakened, skipped or removed to make a change pass.
 - Exclude code from coverage only when it is generated, test or vendor code. Each exclusion needs a written reason in the pull request.
 - `scripts/verify-local.sh` runs the static analysis, secret scanning, vulnerability checks and tests above. The `required` workflow runs the same script on every pull request and blocks merge when it fails.
