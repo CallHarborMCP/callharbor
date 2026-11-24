@@ -259,6 +259,18 @@ func (h *Handler) resetPassword(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+// Authenticate resolves the signed-in principal for a request, writing a 401
+// response and returning false when there is none. It is exported so sibling
+// owner-scoped APIs share the identity session and CSRF rules.
+func (h *Handler) Authenticate(w http.ResponseWriter, r *http.Request) (*Principal, bool) {
+	return h.authenticate(w, r)
+}
+
+// AuthenticateMutating is Authenticate plus the CSRF check for writes.
+func (h *Handler) AuthenticateMutating(w http.ResponseWriter, r *http.Request) (*Principal, bool) {
+	return h.authenticateMutating(w, r)
+}
+
 func (h *Handler) authenticate(w http.ResponseWriter, r *http.Request) (*Principal, bool) {
 	c, err := r.Cookie(SessionCookieName)
 	if err != nil {

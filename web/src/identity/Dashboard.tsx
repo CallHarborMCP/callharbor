@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { AIProfileForm } from "./AIProfileForm";
 import { AppearanceSettings } from "../design/AppearanceSettings";
 import { UserAdmin } from "./UserAdmin";
 import { logout, type Session } from "./session";
@@ -8,13 +9,14 @@ export interface DashboardProps {
   readonly onSignedOut: () => void;
 }
 
-type View = "users" | "settings";
+type View = "users" | "profiles" | "settings";
 
 export function Dashboard({ session, onSignedOut }: DashboardProps) {
   const isAdmin = session.user.role === "admin";
   const [view, setView] = useState<View>(isAdmin ? "users" : "settings");
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [saved, setSaved] = useState<string | null>(null);
 
   async function handleLogout() {
     setBusy(true);
@@ -30,6 +32,7 @@ export function Dashboard({ session, onSignedOut }: DashboardProps) {
 
   const items: { id: View; label: string }[] = [
     ...(isAdmin ? [{ id: "users" as const, label: "Users" }] : []),
+    { id: "profiles", label: "AI profiles" },
     { id: "settings", label: "Settings" },
   ];
 
@@ -70,6 +73,13 @@ export function Dashboard({ session, onSignedOut }: DashboardProps) {
 
         {view === "users" && isAdmin ? (
           <UserAdmin csrfToken={session.csrf_token} currentUserId={session.user.id} />
+        ) : null}
+        {view === "profiles" ? (
+          <section aria-labelledby="profiles-heading">
+            <h2 id="profiles-heading">AI profiles</h2>
+            <AIProfileForm csrfToken={session.csrf_token} onCreated={setSaved} />
+            {saved ? <p role="status">{`Saved AI profile ${saved}.`}</p> : null}
+          </section>
         ) : null}
         {view === "settings" ? <AppearanceSettings /> : null}
       </main>
