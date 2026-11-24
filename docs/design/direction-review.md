@@ -26,4 +26,4 @@ Prototype A is the production direction. CallHarbor is an operations tool for ca
 
 ## Open item
 
-The visual judgement of these screenshots is not recorded here. The implementer could not visually review pixel output, so the direction review needs a human or vision-capable reviewer to confirm the screenshots before release. This document does not claim a manual visual review was done.
+Direction A was selected by the human board user (decision 60c30a5f). The final visual check of the release candidate belongs to the DEV-32 Human Acceptance gate. This document does not claim an agent pixel review was done.
