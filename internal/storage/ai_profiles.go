@@ -27,6 +27,9 @@ const (
 // ErrAIProfileNotFound reports a missing profile or one owned by another user.
 var ErrAIProfileNotFound = errors.New("storage: ai profile not found")
 
+// ErrInvalidAIProfile reports a profile that failed ValidateAIProfile.
+var ErrInvalidAIProfile = errors.New("storage: invalid ai profile")
+
 // AIProfile is one user-owned AI voice configuration. APISecretID references
 // an owner-scoped secret; the secret value is never stored here.
 type AIProfile struct {
@@ -47,32 +50,39 @@ type AIProfile struct {
 // ValidateAIProfile fails closed on an unknown protocol or an endpoint that
 // is not a WebSocket URL. The protocol is always explicit.
 func ValidateAIProfile(p AIProfile) error {
+	if err := validateAIProfile(p); err != nil {
+		return fmt.Errorf("%w: %s", ErrInvalidAIProfile, err)
+	}
+	return nil
+}
+
+func validateAIProfile(p AIProfile) error {
 	switch p.Protocol {
 	case AIProtocolRealtime, AIProtocolLive:
 	default:
-		return fmt.Errorf("storage: unsupported ai protocol %q", p.Protocol)
+		return fmt.Errorf("unsupported ai protocol %q", p.Protocol)
 	}
 	u, err := url.Parse(p.EndpointURL)
 	if err != nil || u.Host == "" {
-		return fmt.Errorf("storage: invalid endpoint url")
+		return errors.New("invalid endpoint url")
 	}
 	switch u.Scheme {
 	case "wss":
 	case "ws":
 		if !isLoopbackHost(u.Hostname()) {
-			return fmt.Errorf("storage: ws endpoints must be loopback; use wss")
+			return errors.New("ws endpoints must be loopback; use wss")
 		}
 	default:
-		return fmt.Errorf("storage: endpoint must use wss")
+		return errors.New("endpoint must use wss")
 	}
 	if strings.TrimSpace(p.Model) == "" || strings.TrimSpace(p.Voice) == "" {
-		return errors.New("storage: model and voice are required")
+		return errors.New("model and voice are required")
 	}
 	if len(p.Instructions) > MaxInstructions {
-		return fmt.Errorf("storage: instructions exceed %d bytes", MaxInstructions)
+		return fmt.Errorf("instructions exceed %d bytes", MaxInstructions)
 	}
 	if _, err := realtime.ValidateHeaders(p.Headers); err != nil {
-		return fmt.Errorf("storage: %w", err)
+		return err
 	}
 	return nil
 }
@@ -132,6 +142,63 @@ func (s *Store) GetAIProfile(ctx context.Context, ownerUserID, id string) (AIPro
 	p.Protocol = AIProtocol(proto)
 	p.APISecretID = secret.String
 	return p, nil
+}
+
+// ListAIProfiles returns the owner's profiles, oldest first.
+func (s *Store) ListAIProfiles(ctx context.Context, ownerUserID string) ([]AIProfile, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT id, owner_user_id, name, protocol, endpoint_url, model, voice, instructions, headers_json, api_secret_id, created_at, updated_at
+		FROM ai_profiles WHERE owner_user_id = ? ORDER BY created_at, id`, ownerUserID)
+	if err != nil {
+		return nil, fmt.Errorf("storage: list ai profiles: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	var out []AIProfile
+	for rows.Next() {
+		var p AIProfile
+		var proto, hdr string
+		var secret sql.NullString
+		if err := rows.Scan(&p.ID, &p.OwnerUserID, &p.Name, &proto, &p.EndpointURL, &p.Model, &p.Voice, &p.Instructions, &hdr, &secret, &p.CreatedAt, &p.UpdatedAt); err != nil {
+			return nil, fmt.Errorf("storage: scan ai profile: %w", err)
+		}
+		if err := json.Unmarshal([]byte(hdr), &p.Headers); err != nil {
+			return nil, fmt.Errorf("storage: decode headers: %w", err)
+		}
+		p.Protocol = AIProtocol(proto)
+		p.APISecretID = secret.String
+		out = append(out, p)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("storage: list ai profiles: %w", err)
+	}
+	return out, nil
+}
+
+// UpdateAIProfile replaces the mutable fields of a profile owned by
+// p.OwnerUserID. It returns ErrAIProfileNotFound for another owner's profile.
+func (s *Store) UpdateAIProfile(ctx context.Context, p AIProfile) error {
+	if err := ValidateAIProfile(p); err != nil {
+		return err
+	}
+	hdr, err := encodeHeaders(p.Headers)
+	if err != nil {
+		return err
+	}
+	res, err := s.db.ExecContext(ctx, `UPDATE ai_profiles SET name = ?, protocol = ?, endpoint_url = ?, model = ?, voice = ?,
+		instructions = ?, headers_json = ?, api_secret_id = ?, updated_at = ?
+		WHERE id = ? AND owner_user_id = ?`,
+		p.Name, string(p.Protocol), p.EndpointURL, p.Model, p.Voice, p.Instructions, hdr,
+		nullableString(p.APISecretID), p.UpdatedAt, p.ID, p.OwnerUserID)
+	if err != nil {
+		return fmt.Errorf("storage: update ai profile: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("storage: update ai profile: %w", err)
+	}
+	if n == 0 {
+		return ErrAIProfileNotFound
+	}
+	return nil
 }
 
 func nullableString(s string) any {

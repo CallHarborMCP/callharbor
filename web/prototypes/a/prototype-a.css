@@ -1,0 +1,92 @@
+/* Prototype A: "Console". Dense, sidebar-led operations layout with system-font typography. */
+:root {
+  color-scheme: light dark;
+  --a-bg: #f5f5f7;
+  --a-surface: #ffffff;
+  --a-line: #d2d2d7;
+  --a-text: #1d1d1f;
+  --a-muted: #5f5f66;
+  --a-accent: #0a66c2;
+  --a-focus: #0a66c2;
+  font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", Roboto, sans-serif;
+  font-size: 15px;
+  color: var(--a-text);
+  background: var(--a-bg);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --a-bg: #161618;
+    --a-surface: #222225;
+    --a-line: #3a3a3f;
+    --a-text: #f5f5f7;
+    --a-muted: #a1a1a8;
+    --a-accent: #4da3ff;
+    --a-focus: #8cc0ff;
+  }
+}
+
+* { box-sizing: border-box; }
+body { margin: 0; }
+h1 { font-size: 1.6rem; font-weight: 650; margin: 0 0 0.75rem; }
+h2 { font-size: 1rem; font-weight: 600; margin: 0 0 0.5rem; }
+
+button {
+  font: inherit;
+  color: inherit;
+  background: var(--a-surface);
+  border: 1px solid var(--a-line);
+  border-radius: 8px;
+  padding: 0.45rem 0.8rem;
+  min-height: 44px;
+  min-width: 44px;
+  cursor: pointer;
+}
+button[aria-pressed="true"], button[aria-current="page"] { border-color: var(--a-accent); color: var(--a-accent); }
+button:focus-visible, input:focus-visible, audio:focus-visible { outline: 3px solid var(--a-focus); outline-offset: 2px; }
+
+.a-shell { display: grid; grid-template-columns: 220px 1fr; min-height: 100vh; }
+.a-sidebar { background: var(--a-surface); border-right: 1px solid var(--a-line); padding: 1.25rem 0.75rem; }
+.a-brand { font-weight: 700; padding: 0 0.5rem 1rem; letter-spacing: -0.01em; }
+.a-sidebar ul { list-style: none; padding: 0; margin: 0; display: grid; gap: 0.25rem; }
+.a-sidebar button { width: 100%; text-align: left; border: none; background: transparent; }
+.a-sidebar button[aria-current="page"] { background: color-mix(in srgb, var(--a-accent) 12%, transparent); }
+
+.a-main { padding: 1.5rem; min-width: 0; }
+.a-stats { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 0.75rem; margin-bottom: 1.25rem; }
+.a-stat, .a-panel { background: var(--a-surface); border: 1px solid var(--a-line); border-radius: 12px; padding: 1rem; }
+.a-stat-value { font-size: 1.6rem; font-weight: 650; }
+.a-muted { color: var(--a-muted); }
+.a-time { font-variant-numeric: tabular-nums; color: var(--a-muted); margin-right: 0.5rem; }
+.a-filters { display: flex; gap: 0.5rem; margin-bottom: 0.75rem; }
+.a-back { margin-bottom: 0.75rem; }
+.a-grid { display: grid; grid-template-columns: minmax(0, 2fr) minmax(0, 1fr); gap: 0.75rem; margin-top: 1rem; }
+.a-transcript { padding-left: 0; list-style: none; display: grid; gap: 0.5rem; }
+.a-row { display: flex; justify-content: space-between; align-items: center; gap: 1rem; }
+.a-row input { width: 44px; height: 44px; }
+.a-empty { color: var(--a-muted); }
+
+.a-table-wrap { background: var(--a-surface); border: 1px solid var(--a-line); border-radius: 12px; overflow: hidden; }
+table { width: 100%; border-collapse: collapse; }
+th, td { text-align: left; padding: 0.7rem 0.9rem; border-bottom: 1px solid var(--a-line); vertical-align: top; }
+th { font-size: 0.8rem; color: var(--a-muted); font-weight: 600; }
+td button { border: none; padding: 0; min-height: 0; background: transparent; color: var(--a-accent); font-weight: 600; }
+
+.a-cards { display: none; list-style: none; padding: 0; margin: 0; gap: 0.5rem; }
+.a-cards button { width: 100%; display: grid; gap: 0.25rem; text-align: left; }
+.a-card-title { font-weight: 600; }
+
+.sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+
+@media (max-width: 768px) {
+  .a-shell { grid-template-columns: 1fr; }
+  .a-sidebar { position: fixed; bottom: 0; left: 0; right: 0; top: auto; border-right: none; border-top: 1px solid var(--a-line); padding: 0.4rem; z-index: 2; }
+  .a-brand { display: none; }
+  .a-sidebar ul { grid-template-columns: repeat(4, 1fr); }
+  .a-sidebar button { text-align: center; }
+  .a-main { padding: 1rem 1rem 6rem; }
+  .a-stats { grid-template-columns: 1fr; }
+  .a-grid { grid-template-columns: 1fr; }
+  .a-table-wrap { display: none; }
+  .a-cards { display: grid; }
+}

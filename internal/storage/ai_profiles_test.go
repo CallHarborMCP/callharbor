@@ -89,6 +89,52 @@ func TestAIProfileRejectsUnsafeConfig(t *testing.T) {
 	}
 }
 
+func TestAIProfileListAndUpdateAreOwnerScoped(t *testing.T) {
+	s := openMigrated(t, filepath.Join(t.TempDir(), "db.sqlite"))
+	seedTenants(t, s)
+	ctx := context.Background()
+
+	if err := s.CreateAIProfile(ctx, aiProfile("alice-rt", "alice", "realtime_ws", "wss://ai.example.test/rt")); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.CreateAIProfile(ctx, aiProfile("bob-rt", "bob", "realtime_ws", "wss://ai.example.test/rt")); err != nil {
+		t.Fatal(err)
+	}
+	list, err := s.ListAIProfiles(ctx, "alice")
+	if err != nil {
+		t.Fatalf("ListAIProfiles: %v", err)
+	}
+	for _, p := range list {
+		if p.OwnerUserID != "alice" {
+			t.Fatalf("alice list leaked profile %q owned by %q", p.ID, p.OwnerUserID)
+		}
+	}
+	if len(list) == 0 {
+		t.Fatal("alice list is empty")
+	}
+
+	upd := aiProfile("alice-rt", "bob", "realtime_ws", "wss://ai.example.test/rt")
+	upd.Model = "hijacked"
+	if err := s.UpdateAIProfile(ctx, upd); !errors.Is(err, ErrAIProfileNotFound) {
+		t.Fatalf("cross-owner update err = %v, want ErrAIProfileNotFound", err)
+	}
+	upd.OwnerUserID = "alice"
+	upd.APISecretID = "alice-key"
+	upd.Model = "voice-model-2"
+	if err := s.UpdateAIProfile(ctx, upd); err != nil {
+		t.Fatalf("owner update: %v", err)
+	}
+	got, err := s.GetAIProfile(ctx, "alice", "alice-rt")
+	if err != nil || got.Model != "voice-model-2" {
+		t.Fatalf("after owner update = %+v, %v", got, err)
+	}
+	bad := upd
+	bad.Protocol = "webrtc"
+	if err := s.UpdateAIProfile(ctx, bad); !errors.Is(err, ErrInvalidAIProfile) {
+		t.Fatalf("invalid update err = %v, want ErrInvalidAIProfile", err)
+	}
+}
+
 func TestAIProfileLoopbackPlainWSAllowed(t *testing.T) {
 	s := openMigrated(t, filepath.Join(t.TempDir(), "db.sqlite"))
 	seedTenants(t, s)
