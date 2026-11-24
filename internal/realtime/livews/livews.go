@@ -175,7 +175,7 @@ func (s *Session) write(ctx context.Context, b []byte) error {
 }
 
 func (s *Session) fail(err error) error {
-	s.conn.Close(websocket.StatusPolicyViolation, "protocol error")
+	_ = s.conn.Close(websocket.StatusPolicyViolation, "protocol error")
 	return err
 }
 
@@ -230,7 +230,7 @@ func (s *Session) CloseGracefully(ctx context.Context) (realtime.Event, error) {
 			return realtime.Event{}, fmt.Errorf("livews: closed without session.closed, usage unconfirmed: %w", err)
 		}
 		if ev.Kind == realtime.EventClosed {
-			s.conn.Close(websocket.StatusNormalClosure, "")
+			_ = s.conn.Close(websocket.StatusNormalClosure, "")
 			return ev, nil
 		}
 	}

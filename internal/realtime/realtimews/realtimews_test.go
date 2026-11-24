@@ -151,7 +151,7 @@ func (f *fakeRealtime) handler(t *testing.T) http.HandlerFunc {
 		if err != nil {
 			return
 		}
-		defer c.CloseNow()
+		defer func() { _ = c.CloseNow() }()
 		ctx := r.Context()
 		_ = c.Write(ctx, websocket.MessageText, upstream(t, "session.created"))
 		for {
@@ -216,7 +216,7 @@ func TestSessionHandshakeAndInterruption(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer s.Close()
+	defer func() { _ = s.Close() }()
 	if f.query != "model=gpt-realtime-2.1" || f.auth != "Bearer sk-test" {
 		t.Fatalf("query=%q auth=%q", f.query, f.auth)
 	}
@@ -276,7 +276,7 @@ func TestSessionFailsClosed(t *testing.T) {
 			if err != nil {
 				return
 			}
-			defer c.CloseNow()
+			defer func() { _ = c.CloseNow() }()
 			_, _, _ = c.Read(r.Context()) // Live waits for session.start; send nothing first
 		}))
 		defer srv.Close()
@@ -292,7 +292,7 @@ func TestSessionFailsClosed(t *testing.T) {
 			if err != nil {
 				return
 			}
-			defer c.CloseNow()
+			defer func() { _ = c.CloseNow() }()
 			_ = c.Write(r.Context(), websocket.MessageText, []byte(`{"type":"session.started","session":{"id":"live_1"}}`))
 			_, _, _ = c.Read(r.Context())
 		}))
