@@ -90,6 +90,8 @@ type realtimeFake struct {
 	mu       sync.Mutex
 	inbound  [][]byte
 	outbound []byte
+	followup []byte
+	appends  int
 }
 
 func (f *realtimeFake) handler(t *testing.T) http.HandlerFunc {
@@ -129,7 +131,12 @@ func (f *realtimeFake) handler(t *testing.T) http.HandlerFunc {
 				}
 				f.mu.Lock()
 				f.inbound = append(f.inbound, raw)
+				f.appends++
+				more := f.followup != nil && f.appends > 1
 				f.mu.Unlock()
+				if more {
+					_ = c.Write(ctx, websocket.MessageText, []byte(`{"type":"response.output_audio.delta","event_id":"evt_more","response_id":"resp_e2e","item_id":"item_e2e","output_index":0,"content_index":0,"delta":"`+base64.StdEncoding.EncodeToString(f.followup)+`"}`))
+				}
 			}
 		}
 	}

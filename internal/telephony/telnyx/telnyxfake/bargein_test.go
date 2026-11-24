@@ -50,6 +50,150 @@ func TestSignedStreamBargeInClearsThroughRealtime(t *testing.T) {
 	})
 }
 
+func TestSignedStreamBargeInSuppressesStreamingRealtimeAudio(t *testing.T) {
+	agent, _ := testAudio(pcmuLeg, 7)
+	more, _ := testAudio(pcmuLeg, 8)
+	fake := &realtimeFake{outbound: agent, followup: more}
+	provider := httptest.NewServer(fake.handler(t))
+	t.Cleanup(provider.Close)
+	endpoint := "ws" + strings.TrimPrefix(provider.URL, "http") + "/v1/realtime"
+	runBargeInStreaming(t, pcmuLeg, func(ctx context.Context, leg audio.Format) (providerSession, error) {
+		return realtimews.Connect(ctx, realtimews.Config{Endpoint: endpoint, APIKey: "sk-test", Model: "gpt-realtime-2.1", Voice: "marin", Instructions: "Test.", Format: leg})
+	})
+}
+
+func runBargeInStreaming(t *testing.T, leg audio.Format, connect func(ctx context.Context, leg audio.Format) (providerSession, error)) {
+	t.Helper()
+	priv, pub := newKeys(t)
+	now := time.Now()
+	v, err := telnyx.NewVerifier(pub, telnyx.DefaultTolerance, func() time.Time { return now })
+	if err != nil {
+		t.Fatal(err)
+	}
+	type cutHandle struct {
+		sink   *telnyx.BridgeSink
+		bridge *voicebridge.Bridge
+		marked chan struct{}
+	}
+	ready := make(chan cutHandle, 1)
+	var me *telnyx.MediaEndpoint
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		me.ServeHTTP(w, r)
+	}))
+	t.Cleanup(srv.Close)
+	streamURL := "ws" + strings.TrimPrefix(srv.URL, "http") + "/media?token=bargein-stream"
+
+	me, err = telnyx.NewMediaEndpoint(v, streamURL, func(start telnyx.Frame, send telnyx.Send) (telnyx.MediaSink, error) {
+		b, err := voicebridge.New(start.Format, leg, 5*time.Millisecond, 2*time.Second)
+		if err != nil {
+			return nil, err
+		}
+		s, err := telnyx.NewBridgeSink(b, send)
+		if err != nil {
+			return nil, err
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		p, err := connect(ctx, leg)
+		if err != nil {
+			return nil, err
+		}
+		s.ToProvider = func(in []byte) error { return p.AppendAudio(context.Background(), in) }
+		h := cutHandle{sink: s, bridge: b, marked: make(chan struct{}, 4)}
+		go func() {
+			for {
+				ev, err := p.Next(context.Background())
+				if err != nil {
+					return
+				}
+				if ev.Kind == realtime.EventAudio {
+					_ = s.AgentAudio(context.Background(), audio.SourceRef{ItemID: ev.ItemID, ContentIndex: ev.ContentIndex}, ev.Audio)
+				}
+			}
+		}()
+		ready <- h
+		return markSignal{MediaSink: s, marked: h.marked}, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	s, err := DialMedia(ctx, streamURL, priv, now)
+	if err != nil {
+		t.Fatalf("signed dial rejected: %v", err)
+	}
+	defer func() { _ = s.Close() }()
+
+	start := []byte(`{"event":"start","stream_id":"bargein-stream","sequence_number":"1","start":{"call_control_id":"v3:bargein-stream","client_state":"","media_format":{"encoding":"PCMU","sample_rate":8000,"channels":1}}}`)
+	if err := s.Send(ctx, start); err != nil {
+		t.Fatal(err)
+	}
+	_, caller := testAudio(leg, 6)
+	if err := s.Send(ctx, mediaFrame(t, "inbound", caller, 320)); err != nil {
+		t.Fatal(err)
+	}
+	var h cutHandle
+	select {
+	case h = <-ready:
+	case <-ctx.Done():
+		t.Fatal("stream sink never created")
+	}
+
+	recv := func() string {
+		b, err := s.Recv(ctx)
+		if err != nil {
+			t.Fatalf("recv: %v", err)
+		}
+		var m struct {
+			Event string `json:"event"`
+		}
+		if err := json.Unmarshal(b, &m); err != nil {
+			t.Fatal(err)
+		}
+		return m.Event
+	}
+	if ev := recv(); ev != "media" {
+		t.Fatalf("want agent media before cut, got %s", ev)
+	}
+	if ev := recv(); ev != "mark" {
+		t.Fatalf("want mark after agent media, got %s", ev)
+	}
+
+	if err := h.sink.Interrupt(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if ev := recv(); ev != "clear" {
+		t.Fatalf("want clear after cut, got %s", ev)
+	}
+
+	_, caller2 := testAudio(leg, 9)
+	if err := s.Send(ctx, mediaFrame(t, "inbound", caller2, 640)); err != nil {
+		t.Fatal(err)
+	}
+	quiet := make(chan string, 1)
+	go func() {
+		b, err := s.Recv(ctx)
+		if err != nil {
+			quiet <- "recv-error"
+			return
+		}
+		var m struct {
+			Event string `json:"event"`
+		}
+		_ = json.Unmarshal(b, &m)
+		quiet <- m.Event
+	}()
+	select {
+	case ev := <-quiet:
+		if ev == "media" {
+			t.Fatal("agent media reached Telnyx after clear")
+		}
+	case <-time.After(500 * time.Millisecond):
+	}
+}
+
 func runBargeIn(t *testing.T, leg audio.Format, connect func(ctx context.Context, leg audio.Format) (providerSession, error)) {
 	t.Helper()
 	priv, pub := newKeys(t)
