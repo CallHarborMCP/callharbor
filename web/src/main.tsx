@@ -1,5 +1,7 @@
 import { StrictMode, useEffect, useState } from "react";
 import { createRoot } from "react-dom/client";
+import { AppearanceProvider } from "./design/AppearanceProvider";
+import "./design/design-system.css";
 import { getSetupStatus } from "./identity/api";
 import { Dashboard } from "./identity/Dashboard";
 import { FirstAdminWizard } from "./identity/FirstAdminWizard";
@@ -40,37 +42,53 @@ function App() {
     };
   }, []);
 
+  return (
+    <AppearanceProvider
+      userId={gate === "signed-in" && session ? session.user.id : null}
+      csrfToken={gate === "signed-in" && session ? session.csrf_token : null}
+    >
+      <Screen
+        gate={gate}
+        session={session}
+        onCreated={() => setGate("login")}
+        onSignedIn={(next) => {
+          setSession(next);
+          setGate("signed-in");
+        }}
+        onSignedOut={() => {
+          setSession(null);
+          setGate("login");
+        }}
+      />
+    </AppearanceProvider>
+  );
+}
+
+interface ScreenProps {
+  readonly gate: Gate;
+  readonly session: Session | null;
+  readonly onCreated: () => void;
+  readonly onSignedIn: (session: Session) => void;
+  readonly onSignedOut: () => void;
+}
+
+function Screen({ gate, session, onCreated, onSignedIn, onSignedOut }: ScreenProps) {
   if (gate === "setup") {
     return (
       <main>
-        <FirstAdminWizard onCreated={() => setGate("login")} />
+        <FirstAdminWizard onCreated={onCreated} />
       </main>
     );
   }
   if (gate === "login") {
     return (
       <main>
-        <LoginForm
-          onSignedIn={(next) => {
-            setSession(next);
-            setGate("signed-in");
-          }}
-        />
+        <LoginForm onSignedIn={onSignedIn} />
       </main>
     );
   }
   if (gate === "signed-in" && session) {
-    return (
-      <main>
-        <Dashboard
-          session={session}
-          onSignedOut={() => {
-            setSession(null);
-            setGate("login");
-          }}
-        />
-      </main>
-    );
+    return <Dashboard session={session} onSignedOut={onSignedOut} />;
   }
   if (gate === "error") {
     return (
