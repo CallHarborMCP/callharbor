@@ -1,0 +1,25 @@
+DROP TRIGGER IF EXISTS retention_purge_markers_immutable_update;
+DROP TRIGGER IF EXISTS audit_events_guarded_delete;
+DROP TRIGGER IF EXISTS audit_events_immutable_update;
+DROP TRIGGER IF EXISTS calls_guarded_delete;
+DROP TRIGGER IF EXISTS recordings_guarded_delete;
+DROP TRIGGER IF EXISTS transcript_turns_guarded_delete;
+DROP TRIGGER IF EXISTS transcript_turns_immutable_update;
+DROP TRIGGER IF EXISTS call_events_guarded_delete;
+DROP TRIGGER IF EXISTS call_events_immutable_update;
+DROP TRIGGER IF EXISTS call_briefs_guarded_delete;
+DROP TRIGGER IF EXISTS call_briefs_immutable_update;
+
+DROP TABLE IF EXISTS audit_events;
+DROP TABLE IF EXISTS retention_purge_markers;
+DROP TABLE IF EXISTS provider_webhook_receipts;
+DROP TABLE IF EXISTS recordings;
+DROP TABLE IF EXISTS transcript_turns;
+DROP TABLE IF EXISTS call_events;
+DROP TABLE IF EXISTS call_briefs;
+DROP TABLE IF EXISTS calls;
+DROP TABLE IF EXISTS ai_profiles;
+DROP TABLE IF EXISTS telephony_profiles;
+DROP TABLE IF EXISTS secrets;
+DROP TABLE IF EXISTS settings;
+DROP TABLE IF EXISTS users;
