@@ -177,6 +177,103 @@ th { font-size: 0.8rem; color: var(--muted); font-weight: 600; }
   .ch-main { padding-inline: var(--space-3); }
 }
 
+/* Consent screen: a single centred card, standalone from the dashboard shell. */
+.ch-consent-page {
+  min-height: 100vh;
+  display: grid;
+  place-items: start center;
+  padding: var(--space-6) var(--space-4);
+}
+.ch-consent-card {
+  width: min(100%, 36rem);
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+  padding: var(--space-6);
+  display: grid;
+  gap: var(--space-4);
+}
+.ch-consent-brand { margin: 0; font-weight: 700; color: var(--muted); letter-spacing: -0.01em; }
+.ch-consent-card p { margin: 0; }
+.ch-consent-block { display: grid; gap: var(--space-2); padding-top: var(--space-4); border-top: 1px solid var(--line); }
+.ch-consent-block h2 { margin: 0; }
+.ch-app-name { font-size: 1.2rem; font-weight: 650; overflow-wrap: anywhere; }
+.ch-identity { display: flex; flex-wrap: wrap; gap: var(--space-1) var(--space-2); align-items: baseline; }
+.ch-identity-value { overflow-wrap: anywhere; font-weight: 600; }
+.ch-break { overflow-wrap: anywhere; }
+code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 0.9em; overflow-wrap: anywhere; }
+
+.ch-scope-list { list-style: none; margin: 0; padding: 0; display: grid; gap: var(--space-2); }
+.ch-scope-list li { display: grid; gap: var(--space-1); padding: var(--space-2) var(--space-3); border: 1px solid var(--line); border-radius: var(--radius-md); }
+.ch-scope-list--compact li { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0 var(--space-2); padding: 0; border: none; }
+
+.ch-consent-actions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--space-3); }
+.ch-consent-actions button { width: 100%; }
+.ch-button-primary { background: var(--accent); border-color: var(--accent); color: var(--on-accent); font-weight: 600; }
+.ch-button-secondary { background: var(--surface); }
+.ch-button-danger { background: var(--fail); border-color: var(--fail); color: var(--on-fail); font-weight: 600; }
+.ch-button-primary:hover:not(:disabled) { filter: brightness(1.06); }
+.ch-consent-footer { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-1); }
+
+.ch-link-button {
+  min-height: var(--control-min);
+  padding: 0 var(--space-1);
+  border: none;
+  background: none;
+  color: var(--accent);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+.ch-grant-list { list-style: none; margin: 0; padding: 0; display: grid; gap: var(--space-3); }
+.ch-grant {
+  display: grid;
+  gap: var(--space-3);
+  padding: var(--space-3) 0;
+  border-top: 1px solid var(--line);
+}
+.ch-grant:first-child { border-top: none; padding-top: 0; }
+.ch-grant-main { display: grid; gap: var(--space-1); min-width: 0; }
+.ch-grant-name { font-weight: 600; overflow-wrap: anywhere; margin: 0; }
+.ch-grant-dates { margin: 0; font-size: 0.9rem; }
+.ch-grant-action { justify-self: start; color: var(--fail); }
+.ch-grant-confirm {
+  display: grid;
+  gap: var(--space-3);
+  padding: var(--space-3);
+  border: 1px solid var(--fail);
+  border-radius: var(--radius-md);
+}
+.ch-grant-confirm:focus { outline: none; }
+.ch-grant-confirm:focus-visible { outline: var(--focus-ring-width) solid var(--focus); outline-offset: 2px; }
+.ch-grant-confirm p { margin: 0; }
+
+.ch-empty { display: grid; gap: var(--space-2); }
+.ch-empty p { margin: 0; }
+/* Empty live regions keep their place in the DOM without adding spacing. */
+.ch-status:empty { margin: 0; }
+/* Headings take programmatic focus only to move screen-reader context; no ring. */
+h1[tabindex="-1"]:focus,
+h2[tabindex="-1"]:focus { outline: none; }
+.ch-consent-card a { color: var(--accent); text-underline-offset: 3px; }
+
+@media (min-width: 560px) {
+  .ch-grant { grid-template-columns: minmax(0, 1fr) auto; align-items: start; }
+  .ch-grant:first-child { padding-top: var(--space-3); }
+  .ch-grant-action { justify-self: end; }
+  .ch-grant-confirm { grid-column: 1 / -1; }
+}
+
+@media (max-width: 768px) {
+  /* Four bottom-nav tabs must fit on one line each at 320px and up. */
+  .ch-nav button { font-size: 0.8rem; padding-inline: var(--space-1); }
+}
+
+@media (max-width: 360px) {
+  .ch-consent-page { padding-inline: var(--space-2); }
+  .ch-consent-card { padding: var(--space-4); }
+}
+
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,
