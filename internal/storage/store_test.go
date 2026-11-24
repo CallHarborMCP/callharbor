@@ -110,8 +110,8 @@ func TestMigrationsRoundTripUpAndDown(t *testing.T) {
 	if err := s.Migrate(ctx); err != nil {
 		t.Fatalf("Migrate: %v", err)
 	}
-	if v, _ := s.SchemaVersion(ctx); v != 1 {
-		t.Fatalf("schema version = %d, want 1", v)
+	if v, _ := s.SchemaVersion(ctx); v != 2 {
+		t.Fatalf("schema version = %d, want 2", v)
 	}
 	if err := s.Migrate(ctx); err != nil {
 		t.Fatalf("second Migrate should be a no-op: %v", err)
@@ -136,7 +136,7 @@ func TestMigrationsRoundTripUpAndDown(t *testing.T) {
 func TestMigrateRefusesNewerSchema(t *testing.T) {
 	ctx := context.Background()
 	s := openMigrated(t, filepath.Join(t.TempDir(), "newer.db"))
-	if _, err := s.db.ExecContext(ctx, "INSERT INTO schema_migrations (version, name) VALUES (2, 'future')"); err != nil {
+	if _, err := s.db.ExecContext(ctx, "INSERT INTO schema_migrations (version, name) VALUES (3, 'future')"); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.Migrate(ctx); err == nil || !strings.Contains(err.Error(), "newer") {
@@ -457,7 +457,7 @@ func TestDataSurvivesRestartAndCrashCopy(t *testing.T) {
 		t.Fatalf("reopen: %v", err)
 	}
 	t.Cleanup(func() { _ = reopened.Close() })
-	if v, _ := reopened.SchemaVersion(ctx); v != 1 {
+	if v, _ := reopened.SchemaVersion(ctx); v != 2 {
 		t.Fatalf("schema version after restart = %d", v)
 	}
 	if n := scalarInt(t, reopened, "SELECT COUNT(*) FROM calls WHERE id = 'alice-call'"); n != 1 {
@@ -492,7 +492,7 @@ func TestBackupCapturesWALAndRestoresConsistently(t *testing.T) {
 	if err := restored.IntegrityCheck(ctx); err != nil {
 		t.Fatalf("backup integrity: %v", err)
 	}
-	if v, _ := restored.SchemaVersion(ctx); v != 1 {
+	if v, _ := restored.SchemaVersion(ctx); v != 2 {
 		t.Fatalf("backup schema version = %d", v)
 	}
 	if n := scalarInt(t, restored, "SELECT COUNT(*) FROM users"); n != 2 {
@@ -523,7 +523,7 @@ func TestRestoredBackupRollsBackToPriorSchema(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = restored.Close() }()
-	if v, _ := restored.SchemaVersion(ctx); v != 1 {
+	if v, _ := restored.SchemaVersion(ctx); v != 2 {
 		t.Fatalf("restored version = %d", v)
 	}
 	if n := scalarInt(t, restored, "SELECT COUNT(*) FROM calls"); n != 1 {

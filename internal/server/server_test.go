@@ -109,3 +109,15 @@ func TestRoutesRejectUnsupportedMethods(t *testing.T) {
 		t.Fatalf("POST /healthz status = %d, want 405", rec.Code)
 	}
 }
+
+func TestUnbuiltWebUIReturnsServiceUnavailable(t *testing.T) {
+	s := New(observability.NewLogger(io.Discard, slog.LevelError), fstest.MapFS{
+		".gitkeep": &fstest.MapFile{},
+	})
+	if rec := get(t, s.Handler(), "/"); rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want 503", rec.Code)
+	}
+	if rec := get(t, s.Handler(), "/healthz"); rec.Code != http.StatusOK {
+		t.Fatalf("healthz status = %d, want 200", rec.Code)
+	}
+}
