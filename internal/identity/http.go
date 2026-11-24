@@ -38,6 +38,38 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/users/{id}", h.getUser)
 	mux.HandleFunc("PATCH /api/users/{id}", h.updateUser)
 	mux.HandleFunc("PUT /api/users/{id}/password", h.resetPassword)
+	mux.HandleFunc("GET /api/preferences/appearance", h.getAppearance)
+	mux.HandleFunc("PUT /api/preferences/appearance", h.setAppearance)
+}
+
+func (h *Handler) getAppearance(w http.ResponseWriter, r *http.Request) {
+	p, ok := h.authenticate(w, r)
+	if !ok {
+		return
+	}
+	a, err := h.svc.GetAppearance(r.Context(), p)
+	if err != nil {
+		writeServiceError(w, err)
+		return
+	}
+	writeOK(w, http.StatusOK, a)
+}
+
+func (h *Handler) setAppearance(w http.ResponseWriter, r *http.Request) {
+	p, ok := h.authenticateMutating(w, r)
+	if !ok {
+		return
+	}
+	var in Appearance
+	if !decode(w, r, &in) {
+		return
+	}
+	a, err := h.svc.SetAppearance(r.Context(), p, in)
+	if err != nil {
+		writeServiceError(w, err)
+		return
+	}
+	writeOK(w, http.StatusOK, a)
 }
 
 func (h *Handler) setupStatus(w http.ResponseWriter, r *http.Request) {
@@ -225,6 +257,18 @@ func (h *Handler) resetPassword(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// Authenticate resolves the signed-in principal for a request, writing a 401
+// response and returning false when there is none. It is exported so sibling
+// owner-scoped APIs share the identity session and CSRF rules.
+func (h *Handler) Authenticate(w http.ResponseWriter, r *http.Request) (*Principal, bool) {
+	return h.authenticate(w, r)
+}
+
+// AuthenticateMutating is Authenticate plus the CSRF check for writes.
+func (h *Handler) AuthenticateMutating(w http.ResponseWriter, r *http.Request) (*Principal, bool) {
+	return h.authenticateMutating(w, r)
 }
 
 func (h *Handler) authenticate(w http.ResponseWriter, r *http.Request) (*Principal, bool) {

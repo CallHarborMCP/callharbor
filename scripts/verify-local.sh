@@ -37,7 +37,9 @@ if [[ -f go.mod ]]; then
 fi
 
 if [[ -f web/package.json ]]; then
-  (cd web && npm ci && npm run lint && npm run typecheck && npm run test -- --run && npm run build)
+  (cd web && npm ci && npm audit && npx playwright install --with-deps chromium && npm run lint && npm run typecheck && npm run test:coverage && npm run build && npx playwright test tests-e2e/appearance.spec.ts)
+  web_total="$(node -e 'const s=require("./web/coverage/coverage-summary.json").total.statements.pct; process.stdout.write(String(s))')"
+  printf 'React statement coverage: %s%% (minimum 80%%)\n' "$web_total"
 fi
 
 bash -n scripts/update-telnyx-contract.sh

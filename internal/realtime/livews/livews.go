@@ -26,6 +26,7 @@ type Config struct {
 	Voice        string
 	Instructions string
 	Format       audio.Format
+	Headers      map[string]string
 	HTTPClient   *http.Client
 }
 
@@ -93,7 +94,10 @@ func Connect(ctx context.Context, c Config) (*Session, error) {
 	}
 	ctx, cancel := context.WithTimeout(ctx, realtime.HandshakeTimeout)
 	defer cancel()
-	h := http.Header{}
+	h, err := realtime.ValidateHeaders(c.Headers)
+	if err != nil {
+		return nil, err
+	}
 	h.Set("Authorization", "Bearer "+c.APIKey)
 	conn, _, err := websocket.Dial(ctx, u.String(), &websocket.DialOptions{HTTPHeader: h, HTTPClient: c.HTTPClient})
 	if err != nil {
@@ -213,15 +217,29 @@ func (s *Session) DeclineDelegation(ctx context.Context, delegationID string) er
 func (s *Session) Next(ctx context.Context) (realtime.Event, error) {
 	_, b, err := s.read(ctx)
 	if err != nil {
-		return realtime.Event{}, err
+		return realtime.Event{}, realtime.Transport(err)
 	}
 	return ParseServerEvent(b)
 }
 
+// Close tears down the socket without the protocol close. Usage is then
+// unconfirmed; use CloseGracefully whenever the provider is still reachable.
+func (s *Session) Close() error {
+	return s.conn.Close(websocket.StatusNormalClosure, "")
+}
+
+// RequestClose sends session.close without reading. The session's single
+// reader then observes session.closed, so usage is confirmed without a second
+// concurrent reader on the socket.
+func (s *Session) RequestClose(ctx context.Context) error {
+	return s.write(ctx, []byte(`{"type":"session.close","event_id":"ch_close"}`))
+}
+
 // CloseGracefully sends session.close and waits for session.closed so final
-// usage is confirmed; the caller bounds ctx.
+// usage is confirmed; the caller bounds ctx. It must not run concurrently with
+// another reader.
 func (s *Session) CloseGracefully(ctx context.Context) (realtime.Event, error) {
-	if err := s.write(ctx, []byte(`{"type":"session.close","event_id":"ch_close"}`)); err != nil {
+	if err := s.RequestClose(ctx); err != nil {
 		return realtime.Event{}, err
 	}
 	for {
