@@ -14,6 +14,7 @@ export interface AIProfileInput {
   readonly model: string;
   readonly voice: string;
   readonly instructions: string;
+  readonly api_secret_id?: string;
 }
 
 export function validateEndpoint(raw: string): string | null {
@@ -63,6 +64,35 @@ export async function createAIProfile(csrfToken: string, input: AIProfileInput):
     const parsed: unknown = await response.json().catch(() => null);
     throw new AIProfileError(extractCode(parsed));
   }
+}
+
+// createAIAPISecret stores an AI provider key with the write-only secrets API.
+// The server never returns the value, so the caller keeps nothing after this.
+export async function createAIAPISecret(csrfToken: string, name: string, value: string): Promise<string> {
+  let response: Response;
+  try {
+    response = await fetch("/api/secrets", {
+      method: "POST",
+      credentials: "same-origin",
+      headers: {
+        Accept: "application/json",
+        "Content-Type": "application/json",
+        "X-CSRF-Token": csrfToken,
+      },
+      body: JSON.stringify({ name, purpose: "ai_api_key", value }),
+    });
+  } catch {
+    throw new AIProfileError("network");
+  }
+  if (!response.ok) {
+    const parsed: unknown = await response.json().catch(() => null);
+    throw new AIProfileError(extractCode(parsed));
+  }
+  const body = (await response.json()) as { id?: unknown };
+  if (typeof body.id !== "string") {
+    throw new AIProfileError("internal");
+  }
+  return body.id;
 }
 
 function extractCode(body: unknown): string {

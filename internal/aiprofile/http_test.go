@@ -168,6 +168,81 @@ func TestProfileRejectsUnsafeInput(t *testing.T) {
 	}
 }
 
+func TestProfileSecretReferenceIsOwnerAndPurposeScoped(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+	if _, err := f.svc.Setup(ctx, "root", pwAdmin); err != nil {
+		t.Fatal(err)
+	}
+	for _, u := range []string{"alice", "bob"} {
+		if _, err := f.svc.CreateUser(ctx, adminPrincipal(t, f), u, pwUser, "user"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	alice, err := f.store.GetUserByUsername(ctx, "alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+	bob, err := f.store.GetUserByUsername(ctx, "bob")
+	if err != nil {
+		t.Fatal(err)
+	}
+	seed := func(id, owner, purpose string) {
+		t.Helper()
+		if err := f.store.InsertSecret(ctx, storage.Secret{
+			ID: id, OwnerUserID: owner, Name: id, Purpose: purpose,
+			Ciphertext: []byte{1}, Nonce: make([]byte, 12), KeyVersion: 1, CreatedAt: "2026-11-24T10:00:00.000Z",
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	seed("alice-ai-key", alice.ID, "ai_api_key")
+	seed("bob-ai-key", bob.ID, "ai_api_key")
+	seed("alice-tel-key", alice.ID, "telnyx_api_key")
+
+	aliceCookie, aliceCSRF := f.login(t, "alice")
+	bobCookie, bobCSRF := f.login(t, "bob")
+
+	bad := map[string]string{
+		"foreign secret": "bob-ai-key",
+		"missing secret": "no-such-key",
+		"wrong purpose":  "alice-tel-key",
+	}
+	for name, secretID := range bad {
+		body := validProfile()
+		body["id"] = "ref-" + strings.ReplaceAll(name, " ", "-")
+		body["api_secret_id"] = secretID
+		rec := f.call(t, http.MethodPost, "/api/ai-profiles", body, aliceCookie, aliceCSRF)
+		if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "invalid_input") {
+			t.Errorf("create %s: %d %s, want 400 invalid_input", name, rec.Code, rec.Body.String())
+		}
+	}
+
+	good := validProfile()
+	good["id"] = "alice-ref"
+	good["api_secret_id"] = "alice-ai-key"
+	if rec := f.call(t, http.MethodPost, "/api/ai-profiles", good, aliceCookie, aliceCSRF); rec.Code != http.StatusCreated {
+		t.Fatalf("create with own ai key: %d %s", rec.Code, rec.Body.String())
+	}
+
+	for name, secretID := range map[string]string{"foreign secret": "bob-ai-key", "missing secret": "no-such-key", "wrong purpose": "alice-tel-key"} {
+		body := validProfile()
+		body["id"] = "alice-ref"
+		body["api_secret_id"] = secretID
+		rec := f.call(t, http.MethodPut, "/api/ai-profiles/alice-ref", body, aliceCookie, aliceCSRF)
+		if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "invalid_input") {
+			t.Errorf("update %s: %d %s, want 400 invalid_input", name, rec.Code, rec.Body.String())
+		}
+	}
+
+	bobBody := validProfile()
+	bobBody["id"] = "bob-steal"
+	bobBody["api_secret_id"] = "alice-ai-key"
+	if rec := f.call(t, http.MethodPost, "/api/ai-profiles", bobBody, bobCookie, bobCSRF); rec.Code != http.StatusBadRequest {
+		t.Fatalf("bob binds alice's key: %d, want 400", rec.Code)
+	}
+}
+
 func TestProfileRoutesRequireSession(t *testing.T) {
 	f := newFixture(t)
 	if rec := f.call(t, http.MethodGet, "/api/ai-profiles", nil, nil, ""); rec.Code != http.StatusUnauthorized {

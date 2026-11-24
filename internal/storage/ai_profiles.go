@@ -87,6 +87,25 @@ func validateAIProfile(p AIProfile) error {
 	return nil
 }
 
+// checkAISecret requires a referenced secret to belong to the owner and to be
+// an ai_api_key. Missing, foreign and wrong-purpose secrets get the same
+// ErrInvalidAIProfile so the response does not reveal which ids exist.
+func (s *Store) checkAISecret(ctx context.Context, ownerUserID, secretID string) error {
+	if secretID == "" {
+		return nil
+	}
+	var n int
+	err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM secrets
+		WHERE id = ? AND owner_user_id = ? AND purpose = 'ai_api_key'`, secretID, ownerUserID).Scan(&n)
+	if err != nil {
+		return fmt.Errorf("storage: check ai secret: %w", err)
+	}
+	if n == 0 {
+		return fmt.Errorf("%w: api secret is not an ai key owned by this user", ErrInvalidAIProfile)
+	}
+	return nil
+}
+
 func encodeHeaders(h map[string]string) (string, error) {
 	if len(h) == 0 {
 		return "{}", nil
@@ -105,6 +124,9 @@ func isLoopbackHost(h string) bool {
 // CreateAIProfile inserts a profile for its owner after validation.
 func (s *Store) CreateAIProfile(ctx context.Context, p AIProfile) error {
 	if err := ValidateAIProfile(p); err != nil {
+		return err
+	}
+	if err := s.checkAISecret(ctx, p.OwnerUserID, p.APISecretID); err != nil {
 		return err
 	}
 	hdr, err := encodeHeaders(p.Headers)
@@ -177,6 +199,9 @@ func (s *Store) ListAIProfiles(ctx context.Context, ownerUserID string) ([]AIPro
 // p.OwnerUserID. It returns ErrAIProfileNotFound for another owner's profile.
 func (s *Store) UpdateAIProfile(ctx context.Context, p AIProfile) error {
 	if err := ValidateAIProfile(p); err != nil {
+		return err
+	}
+	if err := s.checkAISecret(ctx, p.OwnerUserID, p.APISecretID); err != nil {
 		return err
 	}
 	hdr, err := encodeHeaders(p.Headers)

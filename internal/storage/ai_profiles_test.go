@@ -17,7 +17,7 @@ func aiProfile(id, owner, protocol, endpoint string) AIProfile {
 		EndpointURL: endpoint,
 		Model:       "voice-model",
 		Voice:       "alloy",
-		APISecretID: owner + "-key",
+		APISecretID: owner + "-ai-key",
 		CreatedAt:   testTime,
 		UpdatedAt:   testTime,
 	}
@@ -119,7 +119,7 @@ func TestAIProfileListAndUpdateAreOwnerScoped(t *testing.T) {
 		t.Fatalf("cross-owner update err = %v, want ErrAIProfileNotFound", err)
 	}
 	upd.OwnerUserID = "alice"
-	upd.APISecretID = "alice-key"
+	upd.APISecretID = "alice-ai-key"
 	upd.Model = "voice-model-2"
 	if err := s.UpdateAIProfile(ctx, upd); err != nil {
 		t.Fatalf("owner update: %v", err)
@@ -151,9 +151,25 @@ func TestAIProfileRejectsForeignSecret(t *testing.T) {
 	ctx := context.Background()
 
 	p := aiProfile("evil-ai", "bob", "realtime_ws", "wss://ai.example.test/x")
+	p.APISecretID = "alice-ai-key"
+	if err := s.CreateAIProfile(ctx, p); !errors.Is(err, ErrInvalidAIProfile) {
+		t.Fatalf("foreign secret err = %v, want ErrInvalidAIProfile", err)
+	}
+}
+
+func TestAIProfileRejectsWrongPurposeSecret(t *testing.T) {
+	s := openMigrated(t, filepath.Join(t.TempDir(), "db.sqlite"))
+	seedTenants(t, s)
+	ctx := context.Background()
+
+	p := aiProfile("tel-as-ai", "alice", "realtime_ws", "wss://ai.example.test/x")
 	p.APISecretID = "alice-key"
-	if err := s.CreateAIProfile(ctx, p); err == nil {
-		t.Fatal("profile referencing another owner's secret was accepted")
+	if err := s.CreateAIProfile(ctx, p); !errors.Is(err, ErrInvalidAIProfile) {
+		t.Fatalf("telnyx secret as ai key err = %v, want ErrInvalidAIProfile", err)
+	}
+	p.APISecretID = "no-such-secret"
+	if err := s.CreateAIProfile(ctx, p); !errors.Is(err, ErrInvalidAIProfile) {
+		t.Fatalf("missing secret err = %v, want ErrInvalidAIProfile", err)
 	}
 }
 
