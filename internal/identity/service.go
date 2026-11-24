@@ -306,6 +306,61 @@ func (s *Service) Logout(ctx context.Context, p *Principal) error {
 	return s.store.RevokeSession(ctx, p.SessionID, ts(s.now()), s.audit(p, p.User.ID, "auth.logout", "session", "", "success", "{}"))
 }
 
+var (
+	appearanceThemes  = map[string]bool{"system": true, "light": true, "dark": true}
+	appearancePresets = map[string]bool{"console": true, "harbor": true}
+	appearanceAccents = map[string]bool{"blue": true, "teal": true, "violet": true, "green": true}
+	appearanceDensity = map[string]bool{"comfortable": true, "compact": true}
+)
+
+// Appearance is the per-user display preference set. Values are validated
+// against closed sets before they are stored.
+type Appearance struct {
+	Theme   string `json:"theme"`
+	Preset  string `json:"preset"`
+	Accent  string `json:"accent"`
+	Density string `json:"density"`
+}
+
+// DefaultAppearance is returned when a user has not saved preferences yet.
+var DefaultAppearance = Appearance{Theme: "system", Preset: "console", Accent: "blue", Density: "comfortable"}
+
+func (a Appearance) valid() bool {
+	return appearanceThemes[a.Theme] && appearancePresets[a.Preset] && appearanceAccents[a.Accent] && appearanceDensity[a.Density]
+}
+
+// GetAppearance returns the caller's own appearance preferences.
+func (s *Service) GetAppearance(ctx context.Context, actor *Principal) (Appearance, error) {
+	if actor == nil {
+		return Appearance{}, ErrUnauthenticated
+	}
+	a, ok, err := s.store.GetAppearance(ctx, actor.User.ID)
+	if err != nil {
+		return Appearance{}, err
+	}
+	if !ok {
+		return DefaultAppearance, nil
+	}
+	return Appearance{Theme: a.Theme, Preset: a.Preset, Accent: a.Accent, Density: a.Density}, nil
+}
+
+// SetAppearance stores the caller's own appearance preferences. A user can only
+// write their own record; the target is always the authenticated principal.
+func (s *Service) SetAppearance(ctx context.Context, actor *Principal, in Appearance) (Appearance, error) {
+	if actor == nil {
+		return Appearance{}, ErrUnauthenticated
+	}
+	if !in.valid() {
+		return Appearance{}, ErrInvalidInput
+	}
+	if err := s.store.SetAppearance(ctx, actor.User.ID, storage.Appearance{
+		Theme: in.Theme, Preset: in.Preset, Accent: in.Accent, Density: in.Density,
+	}, ts(s.now())); err != nil {
+		return Appearance{}, err
+	}
+	return in, nil
+}
+
 func requireAdmin(p *Principal) error {
 	if p == nil || p.User.Role != RoleAdmin {
 		return ErrForbidden
