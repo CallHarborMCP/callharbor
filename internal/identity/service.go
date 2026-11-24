@@ -18,9 +18,10 @@ const (
 	SessionAbsoluteTTL = 12 * time.Hour
 	SessionIdleTTL     = 30 * time.Minute
 
-	throttleWindow   = 15 * time.Minute
-	throttleMaxFails = 5
-	throttleLockout  = 15 * time.Minute
+	throttleWindow     = 15 * time.Minute
+	throttleMaxFails   = 5
+	throttleIPMaxFails = 50
+	throttleLockout    = 15 * time.Minute
 
 	timeLayout = "2006-01-02T15:04:05.000Z"
 )
@@ -130,31 +131,36 @@ func (s *Service) SetupRequired(ctx context.Context) (bool, error) {
 	return n == 0, nil
 }
 
-func throttleKeys(username, clientIP string) []string {
-	return []string{
-		"user:" + strings.ToLower(username),
-		"ip:" + clientIP,
-	}
+func userThrottleKey(username string) string {
+	return "user:" + strings.ToLower(username)
 }
 
-func (s *Service) checkThrottle(ctx context.Context, keys []string, now time.Time) error {
-	for _, k := range keys {
-		t, err := s.store.GetThrottle(ctx, k)
-		if err != nil {
-			return err
-		}
-		if t.LockedUntil != "" {
-			until, err := time.Parse(timeLayout, t.LockedUntil)
-			if err == nil && now.Before(until) {
-				return ErrThrottled
-			}
-		}
+func ipThrottleKey(clientIP string) string {
+	return "ip:" + clientIP
+}
+
+func failureLimit(key string) int {
+	if strings.HasPrefix(key, "ip:") {
+		return throttleIPMaxFails
 	}
-	return nil
+	return throttleMaxFails
+}
+
+func (s *Service) isLocked(ctx context.Context, key string, now time.Time) (bool, error) {
+	t, err := s.store.GetThrottle(ctx, key)
+	if err != nil {
+		return false, err
+	}
+	if t.LockedUntil == "" {
+		return false, nil
+	}
+	until, err := time.Parse(timeLayout, t.LockedUntil)
+	return err == nil && now.Before(until), nil
 }
 
 func (s *Service) recordFailure(ctx context.Context, keys []string, now time.Time) error {
 	for _, k := range keys {
+		limit := failureLimit(k)
 		err := s.store.UpdateThrottle(ctx, k, ts(now), func(cur storage.Throttle) storage.Throttle {
 			start, err := time.Parse(timeLayout, cur.WindowStartedAt)
 			if cur.WindowStartedAt == "" || err != nil || now.Sub(start) > throttleWindow {
@@ -162,7 +168,7 @@ func (s *Service) recordFailure(ctx context.Context, keys []string, now time.Tim
 				cur.Failures = 0
 			}
 			cur.Failures++
-			if cur.Failures >= throttleMaxFails {
+			if cur.Failures >= limit {
 				cur.LockedUntil = ts(now.Add(throttleLockout))
 				cur.Failures = 0
 				cur.WindowStartedAt = ""
@@ -188,13 +194,27 @@ func (s *Service) clearThrottle(ctx context.Context, keys []string, now time.Tim
 	return nil
 }
 
-// Login verifies credentials, applies brute-force throttling per username and
-// per client IP, and issues an opaque session token plus a CSRF token.
+// Login verifies credentials and applies brute-force throttling. A locked
+// username is denied outright. A locked client IP only denies failed attempts,
+// so correct credentials are never refused because of another user's failures
+// sharing the same (possibly proxy) address. Invalid usernames are not stored.
 func (s *Service) Login(ctx context.Context, username, password, clientIP string) (LoginResult, error) {
 	now := s.now()
-	keys := throttleKeys(username, clientIP)
-	if err := s.checkThrottle(ctx, keys, now); err != nil {
-		_ = s.store.InsertAudit(ctx, s.audit(nil, "", "auth.login", "session", "", "denied", `{"reason":"throttled"}`))
+	ipKey := ipThrottleKey(clientIP)
+	var userKey string
+	if validUsername(username) {
+		userKey = userThrottleKey(username)
+		locked, err := s.isLocked(ctx, userKey, now)
+		if err != nil {
+			return LoginResult{}, err
+		}
+		if locked {
+			_ = s.store.InsertAudit(ctx, s.audit(nil, "", "auth.login", "session", "", "denied", `{"reason":"throttled"}`))
+			return LoginResult{}, ErrThrottled
+		}
+	}
+	ipLocked, err := s.isLocked(ctx, ipKey, now)
+	if err != nil {
 		return LoginResult{}, err
 	}
 
@@ -208,6 +228,10 @@ func (s *Service) Login(ctx context.Context, username, password, clientIP string
 	}
 	ok := VerifyPassword(password, hash)
 	if err != nil || !ok || !u.Active {
+		keys := []string{ipKey}
+		if userKey != "" {
+			keys = append(keys, userKey)
+		}
 		if rerr := s.recordFailure(ctx, keys, now); rerr != nil {
 			return LoginResult{}, rerr
 		}
@@ -216,14 +240,19 @@ func (s *Service) Login(ctx context.Context, username, password, clientIP string
 			reason = "inactive"
 		}
 		_ = s.store.InsertAudit(ctx, s.audit(nil, u.ID, "auth.login", "session", "", "denied", fmt.Sprintf(`{"reason":%q}`, reason)))
+		if ipLocked {
+			return LoginResult{}, ErrThrottled
+		}
 		if reason == "inactive" {
 			return LoginResult{}, ErrInactive
 		}
 		return LoginResult{}, ErrInvalidLogin
 	}
 
-	if err := s.clearThrottle(ctx, keys[:1], now); err != nil {
-		return LoginResult{}, err
+	if userKey != "" {
+		if err := s.clearThrottle(ctx, []string{userKey}, now); err != nil {
+			return LoginResult{}, err
+		}
 	}
 	token, err := randomToken(32)
 	if err != nil {

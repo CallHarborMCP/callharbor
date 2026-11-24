@@ -184,11 +184,14 @@ func TestLoginThrottlesPerUsernameAndLocksOut(t *testing.T) {
 func TestLoginThrottlesPerIPAcrossUsernames(t *testing.T) {
 	svc, _, _, _ := fixtureWithUsers(t)
 	ctx := context.Background()
-	for i := 0; i < throttleMaxFails; i++ {
-		_, _ = svc.Login(ctx, "ghost"+string(rune('a'+i)), "wrong wrong wrong", "198.51.100.50")
+	for i := 0; i < throttleIPMaxFails; i++ {
+		_, _ = svc.Login(ctx, "ghost"+string(rune('a'+i%26))+string(rune('a'+i/26)), "wrong wrong wrong", "198.51.100.50")
 	}
-	if _, err := svc.Login(ctx, "bob", pwUser, "198.51.100.50"); !errors.Is(err, ErrThrottled) {
-		t.Fatalf("IP-based lockout not applied: %v", err)
+	if _, err := svc.Login(ctx, "bob", "wrong wrong wrong", "198.51.100.50"); !errors.Is(err, ErrThrottled) {
+		t.Fatalf("IP-based lockout not applied to failures: %v", err)
+	}
+	if _, err := svc.Login(ctx, "bob", pwUser, "198.51.100.50"); err != nil {
+		t.Fatalf("correct login denied by IP lockout: %v", err)
 	}
 }
 
