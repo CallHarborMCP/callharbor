@@ -51,6 +51,17 @@ export async function login(username: string, password: string): Promise<Session
   return (await response.json()) as Session;
 }
 
+export async function getSession(): Promise<Session | null> {
+  const response = await send("/api/session", { method: "GET" });
+  if (response.status === 401) {
+    return null;
+  }
+  if (!response.ok) {
+    throw new SessionError("internal");
+  }
+  return (await response.json()) as Session;
+}
+
 export async function logout(csrfToken: string): Promise<void> {
   const response = await send("/api/session", {
     method: "DELETE",
