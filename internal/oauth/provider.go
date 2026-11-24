@@ -56,6 +56,12 @@ type Client struct {
 	Name         string
 	URI          string
 	RedirectURIs []string
+	// GrantTypes are the grant types the client registered. An empty list means
+	// the default (authorization_code and refresh_token).
+	GrantTypes []string
+	// MetadataDocument is true when the client was resolved from a Client ID
+	// Metadata Document fetched from its client_id URL.
+	MetadataDocument bool
 }
 
 // ClientResolver returns the client for a client_id. Implementations must
@@ -71,6 +77,7 @@ var ErrUnknownClient = errors.New("oauth: unknown client")
 // *storage.Store satisfies it; tests may wrap it.
 type Store interface {
 	GetOAuthClient(ctx context.Context, clientID string) (storage.OAuthClient, error)
+	UpsertOAuthClient(ctx context.Context, c storage.OAuthClient) error
 	InsertOAuthAuthRequest(ctx context.Context, r storage.OAuthAuthRequest) error
 	GetOAuthAuthRequest(ctx context.Context, id string) (storage.OAuthAuthRequest, error)
 	DecideOAuthAuthRequest(ctx context.Context, id, userID, now string) error

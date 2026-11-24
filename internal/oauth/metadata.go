@@ -22,16 +22,17 @@ type Metadata struct {
 // openid, id_token response types and any signing algorithms, because none
 // are supported.
 //
-// The registration_endpoint and client_id_metadata_document_supported fields
-// belong to chunk B and are added there, so they are not advertised yet.
+// client_id_metadata_document_supported is advertised because CIMD resolution
+// is implemented. registration_endpoint is not advertised yet.
 func (s *Server) AuthorizationServerMetadata() Metadata {
 	issuer := s.cfg.Issuer()
 	return Metadata{AuthorizationResponseIssParameterSupported: true, DiscoveryConfiguration: oidc.DiscoveryConfiguration{
-		Issuer:                issuer,
-		AuthorizationEndpoint: issuer + "/oauth/authorize",
-		TokenEndpoint:         issuer + "/oauth/token",
-		RevocationEndpoint:    issuer + "/oauth/revoke",
-		ScopesSupported:       []string{ScopeRead, ScopeCall},
+		Issuer:                            issuer,
+		AuthorizationEndpoint:             issuer + "/oauth/authorize",
+		TokenEndpoint:                     issuer + "/oauth/token",
+		RevocationEndpoint:                issuer + "/oauth/revoke",
+		ClientIDMetadataDocumentSupported: true,
+		ScopesSupported:                   []string{ScopeRead, ScopeCall},
 		ResponseTypesSupported: []string{
 			string(oidc.ResponseTypeCode),
 		},

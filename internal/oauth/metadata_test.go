@@ -45,6 +45,9 @@ func TestMetadataAdvertisesOnlyImplementedCapabilities(t *testing.T) {
 		if doc["revocation_endpoint"] != f.cfg.Issuer()+"/oauth/revoke" {
 			t.Fatalf("%s revocation_endpoint = %v", path, doc["revocation_endpoint"])
 		}
+		if doc["client_id_metadata_document_supported"] != true {
+			t.Fatalf("%s must advertise client ID metadata document support", path)
+		}
 		if doc["authorization_response_iss_parameter_supported"] != true {
 			t.Fatalf("%s must advertise RFC 9207 iss support", path)
 		}

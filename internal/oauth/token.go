@@ -133,14 +133,21 @@ func (s *Server) exchangeCode(ctx context.Context, req *oidc.AccessTokenRequest,
 		return nil, err
 	}
 
-	return s.redeem(ctx, row, grant, now, clientMayRefresh())
+	client, err := s.clients.ResolveClient(ctx, row.ClientID)
+	if err != nil {
+		return nil, oidc.ErrInvalidGrant().WithDescription("client is unavailable")
+	}
+	return s.redeem(ctx, row, grant, now, clientMayRefresh(client))
 }
 
-// clientMayRefresh reports whether the public client registered with this
-// server may receive a refresh token. Every client this server issues to has
-// refresh_token in its grant types, so the answer is yes. The check is kept
-// explicit so it can change with client metadata in chunk B.
-func clientMayRefresh() bool { return true }
+// clientMayRefresh reports whether the client may receive a refresh token. A
+// client with no registered grant types gets the default, code and refresh.
+func clientMayRefresh(c Client) bool {
+	if len(c.GrantTypes) == 0 {
+		return true
+	}
+	return contains(c.GrantTypes, string(oidc.GrantTypeRefreshToken))
+}
 
 // refresh rotates a refresh token. A token already rotated or revoked is a
 // reuse, which revokes the whole grant family.
