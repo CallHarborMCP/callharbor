@@ -104,17 +104,18 @@ func TestSessionStartMatchesUpstreamShape(t *testing.T) {
 
 func TestServerEventsNegative(t *testing.T) {
 	cases := map[string]string{
-		"no type":              `{"event_id":"x"}`,
-		"audio not base64":     `{"type":"session.output_audio.delta","delta":"**"}`,
-		"audio missing":        `{"type":"session.output_audio.delta"}`,
-		"transcript no timing": `{"type":"session.input_transcript.delta","event_id":"e","delta":"hi"}`,
-		"transcript no id":     `{"type":"session.output_transcript.delta","delta":"hi","start_ms":1,"end_ms":2}`,
-		"reversed timing":      `{"type":"session.input_transcript.delta","event_id":"e","delta":"hi","start_ms":5,"end_ms":2}`,
-		"usage missing":        `{"type":"session.usage.updated","event_id":"e"}`,
-		"delegation no id":     `{"type":"session.delegation.created","event_id":"e","delegation":{}}`,
-		"realtime audio":       `{"type":"response.output_audio.delta","response_id":"r","item_id":"i","delta":"AAA="}`,
-		"realtime created":     `{"type":"session.created","session":{"id":"s"}}`,
-		"realtime truncated":   `{"type":"conversation.item.truncated","item_id":"i","audio_end_ms":1}`,
+		"no type":               `{"event_id":"x"}`,
+		"audio not base64":      `{"type":"session.output_audio.delta","delta":"**"}`,
+		"audio missing":         `{"type":"session.output_audio.delta"}`,
+		"transcript no timing":  `{"type":"session.input_transcript.delta","event_id":"e","delta":"hi"}`,
+		"transcript no id":      `{"type":"session.output_transcript.delta","delta":"hi","start_ms":1,"end_ms":2}`,
+		"reversed timing":       `{"type":"session.input_transcript.delta","event_id":"e","delta":"hi","start_ms":5,"end_ms":2}`,
+		"usage missing":         `{"type":"session.usage.updated","event_id":"e"}`,
+		"delegation no id":      `{"type":"session.delegation.created","event_id":"e","delegation":{}}`,
+		"realtime audio":        `{"type":"response.output_audio.delta","response_id":"r","item_id":"i","delta":"AAA="}`,
+		"realtime created":      `{"type":"session.created","session":{"id":"s"}}`,
+		"realtime truncated":    `{"type":"conversation.item.truncated","item_id":"i","audio_end_ms":1}`,
+		"realtime speech start": `{"type":"input_audio_buffer.speech_started","event_id":"e","audio_start_ms":1,"item_id":"i"}`,
 	}
 	for name, raw := range cases {
 		t.Run(name, func(t *testing.T) {
