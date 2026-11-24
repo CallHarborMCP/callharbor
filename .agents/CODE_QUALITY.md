@@ -1,4 +1,4 @@
-# Professional engineering standards — CallHarbor V1
+# Professional engineering standards — CallHarbor
 - Favor idiomatic Go and React/TypeScript, simple cohesive packages, explicit errors, context cancellation, tested concurrency and idempotency, scoped APIs, and well-defined domain boundaries.
 - Maintain one lightweight modular monolith. No speculative general frameworks, microservices, generic repositories/services for every struct, or line-count-driven splitting. Use existing stable libraries for security, protocols, components and codecs where appropriate; check license/maintenance.
 - Review complexity, test quality, auth isolation, latency, backpressure, concurrency, security and maintainability during real code review, not with self-made metric frameworks.

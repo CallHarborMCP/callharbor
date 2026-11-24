@@ -1,16 +1,9 @@
-# CallHarbor project charter — immutable
+# CallHarbor project charter
 
-status=locked_human_authorized
-product=CallHarbor
-release=v1.0.0
-mission=complete_self_hosted_autonomous_outbound_AI_telephony
-scope=.agents/PRODUCT_SCOPE.md
-owner=CallHarborMCP_organization
-implementation=Go_modular_monolith_React_Docker
-required_telephony=Telnyx_outbound
-required_ai=selectable_OpenAI_compatible_Realtime_and_GPT_Live_speech_to_speech
+CallHarbor is a production-grade, lightweight, self-hosted, multi-user platform for autonomous outbound AI telephone calls, with a complete WebGUI and remote MCP integration.
 
-The locked product and DoD define WHAT must ship. Agents have authority to choose and verify HOW to ship without changing product boundaries or inventing success. Do not confuse the product brand with GitHub organization, or agent runbook with user documentation. No MVP milestone substitutes for complete V1.0.0.
+The product and engineering contracts define its capabilities and invariants. GitHub issues define authorized changes and release scope; agents choose and verify the implementation within those boundaries. Do not turn a feature into a prototype, silently defer acceptance criteria, weaken product requirements, or claim success without evidence.
 
-## Dual voice protocols (V1)
-Both protocol families MUST ship in V1, independently selectable per AI profile. Realtime support is not replaced or deprecated. This does not authorize a second paid planning LLM or changing the Go/Telnyx/single-container architecture.
+Keep a Go modular monolith with embedded React, SQLite and a single production container. Maintain independent telephony and voice protocol interfaces; do not require an additional paid planning model or an external runtime. See PRODUCT_SCOPE.md and ARCHITECTURE.md for the current product design.
+
+Owner-authorized issues can explicitly evolve product contracts. Keep the affected contracts and lock manifest consistent with the approved change in the same reviewed PR.
