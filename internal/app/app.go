@@ -2,6 +2,8 @@ package app
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -14,6 +16,7 @@ import (
 	"github.com/CallHarborMCP/callharbor/internal/aiprofile"
 	"github.com/CallHarborMCP/callharbor/internal/config"
 	"github.com/CallHarborMCP/callharbor/internal/identity"
+	"github.com/CallHarborMCP/callharbor/internal/secrets"
 	"github.com/CallHarborMCP/callharbor/internal/server"
 	"github.com/CallHarborMCP/callharbor/internal/storage"
 	"github.com/CallHarborMCP/callharbor/web"
@@ -27,6 +30,44 @@ const (
 	writeTimeout      = 60 * time.Second
 	idleTimeout       = 120 * time.Second
 )
+
+// openSecrets builds the secret service from the master key. It fails closed:
+// when no key is configured and any secret rows exist, startup refuses, so
+// stored credentials are never silently left unreadable or written in clear.
+// With no key and no rows, the API is available but writes return an error.
+func openSecrets(ctx context.Context, store *storage.Store, getenv func(string) string) (*secrets.Service, error) {
+	key, err := secrets.LoadMasterKey(getenv)
+	if errors.Is(err, secrets.ErrNoMasterKey) {
+		existing, cerr := store.CountSecrets(ctx)
+		if cerr != nil {
+			return nil, fmt.Errorf("count secrets: %w", cerr)
+		}
+		if existing > 0 {
+			return nil, fmt.Errorf("%d stored secrets exist but no master key is configured: set %s or %s", existing, secrets.EnvKeyFile, secrets.EnvKey)
+		}
+		return secrets.NewUnkeyedService(store, time.Now, newSecretID), nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	ring, err := secrets.NewKeyring(1, map[int][]byte{1: key})
+	if err != nil {
+		return nil, err
+	}
+	box, err := secrets.NewBox(ring)
+	if err != nil {
+		return nil, err
+	}
+	return secrets.NewService(box, store, time.Now, newSecretID)
+}
+
+func newSecretID() string {
+	var b [16]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		panic(err)
+	}
+	return "sec_" + base64.RawURLEncoding.EncodeToString(b[:])
+}
 
 func Run(ctx context.Context, cfg config.Config, logger *slog.Logger, ln net.Listener) error {
 	info, err := os.Stat(cfg.DataDir)
@@ -63,9 +104,15 @@ func Run(ctx context.Context, cfg config.Config, logger *slog.Logger, ln net.Lis
 		return fmt.Errorf("identity service: %w", err)
 	}
 
+	secretSvc, err := openSecrets(ctx, store, os.Getenv)
+	if err != nil {
+		return err
+	}
+
 	identityHandler := identity.NewHandler(identitySvc)
 	profiles := aiprofile.NewHandler(identityHandler, store, time.Now)
-	srv := server.New(logger, assets, identityHandler.Register, profiles.Register)
+	secretsAPI := secrets.NewHandler(identityHandler, secretSvc, store)
+	srv := server.New(logger, assets, identityHandler.Register, profiles.Register, secretsAPI.Register)
 	httpServer := &http.Server{
 		Handler:           srv.Handler(),
 		ReadHeaderTimeout: readHeaderTimeout,
