@@ -116,5 +116,8 @@ func (b *Bridge) Item(src audio.SourceRef) (audio.ItemPlayout, bool) {
 	return b.ledger.Item(src)
 }
 
+// Items returns the playout accounting for every provider item.
+func (b *Bridge) Items() []audio.ItemPlayout { return b.ledger.Items() }
+
 // Pending reports marks still awaiting an echo.
 func (b *Bridge) Pending() int { return b.ledger.Pending() }

@@ -144,6 +144,9 @@ type BridgeSink struct {
 	mu         sync.Mutex
 	bridge     *voicebridge.Bridge
 	send       Send
+	lastItem   string
+	hasLast    bool
+	cut        map[string]bool
 	ToProvider func(provider []byte) error
 	OnDTMF     func(digit string)
 	OnError    func(f Frame)
@@ -154,7 +157,7 @@ func NewBridgeSink(b *voicebridge.Bridge, send Send) (*BridgeSink, error) {
 	if b == nil || send == nil {
 		return nil, errors.New("telnyx: bridge sink requires a bridge and sender")
 	}
-	return &BridgeSink{bridge: b, send: send}, nil
+	return &BridgeSink{bridge: b, send: send, cut: make(map[string]bool)}, nil
 }
 
 // Media converts one caller payload and forwards it to the provider.
@@ -204,6 +207,11 @@ func (s *BridgeSink) Close() error { return nil }
 // AgentAudio sends one provider output chunk to Telnyx followed by its mark.
 func (s *BridgeSink) AgentAudio(ctx context.Context, src audio.SourceRef, provider []byte) error {
 	s.mu.Lock()
+	if src.ItemID != "" && s.cut[src.ItemID] {
+		s.mu.Unlock()
+		return nil
+	}
+	s.lastItem, s.hasLast = src.ItemID, true
 	payload, mark, err := s.bridge.AgentAudio(src, provider, time.Now())
 	s.mu.Unlock()
 	if err != nil {
@@ -227,6 +235,9 @@ func (s *BridgeSink) AgentAudio(ctx context.Context, src audio.SourceRef, provid
 func (s *BridgeSink) Interrupt(ctx context.Context) error {
 	s.mu.Lock()
 	s.bridge.Interrupt(time.Now())
+	if s.hasLast && s.lastItem != "" {
+		s.cut[s.lastItem] = true
+	}
 	s.mu.Unlock()
 	return s.send(ctx, ClearMessage())
 }

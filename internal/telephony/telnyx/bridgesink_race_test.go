@@ -69,3 +69,42 @@ func TestBridgeSinkConcurrentAgentAudioMarksAndInterrupts(t *testing.T) {
 		t.Fatal("no frames sent")
 	}
 }
+
+func TestBridgeSinkDropsCutItemAudioAfterInterrupt(t *testing.T) {
+	b, err := voicebridge.New(g711, g711, time.Millisecond, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var sent [][]byte
+	s, err := telnyx.NewBridgeSink(b, func(ctx context.Context, msg []byte) error {
+		sent = append(sent, msg)
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	chunk := make([]byte, 160)
+	for i := range chunk {
+		chunk[i] = audio.LinearToUlaw(int16(i * 50))
+	}
+	ctx := context.Background()
+	if err := s.AgentAudio(ctx, audio.SourceRef{ItemID: "cut"}, chunk); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Interrupt(ctx); err != nil {
+		t.Fatal(err)
+	}
+	before := len(sent)
+	if err := s.AgentAudio(ctx, audio.SourceRef{ItemID: "cut", ContentIndex: 1}, chunk); err != nil {
+		t.Fatal(err)
+	}
+	if len(sent) != before {
+		t.Fatalf("cut item sent %d frames after interrupt", len(sent)-before)
+	}
+	if err := s.AgentAudio(ctx, audio.SourceRef{ItemID: "next"}, chunk); err != nil {
+		t.Fatal(err)
+	}
+	if len(sent) == before {
+		t.Fatal("next item was suppressed by an earlier cut")
+	}
+}
