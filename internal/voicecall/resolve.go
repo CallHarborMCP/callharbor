@@ -40,16 +40,19 @@ type Resolver struct {
 	client   *http.Client
 }
 
-// NewResolver builds a resolver. format is the provider wire format and client
-// is the HTTP client used for the WebSocket upgrade.
-func NewResolver(profiles ProfileStore, sec SecretResolver, format audio.Format, client *http.Client) (*Resolver, error) {
+// NewResolver builds a resolver. format is the provider wire format. policy
+// governs which resolved addresses provider dials may reach; the default
+// policy refuses private and link-local addresses, so an owner cannot point a
+// profile at an internal host. The HTTP client is built here from the policy,
+// so an unchecked client cannot be injected.
+func NewResolver(profiles ProfileStore, sec SecretResolver, format audio.Format, policy realtime.EndpointPolicy) (*Resolver, error) {
 	if profiles == nil || sec == nil {
 		return nil, errors.New("voicecall: resolver requires profile and secret stores")
 	}
 	if err := format.Validate(); err != nil {
 		return nil, err
 	}
-	return &Resolver{profiles: profiles, secrets: sec, format: format, client: client}, nil
+	return &Resolver{profiles: profiles, secrets: sec, format: format, client: policy.HTTPClient()}, nil
 }
 
 // Resolve returns the provider profile for ownerUserID's AI profile profileID.

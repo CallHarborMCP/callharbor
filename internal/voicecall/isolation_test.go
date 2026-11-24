@@ -30,7 +30,7 @@ func TestResolverIsOwnerScopedAndNeverLeaksKey(t *testing.T) {
 	bobID := f.otherID(t)
 	f.addProfile(t, bobID, "ai-bob", storage.AIProtocolRealtime, endpoint, "sk-bob-own-3307")
 
-	res, err := voicecall.NewResolver(f.store, f.secrets, pcmu, provider.Client())
+	res, err := voicecall.NewResolver(f.store, f.secrets, pcmu, realtime.EndpointPolicy{AllowPrivate: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -68,7 +68,7 @@ func TestResolverIsOwnerScopedAndNeverLeaksKey(t *testing.T) {
 func TestResolveFailsClosedWithoutAPIKey(t *testing.T) {
 	ctx := context.Background()
 	f := newFixture(t)
-	res, err := voicecall.NewResolver(f.store, f.secrets, pcmu, nil)
+	res, err := voicecall.NewResolver(f.store, f.secrets, pcmu, realtime.EndpointPolicy{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -101,7 +101,7 @@ func TestResolverRejectsWrongPurposeSecret(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	res, err := voicecall.NewResolver(f.store, f.secrets, pcmu, nil)
+	res, err := voicecall.NewResolver(f.store, f.secrets, pcmu, realtime.EndpointPolicy{})
 	if err != nil {
 		t.Fatal(err)
 	}
