@@ -310,7 +310,7 @@ func TestAICallPathDrivesVoiceRunOverSignedTelnyxMedia(t *testing.T) {
 			f := newFixture(t)
 			f.addProfile(t, f.aliceID, "ai-"+tc.name, tc.proto, endpoint, providerKey)
 
-			resolver, err := voicecall.NewResolver(f.store, f.secrets, pcmu, provider.Client())
+			resolver, err := voicecall.NewResolver(f.store, f.secrets, pcmu, realtime.EndpointPolicy{AllowPrivate: true})
 			if err != nil {
 				t.Fatal(err)
 			}

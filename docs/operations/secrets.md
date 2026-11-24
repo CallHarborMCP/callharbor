@@ -57,10 +57,37 @@ The stored format records a key version for every secret, and the server can dec
 
 When a rotation procedure is available, this section will be updated with the exact steps.
 
+## AI profile fields
+
+Each AI voice profile has these fields. Only the API key is secret. The rest is stored and returned in plain text.
+
+| Field | Stored | Notes |
+| --- | --- | --- |
+| `protocol` | plain | `realtime_ws` or `live_ws`. Explicit; never inferred from the model or URL. |
+| `endpoint_url` | plain | `wss://` only. `ws://` is accepted only for a loopback address. |
+| `model` | plain | Model identifier sent to the provider. |
+| `voice` | plain | Voice identifier sent to the provider. |
+| `instructions` | plain | Up to 8192 bytes. Do not put secrets here. |
+| `headers` | plain | Non-secret custom headers. **Do not put credentials here** (see below). |
+| `api_secret_id` | reference | Points to the encrypted `ai_api_key` secret. The key value is never in the profile. |
+
+### Custom headers are not secret
+
+Headers are stored and returned in plain text. Use them only for non-secret values such as a tenant or routing label. Do not put an API key, token or password in a header.
+
+The API refuses `Authorization` and the WebSocket and hop-by-hop headers. That guard does not catch every credential, so the rule is still yours to follow: put the provider key in the secret field, never in a header.
+
+### Endpoint safety (SSRF)
+
+Provider endpoints are checked at connection time against the resolved IP address, not only the name in the URL. By default, connections to private, loopback, link-local and cloud-metadata addresses are refused, and redirects are not followed. This blocks an owner from pointing a profile at an internal host.
+
+A self-hosted gateway on a private network needs an explicit, admin-approved deployment policy. No setting for that exists in this release, so such endpoints will not connect yet.
+
 ## What the API will never do
 
 - No endpoint returns a stored secret value. `GET /api/secrets` returns metadata only (id, name, purpose, timestamps).
 - Secrets are created with `POST /api/secrets` and require the session CSRF token.
+- AI profile headers are not encrypted and are returned on read. Keep credentials out of them.
 - Users can only see and use their own secrets. Another user's secret id returns not-found.
 
 ## Verifying the setup
