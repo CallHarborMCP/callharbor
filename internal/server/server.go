@@ -19,12 +19,15 @@ type Server struct {
 	ready   atomic.Bool
 }
 
-func New(logger *slog.Logger, assets fs.FS) *Server {
+func New(logger *slog.Logger, assets fs.FS, routes ...func(*http.ServeMux)) *Server {
 	s := &Server{}
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", handleHealth)
 	mux.HandleFunc("GET /readyz", s.handleReady)
+	for _, register := range routes {
+		register(mux)
+	}
 	mux.Handle("GET /", http.FileServerFS(assets))
 
 	s.handler = observability.AccessLog(logger, securityHeaders(mux))
