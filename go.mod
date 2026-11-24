@@ -8,6 +8,7 @@ require (
 	github.com/zitadel/oidc/v3 v3.53.0
 	github.com/zitadel/schema v1.3.2
 	golang.org/x/crypto v0.59.0
+	golang.org/x/oauth2 v0.38.0
 	modernc.org/sqlite v1.46.1
 )
 
@@ -32,7 +33,6 @@ require (
 	go.opentelemetry.io/otel/metric v1.46.0 // indirect
 	go.opentelemetry.io/otel/trace v1.46.0 // indirect
 	golang.org/x/exp v0.0.0-20251023183803-a4bb9ffd2546 // indirect
-	golang.org/x/oauth2 v0.38.0 // indirect
 	golang.org/x/sys v0.50.0 // indirect
 	golang.org/x/text v0.44.0 // indirect
 	modernc.org/libc v1.67.6 // indirect
