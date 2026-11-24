@@ -18,6 +18,7 @@ Developer tool versions are pinned in `.mise.toml`. Install [mise](https://mise.
 
 Dependency updates use [Renovate](https://github.com/apps/renovate). `renovate.json` monitors Go modules, npm, `.mise.toml`, Docker and GitHub Actions without custom managers or scripts. The GitHub organization owner must grant the Renovate GitHub App access to this repository (or choose all repositories). Renovate proposes PRs; developers/agents review and merge them after required CI.
 
+- Docker deployment (single image, volume, health endpoints): `docs/operations/docker.md`
 - Canonical product contract: `.agents/PRODUCT_SCOPE.md`
 - System design: `.agents/ARCHITECTURE.md`
 - Security: `.agents/SECURITY.md`
