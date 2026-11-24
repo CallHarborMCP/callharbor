@@ -2,6 +2,7 @@ package telnyx
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"io"
 	"net/http"
@@ -16,15 +17,23 @@ const Provider = "telnyx"
 const maxReceiptEventID = 256
 
 // ReceiptRecorder is the durable dedupe gate. RecordWebhookOnce inserts the
-// receipt and runs process atomically. It returns duplicate=true without running
-// process when the receipt already exists.
+// receipt and runs process with the supplied transaction, committing both or
+// neither. It returns duplicate=true without running process when the receipt
+// already exists.
+//
+// The process callback must write only through the supplied tx. It must not
+// use any other database handle, because the store holds a single connection
+// for tx. It must also not run external side effects (network calls, dials,
+// hangups) before commit, since those cannot be rolled back.
 type ReceiptRecorder interface {
-	RecordWebhookOnce(ctx context.Context, provider, eventID string, receivedAt time.Time, process func(ctx context.Context) error) (duplicate bool, err error)
+	RecordWebhookOnce(ctx context.Context, provider, eventID string, receivedAt time.Time, process func(ctx context.Context, tx *sql.Tx) error) (duplicate bool, err error)
 }
 
-// Dispatch applies one verified lifecycle signal. A non-nil error makes the
-// receipt roll back and the provider receive a 5xx so it retries.
-type Dispatch func(ctx context.Context, ev WebhookEvent, sig call.Signal) error
+// Dispatch applies one verified lifecycle signal inside the receipt
+// transaction. It must persist state only through tx and must not perform
+// external side effects before commit. A non-nil error makes the receipt and
+// tx writes roll back, and the provider receives a 5xx so it retries.
+type Dispatch func(ctx context.Context, tx *sql.Tx, ev WebhookEvent, sig call.Signal) error
 
 // WebhookIngress serves the Telnyx Call Control webhook endpoint.
 type WebhookIngress struct {
@@ -74,8 +83,8 @@ func (wi *WebhookIngress) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid payload", http.StatusBadRequest)
 		return
 	}
-	process := func(ctx context.Context) error {
-		return wi.dispatch(ctx, ev, sig)
+	process := func(ctx context.Context, tx *sql.Tx) error {
+		return wi.dispatch(ctx, tx, ev, sig)
 	}
 	if _, err := wi.receipts.RecordWebhookOnce(r.Context(), Provider, sig.EventID, wi.verifier.now(), process); err != nil {
 		http.Error(w, "retry", http.StatusInternalServerError)

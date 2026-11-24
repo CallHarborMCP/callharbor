@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
+	"database/sql"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -22,14 +23,14 @@ type memReceipts struct {
 	seen map[string]bool
 }
 
-func (m *memReceipts) RecordWebhookOnce(ctx context.Context, provider, eventID string, _ time.Time, process func(context.Context) error) (bool, error) {
+func (m *memReceipts) RecordWebhookOnce(ctx context.Context, provider, eventID string, _ time.Time, process func(context.Context, *sql.Tx) error) (bool, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	key := provider + "|" + eventID
 	if m.seen[key] {
 		return true, nil
 	}
-	if err := process(ctx); err != nil {
+	if err := process(ctx, nil); err != nil {
 		return false, err
 	}
 	m.seen[key] = true
@@ -56,7 +57,7 @@ func newIngressHarness(t *testing.T) *ingressHarness {
 	if err != nil {
 		t.Fatal(err)
 	}
-	h.ingress, err = NewWebhookIngress(v, h.receipts, func(_ context.Context, _ WebhookEvent, sig call.Signal) error {
+	h.ingress, err = NewWebhookIngress(v, h.receipts, func(_ context.Context, _ *sql.Tx, _ WebhookEvent, sig call.Signal) error {
 		if h.fail != nil {
 			return h.fail
 		}
@@ -199,9 +200,11 @@ func TestIngressRedeliveryAfterStoreReopenIsNoop(t *testing.T) {
 			t.Fatal(err)
 		}
 		dispatched := 0
-		wi, err := NewWebhookIngress(h.ingress.verifier, s, func(context.Context, WebhookEvent, call.Signal) error {
+		wi, err := NewWebhookIngress(h.ingress.verifier, s, func(_ context.Context, tx *sql.Tx, _ WebhookEvent, sig call.Signal) error {
 			dispatched++
-			return nil
+			_, err := tx.ExecContext(ctx, `INSERT INTO retention_purge_markers (scope, key, cutoff_at, created_at)
+				VALUES ('call', ?, NULL, '2026-11-23T10:00:00.000Z')`, sig.EventID)
+			return err
 		})
 		if err != nil {
 			t.Fatal(err)
@@ -239,8 +242,78 @@ func TestIngressRedeliveryAfterStoreReopenIsNoop(t *testing.T) {
 	}
 }
 
+func TestIngressDispatchWritesCommitWithReceiptOnSQLite(t *testing.T) {
+	ctx := context.Background()
+	h := newIngressHarness(t)
+	path := filepath.Join(t.TempDir(), "app.db")
+	s, err := storage.Open(ctx, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = s.Close() }()
+	if err := s.Migrate(ctx); err != nil {
+		t.Fatal(err)
+	}
+	countState := func() int {
+		t.Helper()
+		db, err := sql.Open("sqlite", "file:"+path+"?_pragma=busy_timeout(5000)")
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = db.Close() }()
+		var n int
+		if err := db.QueryRowContext(ctx, "SELECT COUNT(*) FROM retention_purge_markers").Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		return n
+	}
+	fail := false
+	wi, err := NewWebhookIngress(h.ingress.verifier, s, func(ctx context.Context, tx *sql.Tx, _ WebhookEvent, sig call.Signal) error {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO retention_purge_markers (scope, key, cutoff_at, created_at)
+			VALUES ('call', ?, NULL, '2026-11-23T10:00:00.000Z')`, sig.EventID); err != nil {
+			return err
+		}
+		if fail {
+			return errors.New("boom")
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := loadWebhook(t, "callAnswered")
+	post := func(at time.Time) int {
+		req := httptest.NewRequest(http.MethodPost, "/webhooks/telnyx", bytes.NewReader(body))
+		for k, vs := range Sign(h.priv, at, body) {
+			req.Header[k] = vs
+		}
+		rec := httptest.NewRecorder()
+		wi.ServeHTTP(rec, req)
+		return rec.Code
+	}
+
+	fail = true
+	if code := post(h.now); code != http.StatusInternalServerError {
+		t.Fatalf("failed dispatch status %d", code)
+	}
+	if n := countState(); n != 0 {
+		t.Fatalf("failed dispatch left %d state rows", n)
+	}
+
+	fail = false
+	if code := post(h.now.Add(time.Second)); code != http.StatusOK {
+		t.Fatalf("retry status %d", code)
+	}
+	if code := post(h.now.Add(2 * time.Second)); code != http.StatusOK {
+		t.Fatalf("redelivery status %d", code)
+	}
+	if n := countState(); n != 1 {
+		t.Fatalf("state rows after retry and redelivery: %d, want 1", n)
+	}
+}
+
 func TestNewWebhookIngressRequiresDependencies(t *testing.T) {
-	if _, err := NewWebhookIngress(nil, &memReceipts{}, func(context.Context, WebhookEvent, call.Signal) error { return nil }); err == nil {
+	if _, err := NewWebhookIngress(nil, &memReceipts{}, func(context.Context, *sql.Tx, WebhookEvent, call.Signal) error { return nil }); err == nil {
 		t.Fatal("accepted nil verifier")
 	}
 }

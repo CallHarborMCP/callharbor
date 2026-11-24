@@ -2,16 +2,21 @@ package storage
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"time"
 )
 
 // RecordWebhookOnce is the durable dedupe gate for provider webhooks. It
-// inserts the receipt and runs process in one transaction. If the receipt
-// already exists, process is skipped and duplicate is true. If process fails,
-// the receipt is rolled back so a provider retry is processed again.
-func (s *Store) RecordWebhookOnce(ctx context.Context, provider, eventID string, receivedAt time.Time, process func(ctx context.Context) error) (bool, error) {
+// inserts the receipt and runs process with the same *sql.Tx in one
+// transaction. process must perform all of its database writes through tx,
+// never through the Store: the Store is pinned to a single connection, which
+// tx holds for its whole lifetime, so a write through the Store would wait
+// forever. If the receipt already exists, process is skipped and duplicate is
+// true. If process fails, the receipt and every write made through tx are
+// rolled back, so a provider retry is processed again.
+func (s *Store) RecordWebhookOnce(ctx context.Context, provider, eventID string, receivedAt time.Time, process func(ctx context.Context, tx *sql.Tx) error) (bool, error) {
 	if provider == "" || eventID == "" {
 		return false, errors.New("record webhook: empty provider or event id")
 	}
@@ -37,7 +42,7 @@ func (s *Store) RecordWebhookOnce(ctx context.Context, provider, eventID string,
 	if n == 0 {
 		return true, nil
 	}
-	if err := process(ctx); err != nil {
+	if err := process(ctx, tx); err != nil {
 		return false, err
 	}
 	if err := tx.Commit(); err != nil {
