@@ -12,3 +12,10 @@ recordings
 .env.*
 *.pem
 *.key
+web/node_modules
+web/dist
+web/static/*
+!web/static/.gitkeep
+web/playwright-report
+web/test-results
+coverage*

@@ -8,12 +8,17 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"path/filepath"
 	"time"
 
 	"github.com/CallHarborMCP/callharbor/internal/config"
+	"github.com/CallHarborMCP/callharbor/internal/identity"
 	"github.com/CallHarborMCP/callharbor/internal/server"
+	"github.com/CallHarborMCP/callharbor/internal/storage"
 	"github.com/CallHarborMCP/callharbor/web"
 )
+
+const databaseFileName = "callharbor.db"
 
 const (
 	readHeaderTimeout = 10 * time.Second
@@ -44,7 +49,20 @@ func Run(ctx context.Context, cfg config.Config, logger *slog.Logger, ln net.Lis
 		return fmt.Errorf("embedded assets: %w", err)
 	}
 
-	srv := server.New(logger, assets)
+	store, err := storage.Open(ctx, filepath.Join(cfg.DataDir, databaseFileName))
+	if err != nil {
+		return fmt.Errorf("open database: %w", err)
+	}
+	defer func() { _ = store.Close() }()
+	if err := store.Migrate(ctx); err != nil {
+		return fmt.Errorf("migrate database: %w", err)
+	}
+	identitySvc, err := identity.NewService(store, time.Now)
+	if err != nil {
+		return fmt.Errorf("identity service: %w", err)
+	}
+
+	srv := server.New(logger, assets, identity.NewHandler(identitySvc).Register)
 	httpServer := &http.Server{
 		Handler:           srv.Handler(),
 		ReadHeaderTimeout: readHeaderTimeout,
