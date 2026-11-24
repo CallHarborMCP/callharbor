@@ -117,7 +117,10 @@ func (o *Outbound) Apply(s Signal) (bool, error) {
 	if s.ProviderCallControlID != "" && o.ProviderCallControlID == "" {
 		o.ProviderCallControlID = s.ProviderCallControlID
 	}
-	if o.State == Ended || o.State == Failed {
+	if o.State == Ended {
+		return false, nil
+	}
+	if o.State == Failed && (s.Kind != KindAnswered || !o.answeredConsistent()) {
 		return false, nil
 	}
 	before := o.State
@@ -127,11 +130,23 @@ func (o *Outbound) Apply(s Signal) (bool, error) {
 	case KindRinging:
 		o.advance(Ringing)
 	case KindAnswered:
-		o.advance(Active)
+		if o.State == Failed {
+			o.State = Ended
+		} else {
+			o.advance(Active)
+		}
 	case KindHangup:
 		o.hangup(s.Reason)
 	}
 	return o.State != before, nil
+}
+
+// answeredConsistent reports whether a hangup that closed the call before any
+// answered signal arrived is compatible with the call having been answered.
+// Only normal clearing and the time limit are; busy, no answer, rejection and
+// cancellation prove the callee never answered.
+func (o *Outbound) answeredConsistent() bool {
+	return o.Reason == ReasonHangup || o.Reason == ReasonTimeLimit
 }
 
 func (o *Outbound) advance(next State) {
@@ -145,6 +160,9 @@ func (o *Outbound) hangup(reason Reason) {
 		o.State = Ended
 		return
 	}
+	if reason == "" {
+		reason = ReasonUnknown
+	}
 	if o.State == Active {
 		o.State = Ended
 		o.Reason = reason
@@ -152,9 +170,6 @@ func (o *Outbound) hangup(reason Reason) {
 	}
 	o.State = Failed
 	o.Reason = reason
-	if reason == "" {
-		o.Reason = ReasonUnknown
-	}
 }
 
 func rank(s State) int {

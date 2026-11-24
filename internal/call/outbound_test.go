@@ -75,6 +75,74 @@ func TestHangupBeforeAnswerIsFailedNotEnded(t *testing.T) {
 	}
 }
 
+func TestHangupBeforeAnsweredEndsAnsweredCall(t *testing.T) {
+	cases := []struct {
+		name   string
+		reason Reason
+		want   State
+	}{
+		{"normal_clearing", ReasonHangup, Ended},
+		{"time_limit", ReasonTimeLimit, Ended},
+		{"user_busy", ReasonBusy, Failed},
+		{"no_answer", ReasonNoAnswer, Failed},
+		{"call_rejected", ReasonRejected, Failed},
+		{"originator_cancel", ReasonCanceled, Failed},
+		{"unknown", ReasonUnknown, Failed},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			o := NewOutbound("c1")
+			_ = o.BeginDial()
+			mustApply(t, o, Signal{EventID: "h1", Kind: KindHangup, ProviderCallControlID: "v3:a", Reason: tc.reason})
+			mustApply(t, o, Signal{EventID: "a1", Kind: KindAnswered, ProviderCallControlID: "v3:a"})
+			if o.State != tc.want {
+				t.Fatalf("hangup(%s) then answered: state %s, want %s", tc.reason, o.State, tc.want)
+			}
+			if tc.want == Ended && o.Reason != tc.reason {
+				t.Fatalf("reason %s, want %s", o.Reason, tc.reason)
+			}
+		})
+	}
+}
+
+func TestAnsweredOrderIndependentForAnsweredCalls(t *testing.T) {
+	inOrder := NewOutbound("c1")
+	_ = inOrder.BeginDial()
+	mustApply(t, inOrder, Signal{EventID: "a1", Kind: KindAnswered, ProviderCallControlID: "v3:a"})
+	mustApply(t, inOrder, Signal{EventID: "h1", Kind: KindHangup, ProviderCallControlID: "v3:a", Reason: ReasonHangup})
+
+	reordered := NewOutbound("c1")
+	_ = reordered.BeginDial()
+	mustApply(t, reordered, Signal{EventID: "h1", Kind: KindHangup, ProviderCallControlID: "v3:a", Reason: ReasonHangup})
+	mustApply(t, reordered, Signal{EventID: "a1", Kind: KindAnswered, ProviderCallControlID: "v3:a"})
+
+	if inOrder.State != reordered.State || inOrder.Reason != reordered.Reason {
+		t.Fatalf("in order %s/%s, reordered %s/%s", inOrder.State, inOrder.Reason, reordered.State, reordered.Reason)
+	}
+}
+
+func TestLateAnsweredCannotResurrectUnansweredCall(t *testing.T) {
+	o := NewOutbound("c1")
+	_ = o.BeginDial()
+	mustApply(t, o, Signal{EventID: "h1", Kind: KindHangup, ProviderCallControlID: "v3:a", Reason: ReasonBusy})
+	if changed := mustApply(t, o, Signal{EventID: "a1", Kind: KindAnswered, ProviderCallControlID: "v3:a"}); changed {
+		t.Fatal("answered moved a busy call")
+	}
+	if o.State != Failed || o.Reason != ReasonBusy {
+		t.Fatalf("state %s reason %s", o.State, o.Reason)
+	}
+}
+
+func TestEmptyHangupReasonFromActiveDefaultsToUnknown(t *testing.T) {
+	o := NewOutbound("c1")
+	_ = o.BeginDial()
+	mustApply(t, o, Signal{EventID: "a1", Kind: KindAnswered, ProviderCallControlID: "v3:a"})
+	mustApply(t, o, Signal{EventID: "h1", Kind: KindHangup})
+	if o.State != Ended || o.Reason != ReasonUnknown {
+		t.Fatalf("state %s reason %s", o.State, o.Reason)
+	}
+}
+
 func TestNoAnswerAndUnknownReasons(t *testing.T) {
 	o := NewOutbound("c1")
 	_ = o.BeginDial()
