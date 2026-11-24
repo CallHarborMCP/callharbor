@@ -16,8 +16,6 @@ export default defineConfig({
     rollupOptions: {
       input: {
         main: resolve(root, "index.html"),
-        prototypeA: resolve(root, "prototypes/a/index.html"),
-        prototypeB: resolve(root, "prototypes/b/index.html"),
       },
     },
   },

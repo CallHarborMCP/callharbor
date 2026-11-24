@@ -15,16 +15,21 @@ sha256sum -c .agents/LOCKED_SHA256SUMS
 gitleaks git --no-banner --exit-code 1 --log-opts=HEAD .
 gitleaks dir --no-banner --exit-code 1 .
 
+if [[ -f web/package.json ]]; then
+  bash scripts/build-web.sh
+fi
+
 if [[ -f go.mod ]]; then
-  gofiles="$(find . -type f -name '*.go' -not -path './vendor/*' -print0 | xargs -0 -r gofmt -l)"
+  gofiles="$(find . -type f -name '*.go' -not -path './vendor/*' -not -path './web/node_modules/*' -print0 | xargs -0 -r gofmt -l)"
   [[ -z "$gofiles" ]] || { printf 'Go formatting errors:\n%s\n' "$gofiles" >&2; exit 1; }
-  go vet ./...
+  go_pkgs="$(go list ./... | grep -v '/web/node_modules/')"
+  go vet $go_pkgs
   golangci-lint run ./...
   gosec -quiet ./...
   govulncheck ./...
-  go build ./...
+  go build $go_pkgs
   COVERAGE_MIN=80
-  go test -race -count=1 -covermode=atomic -coverprofile=coverage-go.out ./...
+  go test -race -count=1 -covermode=atomic -coverprofile=coverage-go.out $go_pkgs
   go_total="$(go tool cover -func=coverage-go.out | awk '/^total:/ {sub("%", "", $NF); print $NF}')"
   printf 'Go statement coverage: %s%% (minimum %s%%)\n' "$go_total" "$COVERAGE_MIN"
   awk -v got="$go_total" -v min="$COVERAGE_MIN" 'BEGIN { exit !(got + 0 >= min + 0) }' \
