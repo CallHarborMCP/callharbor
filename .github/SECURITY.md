@@ -1,6 +1,6 @@
 # Security Policy
 
-CallHarbor is pre-release. The repository currently contains specifications and verification scaffolding, not a working application, so there are no supported released versions yet.
+Security reports are accepted for CallHarbor source code and published artifacts. Development builds do not have a fixed-version guarantee.
 
 ## Reporting a vulnerability
 
@@ -16,10 +16,10 @@ Include the affected commit or version, a description of the impact, reproductio
 
 | Version | Supported |
 | --- | --- |
-| `main` (pre-release, unreleased) | Vulnerability reports accepted; no fixed-version guarantee |
-| First released version (v1.0.0 and later) | Will be listed here at publication |
+| `main` (development) | Vulnerability reports accepted; no fixed-version guarantee |
+| Published versions | None listed yet |
 
-Once a release is published, its security support scope and end date will be documented here and in the release notes.
+Supported published versions and their security support scope and end dates are documented here as applicable and in the release notes.
 
 ## Response process
 

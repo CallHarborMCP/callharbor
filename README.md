@@ -8,9 +8,9 @@
   <a href="LICENSE"><img alt="Apache-2.0 license" src="https://img.shields.io/github/license/CallHarborMCP/callharbor"></a>
 </p>
 
-CallHarbor is an autonomous outbound-calling product with a responsive React web UI, an OAuth-protected MCP server, Telnyx telephony and configurable OpenAI-compatible Realtime voice gateways. It stores call timelines, transcripts and optionally locally recorded audio with configurable retention.
+CallHarbor is an autonomous outbound-calling product with a responsive React web UI, an OAuth-protected MCP server, Telnyx telephony and configurable Realtime and GPT-Live voice gateways. It stores call timelines, transcripts and optionally locally recorded audio with configurable retention.
 
-> This repository currently contains product specifications and test scaffolding, not a working application. Complete release requirements are in `.agents/DEFINITION_OF_DONE.md`.
+> Development status: application foundations are implemented, but end-to-end calling and release qualification are not yet complete. See the GitHub issues for remaining work.
 
 ## Development
 
@@ -27,13 +27,13 @@ Dependency updates use [Renovate](https://github.com/apps/renovate). `renovate.j
 - UI/UX contract: `.agents/UX.md`
 - Test strategy: `.agents/TEST_STRATEGY.md`
 - Release gate: `.agents/DEFINITION_OF_DONE.md`
-- Planned future features: `.agents/ROADMAP.md`
+- Planned changes and release scope: [GitHub issues](https://github.com/CallHarborMCP/callharbor/issues)
 - Engineering instructions: `AGENTS.md` (tool-independent).
 
-The V1 release requires complete professional installation, configuration, security, backup/restore, troubleshooting and development documentation with authentic screenshots of the running application. Acceptance criteria live in `.agents/DOCUMENTATION.md` and `.agents/DEFINITION_OF_DONE.md`.
+Public documentation and genuine application screenshots are maintained alongside the implementation. Engineering and release-quality standards live in `.agents/DOCUMENTATION.md` and `.agents/DEFINITION_OF_DONE.md`.
 
-Target delivery: single production Docker image, one persistent volume, no Redis/PostgreSQL/LiveKit/OpenClaw, Docker Compose instructions and GHCR release. External dependency: user-provided Telnyx account and an OpenAI-compatible realtime gateway.
+Deployment design: single production Docker image, one persistent volume, no Redis/PostgreSQL/LiveKit/OpenClaw, Docker Compose instructions and GHCR release. External dependency: user-provided Telnyx account and an OpenAI-compatible realtime gateway.
 
 ## Required voice architecture
 
-V1 implements two independently selectable voice protocols: OpenAI-compatible Realtime WebSocket and GPT-Live primary WebSocket. Both use the Telnyx outbound media bridge behind transport-independent call/audio boundaries. WebRTC and SIP remain future options; never claim unverified provider/model compatibility.
+The voice architecture supports two independently selectable protocol families: OpenAI-compatible Realtime WebSocket and GPT-Live primary WebSocket. Both use the Telnyx outbound media bridge behind transport-independent call/audio boundaries. WebRTC and SIP remain future options; never claim unverified provider/model compatibility.

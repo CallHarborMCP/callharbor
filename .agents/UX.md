@@ -1,13 +1,12 @@
 # WebGUI & design quality policy
 
-## Design validation requirements (V1)
-- Build TWO genuinely distinct interactive React design prototypes, each with dashboard/history, call detail, settings and admin navigation at phone and desktop sizes. Not merely different accent colors.
-- Capture and independently critique real browser screenshots of both prototypes with realistic synthetic transcripts, empty/error and forbidden states. Record choice and tradeoffs in `docs/design/direction-review.md`; never claim human approval.
+## Design validation
+- Reuse the established design direction and component system. For significant UX changes, evaluate and independently review real browser screenshots with realistic synthetic data and relevant empty/error/forbidden states. Document meaningful design decisions; never claim human approval.
 - Document a cohesive and reusable design system in `docs/design/design-system.md`: typography, tokens, spacing, layouts, navigation, responsive breakpoints, motion, focus, density and theme presets.
 - Review production-built GUI at 320/360/390/768/1024/1440px, touch/keyboard, 200% and 400% zoom where applicable; apply WCAG 2.2 AA-oriented review and meaningful screenshot regression. Do not rubber-stamp new baselines.
 
 
-Stack: React, TypeScript, Vite (build embedded into Go), established accessible components e.g. Tailwind + shadcn/ui/Radix. Design must be original, intentional and polished rather than a default generic generated dashboard. V1 WebGUI is strictly English-only: no user-facing translated strings and no language selection; use clear, consistent, professional English across every component, validation, wizard, admin panel, toast, error and accessible label. Conversation language is a separate per-call capability and can be Czech or any language supported by the configured realtime model.
+Stack: React, TypeScript, Vite (build embedded into Go), established accessible components e.g. Tailwind + shadcn/ui/Radix. Design must be original, intentional and polished rather than a default generic generated dashboard. The WebGUI is strictly English-only: no user-facing translated strings and no language selection; use clear, consistent, professional English across every component, validation, wizard, admin panel, toast, error and accessible label. Conversation language is a separate per-call capability and can be Czech or any language supported by the configured realtime model.
 
 - Responsive across 360px mobile, 768px tablet and 1440px desktop. Mobile navigation, call list and detail fully functional; no horizontal scrolling of main page, no tiny tap targets. Dark/light/system themes, accent colors, at least two distinct design presets, density settings; stored per-user and honored across devices.
 - Apple-like visual direction: restrained palette, typography, spacing, elevation, hierarchy, tasteful micro-interactions, cohesive cards/tables/forms; no neon gradients, flashy placeholder badges, synthetic marketing hero in an operations UI.
@@ -18,9 +17,9 @@ Stack: React, TypeScript, Vite (build embedded into Go), established accessible 
 - Release README must embed actual screenshots of the finished application captured via Playwright from the **running production build** using sanitized demonstration data; minimum dashboard, call detail with playable recording, mobile call history and theme settings. Store version-controlled images under `docs/assets/screenshots/`, reference relatively in README, verify links/files and screenshot content, and avoid fake/static/marketing mockups. Release documentation must cover onboarding, operator admin, individual user flows, security/privacy, retention and recorded-call limitations, MCP setup, troubleshooting, architecture/development and restore.
 - No manual CSS editing or designer needed after installation to obtain beautiful defaults.
 
-## Dual voice protocols (V1)
+## Dual voice protocols
 - In profile/settings screens provide a clear `Realtime (WebSocket)` / `GPT-Live (WebSocket)` selector with protocol-aware model, endpoint, headers/auth and voice validation. Keep English-only UI labels. Warn when a gateway does not implement the selected audio protocol, rather than accepting a plain text-compatible endpoint as proof.
 - Existing Realtime profiles must remain selected and working after upgrade. No mandatory backend model configuration for Live; show actual costs/usage only when provider reports them.
 
-## Transport-independent voice architecture (V1)
-- Explain AI protocol choice separately from model/gateway settings. V1 only offers functional WebSocket-backed Realtime and Live selections; do not show nonfunctional WebRTC/SIP checkboxes. Keep the profile metadata prepared for adding independently supported transports in future without confusing users or altering the standard call flow.
+## Transport-independent voice architecture
+- Explain AI protocol choice separately from model/gateway settings. Offer only implemented and verified protocol/transport selections, including WebSocket-backed Realtime and Live; do not show nonfunctional WebRTC/SIP checkboxes. Keep the profile metadata prepared for adding independently supported transports in future without confusing users or altering the standard call flow.
