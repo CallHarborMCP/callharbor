@@ -28,5 +28,12 @@ jobs:
           name: go-coverage
           path: coverage-go.out
           retention-days: 14
+      - name: Upload web coverage artifact
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: web-coverage
+          path: web/coverage/lcov.info
+          retention-days: 14
       # Feature PRs must add actual reproducible product tests to verify-local.sh.
       # Telnyx calls and paid AI are never used in CI.
