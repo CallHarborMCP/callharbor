@@ -128,7 +128,39 @@ func (s *Server) checkRedirectURI(client Client, redirectURI string, responseTyp
 	if !safeRedirectURI(redirectURI) {
 		return oidc.ErrInvalidRequestRedirectURI().WithDescription("redirect_uri must be https, or http on loopback")
 	}
+	if !matchesRegisteredRedirect(client, redirectURI) {
+		return oidc.ErrInvalidRequestRedirectURI().WithDescription("redirect_uri is not registered for this client")
+	}
 	return nil
+}
+
+// matchesRegisteredRedirect requires an exact match, except that a loopback
+// URI may differ from a registered one only in its port (RFC 8252, section
+// 7.3). The library's loopback check compares only the path and query, so it
+// would accept a different host or scheme. This check does not.
+func matchesRegisteredRedirect(client Client, redirectURI string) bool {
+	req, err := url.Parse(redirectURI)
+	if err != nil {
+		return false
+	}
+	_, loopback := op.HTTPLoopbackOrLocalhost(redirectURI)
+	for _, registered := range client.RedirectURIs {
+		if registered == redirectURI {
+			return true
+		}
+		if !loopback {
+			continue
+		}
+		reg, err := url.Parse(registered)
+		if err != nil {
+			continue
+		}
+		if reg.Scheme == req.Scheme && reg.Hostname() == req.Hostname() &&
+			reg.Path == req.Path && reg.RawQuery == req.RawQuery && reg.Fragment == "" {
+			return true
+		}
+	}
+	return false
 }
 
 // checkPKCE requires S256. The library helper alone accepts a missing

@@ -199,6 +199,34 @@ func TestAuthorizeAllowsLoopbackHTTPRedirect(t *testing.T) {
 	location(t, resp)
 }
 
+// TestAuthorizeLoopbackMatchIgnoresOnlyThePort: a native app may use any port on
+// loopback, so a port change is accepted. A change of host, scheme or path is
+// not, even though the library's loopback check would accept it.
+func TestAuthorizeLoopbackMatchIgnoresOnlyThePort(t *testing.T) {
+	const cid = "https://loop.example/m.json"
+	f := newFixture(t)
+	f.registerClient(cid, []string{"http://127.0.0.1:8765/cb"})
+
+	t.Run("port change accepted", func(t *testing.T) {
+		location(t, get(t, f.authorizeURL(map[string]string{
+			"client_id": cid, "redirect_uri": "http://127.0.0.1:55001/cb",
+		})))
+	})
+	for name, uri := range map[string]string{
+		"host swap":   "http://localhost:8765/cb",
+		"other host":  "http://[::1]:8765/cb",
+		"scheme swap": "https://127.0.0.1:8765/cb",
+		"path change": "http://127.0.0.1:8765/other",
+	} {
+		t.Run(name, func(t *testing.T) {
+			resp := get(t, f.authorizeURL(map[string]string{"client_id": cid, "redirect_uri": uri}))
+			if resp.StatusCode == http.StatusFound {
+				t.Fatalf("redirect_uri %q was redirected, want a refusal without redirect", uri)
+			}
+		})
+	}
+}
+
 func TestAuthorizeErrorRedirectCarriesStateAndIss(t *testing.T) {
 	f := newFixture(t)
 	resp := get(t, f.authorizeURL(map[string]string{"scope": "mcp:read openid"}))
