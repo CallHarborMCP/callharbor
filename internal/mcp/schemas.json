@@ -170,8 +170,9 @@
           "items": {
             "additionalProperties": false,
             "properties": {
-              "caller_number": {
-                "type": "string"
+              "connection_id": {
+                "type": "string",
+                "maxLength": 128
               },
               "access": {
                 "enum": [

@@ -48,6 +48,9 @@ var (
 	ErrConflict     = errors.New("telephonyprofile: conflict")
 	ErrInUse        = errors.New("telephonyprofile: profile referenced by calls")
 	ErrSecretsDown  = errors.New("telephonyprofile: secrets unavailable")
+	// ErrValidationRace reports that the profile changed while it was being
+	// validated, so the result was not stored. The caller may validate again.
+	ErrValidationRace = errors.New("telephonyprofile: changed during validation")
 )
 
 var (
@@ -59,13 +62,12 @@ var (
 type Store interface {
 	CreateTelephonyProfile(ctx context.Context, p storage.TelephonyProfileRecord) error
 	GetTelephonyProfile(ctx context.Context, ownerUserID, id string) (storage.TelephonyProfileRecord, error)
-	ListOwnedTelephonyProfiles(ctx context.Context, ownerUserID string) ([]storage.TelephonyProfileRecord, error)
 	ListUsableTelephonyProfiles(ctx context.Context, userID string) ([]storage.UsableTelephonyProfile, error)
 	ResolveUsableTelephonyProfile(ctx context.Context, userID, profileID string) (storage.UsableTelephonyProfile, error)
 	UpdateTelephonyProfile(ctx context.Context, p storage.TelephonyProfileRecord) error
 	DeleteTelephonyProfile(ctx context.Context, ownerUserID, id string) error
 	DeleteOwnedSecret(ctx context.Context, ownerUserID, id string) error
-	SetTelephonyConnectivity(ctx context.Context, ownerUserID, id, status, reason, checkedAt string) error
+	SetTelephonyConnectivity(ctx context.Context, ownerUserID, id, expectedUpdatedAt, status, reason, checkedAt string) error
 	UpsertTelephonyGrant(ctx context.Context, g storage.TelephonyGrant) error
 	DeleteTelephonyGrant(ctx context.Context, profileID, granteeUserID string) error
 	ListTelephonyGrants(ctx context.Context, profileID string) ([]storage.TelephonyGrant, error)
@@ -120,11 +122,15 @@ type Actor struct {
 // Input is the write payload for create and replace. Secret fields are
 // plaintext and are written once; they are never returned.
 type Input struct {
-	Name             string
-	CallerNumber     string
-	ConnectionID     string
-	APIKey           string
+	Name         string
+	CallerNumber string
+	ConnectionID string
+	APIKey       string
+	// WebhookPublicKey stores a new webhook key. Empty keeps the stored key.
 	WebhookPublicKey string
+	// ClearWebhookPublicKey removes the stored webhook key on update. It is set
+	// only for an explicit JSON null, so an empty string never removes a key.
+	ClearWebhookPublicKey bool
 }
 
 // View is one profile as the API returns it. Secret references never appear.
@@ -173,8 +179,10 @@ func validateInput(in Input, create bool) error {
 	if !e164Pattern.MatchString(in.CallerNumber) {
 		return fmt.Errorf("%w: caller_number must be E.164", ErrInvalidInput)
 	}
-	if len(in.ConnectionID) > maxConnectionID {
-		return fmt.Errorf("%w: connection_id", ErrInvalidInput)
+	// connection_id is required: calls dial through this Call Control
+	// application, so a profile without one can never place a call.
+	if in.ConnectionID == "" || len(in.ConnectionID) > maxConnectionID {
+		return fmt.Errorf("%w: connection_id required, at most %d bytes", ErrInvalidInput, maxConnectionID)
 	}
 	if create && in.APIKey == "" {
 		return fmt.Errorf("%w: api_key required", ErrInvalidInput)
@@ -215,11 +223,21 @@ func (s *Service) now3339() string {
 
 // audit records one owner-scoped action. It stores no secret material and no
 // provider text, only the action, the profile id and the outcome.
+// audit records an action with its outcome and no target user.
 func (s *Service) audit(ctx context.Context, actor Actor, action, profileID, outcome string) {
+	s.writeAudit(ctx, actor, action, profileID, "", outcome)
+}
+
+// auditTarget records a grant or revoke. targetUserID names the grantee.
+func (s *Service) auditTarget(ctx context.Context, actor Actor, action, profileID, targetUserID string) {
+	s.writeAudit(ctx, actor, action, profileID, targetUserID, "success")
+}
+
+func (s *Service) writeAudit(ctx context.Context, actor Actor, action, profileID, targetUserID, outcome string) {
 	if err := s.store.InsertAudit(ctx, storage.AuditEvent{
 		OccurredAt: s.now3339(), ActorUserID: actor.UserID, ActorRole: roleOf(actor),
-		ResourceType: "telephony_profile", ResourceID: profileID, Action: action,
-		Outcome: outcome, DetailJSON: "{}",
+		TargetUserID: targetUserID, ResourceType: "telephony_profile", ResourceID: profileID,
+		Action: action, Outcome: outcome, DetailJSON: "{}",
 	}); err != nil {
 		s.logger.Error("audit write failed", "action", action, "err", err.Error())
 	}
@@ -241,6 +259,11 @@ func (s *Service) Create(ctx context.Context, actor Actor, in Input) (View, erro
 	}
 	if err := validateInput(in, true); err != nil {
 		return View{}, err
+	}
+	if in.ClearWebhookPublicKey {
+		// Removal means something only for an existing profile. On create there
+		// is no stored key to remove, so null is refused instead of ignored.
+		return View{}, fmt.Errorf("%w: webhook_public_key cannot be null on create", ErrInvalidInput)
 	}
 	id := s.newID()
 	apiSecret, err := s.putSecret(ctx, actor.UserID, "telnyx-api-"+id, secrets.PurposeTelnyxAPIKey, in.APIKey)
@@ -306,6 +329,8 @@ func (s *Service) Update(ctx context.Context, actor Actor, id string, in Input) 
 			return View{}, err
 		}
 		next.WebhookPublicKeySecretID = newWebhook
+	} else if in.ClearWebhookPublicKey {
+		next.WebhookPublicKeySecretID = ""
 	}
 	next.ConnectivityStatus = storage.ConnectivityUnknown
 	next.ConnectivityReason = ""
@@ -479,10 +504,20 @@ func (s *Service) Validate(ctx context.Context, actor Actor, id string) (Validat
 	}
 	status, reason := s.check(ctx, actor.UserID, rec)
 	checked := s.now3339()
-	if err := s.store.SetTelephonyConnectivity(ctx, actor.UserID, id, status, reason, checked); err != nil {
+	// The result describes the profile as it was read. If the profile changed
+	// during validation, the stale result is refused rather than stored.
+	if err := s.store.SetTelephonyConnectivity(ctx, actor.UserID, id, rec.UpdatedAt, status, reason, checked); err != nil {
+		if errors.Is(err, storage.ErrTelephonyProfileChanged) {
+			s.audit(ctx, actor, "telephony_profile.validate", id, "conflict")
+			return Validation{}, ErrValidationRace
+		}
 		return Validation{}, mapNotFound(err)
 	}
-	s.audit(ctx, actor, "telephony_profile.validate", id, "success")
+	outcome := "success"
+	if status == storage.ConnectivityFailed {
+		outcome = "failed"
+	}
+	s.audit(ctx, actor, "telephony_profile.validate", id, outcome)
 	return Validation{ProfileID: id, ConnectivityStatus: status, ConnectivityReason: reason, CheckedAt: checked}, nil
 }
 
@@ -500,18 +535,22 @@ func (s *Service) check(ctx context.Context, owner string, rec storage.Telephony
 	vctx, cancel := context.WithTimeout(ctx, validationTimeout)
 	defer cancel()
 
-	if rec.ConnectionID != "" {
-		app, err := p.GetCallControlApplication(vctx, rec.ConnectionID)
-		switch {
-		case errors.Is(err, telnyx.ErrNotFound):
-			return storage.ConnectivityFailed, ReasonApplicationNotFound
-		case errors.Is(err, telnyx.ErrAPI):
-			return storage.ConnectivityFailed, classifyAPIError(err)
-		case err != nil:
-			return storage.ConnectivityFailed, ReasonProviderUnreachable
-		case !app.Active:
-			return storage.ConnectivityFailed, ReasonApplicationInactive
-		}
+	// Rows written before connection_id became required may have none. Such a
+	// profile cannot dial, so it is reported as an application that is not
+	// found, with no new reason code.
+	if rec.ConnectionID == "" {
+		return storage.ConnectivityFailed, ReasonApplicationNotFound
+	}
+	app, err := p.GetCallControlApplication(vctx, rec.ConnectionID)
+	switch {
+	case errors.Is(err, telnyx.ErrNotFound):
+		return storage.ConnectivityFailed, ReasonApplicationNotFound
+	case errors.Is(err, telnyx.ErrAPI):
+		return storage.ConnectivityFailed, classifyAPIError(err)
+	case err != nil:
+		return storage.ConnectivityFailed, ReasonProviderUnreachable
+	case !app.Active:
+		return storage.ConnectivityFailed, ReasonApplicationInactive
 	}
 	num, err := p.FindPhoneNumber(vctx, rec.CallerNumber)
 	switch {
@@ -553,7 +592,12 @@ func (s *Service) Grant(ctx context.Context, actor Actor, profileID, granteeID s
 		return Grant{}, mapNotFound(err)
 	}
 	u, err := s.store.GetUserByID(ctx, granteeID)
-	if err != nil || !u.Active {
+	switch {
+	case errors.Is(err, storage.ErrNotFound):
+		return Grant{}, fmt.Errorf("%w: grantee", ErrInvalidInput)
+	case err != nil:
+		return Grant{}, err
+	case !u.Active:
 		return Grant{}, fmt.Errorf("%w: grantee", ErrInvalidInput)
 	}
 	now := s.now3339()
@@ -562,7 +606,7 @@ func (s *Service) Grant(ctx context.Context, actor Actor, profileID, granteeID s
 	}); err != nil {
 		return Grant{}, err
 	}
-	s.audit(ctx, actor, "telephony_profile.grant", profileID, "success")
+	s.auditTarget(ctx, actor, "telephony_profile.grant", profileID, granteeID)
 	return Grant{UserID: granteeID, GrantedBy: actor.UserID, CreatedAt: now}, nil
 }
 
@@ -577,10 +621,14 @@ func (s *Service) Revoke(ctx context.Context, actor Actor, profileID, granteeID 
 	if _, err := s.store.GetTelephonyProfile(ctx, actor.UserID, profileID); err != nil {
 		return mapNotFound(err)
 	}
-	if err := s.store.DeleteTelephonyGrant(ctx, profileID, granteeID); err != nil {
+	err := s.store.DeleteTelephonyGrant(ctx, profileID, granteeID)
+	switch {
+	case errors.Is(err, storage.ErrTelephonyGrantNotFound):
 		return ErrNotFound
+	case err != nil:
+		return err
 	}
-	s.audit(ctx, actor, "telephony_profile.revoke", profileID, "success")
+	s.auditTarget(ctx, actor, "telephony_profile.revoke", profileID, granteeID)
 	return nil
 }
 

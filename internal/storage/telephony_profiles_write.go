@@ -101,28 +101,6 @@ func (s *Store) GetTelephonyProfile(ctx context.Context, ownerUserID, id string)
 	return p, nil
 }
 
-// ListOwnedTelephonyProfiles returns the owner's full records, oldest first.
-func (s *Store) ListOwnedTelephonyProfiles(ctx context.Context, ownerUserID string) ([]TelephonyProfileRecord, error) {
-	rows, err := s.db.QueryContext(ctx, "SELECT "+telephonyRecordColumns+
-		" FROM telephony_profiles WHERE owner_user_id = ? ORDER BY created_at, id", ownerUserID)
-	if err != nil {
-		return nil, fmt.Errorf("storage: list telephony profiles: %w", err)
-	}
-	defer func() { _ = rows.Close() }()
-	out := []TelephonyProfileRecord{}
-	for rows.Next() {
-		p, err := scanTelephonyRecord(rows)
-		if err != nil {
-			return nil, fmt.Errorf("storage: scan telephony profile: %w", err)
-		}
-		out = append(out, p)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("storage: list telephony profiles: %w", err)
-	}
-	return out, nil
-}
-
 // UpdateTelephonyProfile replaces the mutable fields of a profile owned by
 // p.OwnerUserID. It returns ErrTelephonyProfileNotFound for another owner's
 // profile. Updating any field resets the connectivity result, because the
@@ -178,12 +156,21 @@ func deleteReplacedSecrets(ctx context.Context, tx *sql.Tx, old TelephonyProfile
 	return nil
 }
 
+// ErrTelephonyProfileChanged reports that the profile was updated after the
+// caller read it, so a validation result for the old version must not be stored.
+var ErrTelephonyProfileChanged = errors.New("storage: telephony profile changed")
+
 // SetTelephonyConnectivity stores the result of one read-only validation for a
 // profile owned by ownerUserID. The reason is a fixed code, never provider text.
-func (s *Store) SetTelephonyConnectivity(ctx context.Context, ownerUserID, id, status, reason, checkedAt string) error {
+// It writes only while updated_at still equals expectedUpdatedAt, the value the
+// caller read before validating, and it does not change updated_at. When the
+// profile is gone the error is ErrTelephonyProfileNotFound; when it changed,
+// ErrTelephonyProfileChanged, and nothing is written.
+func (s *Store) SetTelephonyConnectivity(ctx context.Context, ownerUserID, id, expectedUpdatedAt, status, reason, checkedAt string) error {
 	res, err := s.db.ExecContext(ctx, `UPDATE telephony_profiles SET connectivity_status = ?,
 		connectivity_reason = ?, connectivity_checked_at = ?
-		WHERE id = ? AND owner_user_id = ?`, status, reason, checkedAt, id, ownerUserID)
+		WHERE id = ? AND owner_user_id = ? AND updated_at = ?`,
+		status, reason, checkedAt, id, ownerUserID, expectedUpdatedAt)
 	if err != nil {
 		return fmt.Errorf("storage: set telephony connectivity: %w", err)
 	}
@@ -191,10 +178,19 @@ func (s *Store) SetTelephonyConnectivity(ctx context.Context, ownerUserID, id, s
 	if err != nil {
 		return fmt.Errorf("storage: set telephony connectivity: %w", err)
 	}
-	if n == 0 {
+	if n == 1 {
+		return nil
+	}
+	// Zero rows: either the profile is gone or its updated_at moved on.
+	var exists int
+	if err := s.db.QueryRowContext(ctx,
+		"SELECT COUNT(*) FROM telephony_profiles WHERE id = ? AND owner_user_id = ?", id, ownerUserID).Scan(&exists); err != nil {
+		return fmt.Errorf("storage: set telephony connectivity: %w", err)
+	}
+	if exists == 0 {
 		return ErrTelephonyProfileNotFound
 	}
-	return nil
+	return ErrTelephonyProfileChanged
 }
 
 // DeleteTelephonyProfile removes a profile owned by ownerUserID, together with
@@ -289,15 +285,4 @@ func (s *Store) ListTelephonyGrants(ctx context.Context, profileID string) ([]Te
 		return nil, fmt.Errorf("storage: list telephony grants: %w", err)
 	}
 	return out, nil
-}
-
-// HasTelephonyGrant reports whether granteeUserID holds a grant on profileID.
-func (s *Store) HasTelephonyGrant(ctx context.Context, profileID, granteeUserID string) (bool, error) {
-	var n int
-	err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM telephony_profile_grants
-		WHERE profile_id = ? AND grantee_user_id = ?`, profileID, granteeUserID).Scan(&n)
-	if err != nil {
-		return false, fmt.Errorf("storage: check telephony grant: %w", err)
-	}
-	return n > 0, nil
 }

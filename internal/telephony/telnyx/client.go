@@ -227,13 +227,19 @@ type phoneNumbersResponse struct {
 }
 
 // FindPhoneNumber looks up one owned number by its E.164 value (GET
-// /v2/phone_numbers?filter[phone_number]=...). It is read-only. Only an exact
-// match is returned; no match is ErrNotFound.
+// /v2/phone_numbers?filter[phone_number]=...). It is read-only. The pinned
+// contract returns no results for non-numeric filter characters, so the filter
+// carries the digits only, without the leading "+". Only an exact E.164 match
+// on the response is returned; no match is ErrNotFound.
 func (c *Client) FindPhoneNumber(ctx context.Context, e164 string) (PhoneNumber, error) {
 	if e164 == "" {
 		return PhoneNumber{}, fmt.Errorf("%w: phone number required", ErrInvalidClient)
 	}
-	q := url.Values{"filter[phone_number]": {e164}}
+	digits := strings.TrimPrefix(e164, "+")
+	if digits == "" || !allDigits(digits) {
+		return PhoneNumber{}, fmt.Errorf("%w: phone number must be E.164", ErrInvalidClient)
+	}
+	q := url.Values{"filter[phone_number]": {digits}}
 	raw, err := c.do(ctx, http.MethodGet, "/phone_numbers?"+q.Encode(), nil)
 	if err != nil {
 		return PhoneNumber{}, mapNotFound(err)
@@ -248,6 +254,16 @@ func (c *Client) FindPhoneNumber(ctx context.Context, e164 string) (PhoneNumber,
 		}
 	}
 	return PhoneNumber{}, ErrNotFound
+}
+
+// allDigits reports whether s is non-empty and contains only ASCII digits.
+func allDigits(s string) bool {
+	for i := 0; i < len(s); i++ {
+		if s[i] < '0' || s[i] > '9' {
+			return false
+		}
+	}
+	return s != ""
 }
 
 // mapNotFound turns an HTTP 404 into ErrNotFound. Every other error is

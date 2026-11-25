@@ -38,11 +38,13 @@ The planned `GET` list is derived from `PlannedRoutes` in `internal/api/v1.go`, 
 
 Every telephony route needs a valid session. Each write also needs the session's CSRF token in the `X-CSRF-Token` header; a missing or wrong token returns `403 forbidden`.
 
-- **Secrets are write-only.** `api_key` and the optional `webhook_public_key` are accepted on create and replace. No response, log line or error contains them. On replace, an omitted `api_key` keeps the stored key.
+- **Secrets are write-only.** `api_key` and the optional `webhook_public_key` are accepted on create and replace. No response, log line or error contains them. On replace, an omitted `api_key` keeps the stored key. On replace, an omitted or empty `webhook_public_key` keeps the stored key, and JSON `null` removes it. `null` is refused on create.
+- **Connection application.** `connection_id` is required on create and replace, at most 128 bytes. Calls dial through this Call Control application, so a profile without one cannot place a call. A profile saved before this field became required has no `connection_id`, and its validation fails with `application_not_found` until it is replaced. The owner sees `connection_id`. A granted user does not.
+- **Request bodies are one JSON value.** Anything after the value, including a second value or a stray bracket, returns `400 invalid_input`.
 - **Access.** A profile is visible to its owner and to users it was granted to. Anyone else gets `404`, so the existence of another user's profile is not revealed.
 - **Grants are admin-only.** Only an admin who owns the profile may list, grant or revoke. A non-admin gets `403` on every grant route, including the owner's.
 - **Validation** checks the stored key, the Call Control application (`connection_id`, when set) and the caller number. It sends GET requests only and never places a call. The result is stored as `connectivity_status` (`verified` or `failed`) with a fixed `connectivity_reason` code. The reason codes are `invalid_credentials`, `application_not_found`, `application_inactive`, `number_not_found`, `number_inactive`, `number_not_on_application`, `provider_unreachable` and `secrets_unavailable`. Provider text is never returned.
-- **Changes reset validation.** Updating any field sets `connectivity_status` back to `unknown`.
+- **Changes reset validation.** Updating any field sets `connectivity_status` back to `unknown`. A validation that finishes after the profile was changed is refused with `409 conflict` (`telephony profile changed during validation`) and does not overwrite the stored result. Validate again.
 - **Deletes** are refused with `409 conflict` while calls reference the profile.
 - **Secrets unavailable.** When the master key is not configured, a create or replace that needs to store a secret returns `503` with the envelope code `internal`, because the shared code set has no unavailable code. The OpenAPI document lists this `503` response on both operations. Nothing is persisted on that path.
 - **Update schema.** `PUT` uses `TelephonyProfileUpdate`, in which `api_key` is optional. `POST` uses `TelephonyProfileWrite`, in which `api_key` is required.
@@ -92,7 +94,7 @@ Commands that create work take an `Idempotency-Key` header. This convention is p
 ## Response conventions
 
 - Timestamps are UTC RFC 3339 with a `Z` suffix, for example `2026-11-25T10:00:00.000Z`.
-- `get_profiles` (REST `GET /api/v1/profiles` and the MCP tool of the same name) lists telephony profiles the caller owns **or was granted**. Before this change it listed owned profiles only. A granted profile appears with `access: "granted"`, and it is listed only while its owner is an active admin and the caller is active. Demoting or deactivating the owner hides it from the grantee until the owner is restored.
+- `get_profiles` (REST `GET /api/v1/profiles` and the MCP tool of the same name) lists telephony profiles the caller owns **or was granted**. A granted profile appears with `access: "granted"`, and it is listed only while its owner is an active admin and the caller is active. Demoting or deactivating the owner hides it from the grantee until the owner is restored.
 - `connectivity_status` on telephony profiles is the last read-only validation result: `"unknown"` until a validation runs (and again after any change to the profile), then `"verified"` or `"failed"`. `connectivity_reason` gives the fixed reason code for a failure. `access` is `"owner"` or `"granted"`. Validation checks the key, application and number with GET requests only; it never places a call.
 - A call's `transcript_available` is true only when a final transcript turn exists. `recording_available` is true only when the recording is complete.
 - Every `/api/v1` response carries `Cache-Control: no-store`.

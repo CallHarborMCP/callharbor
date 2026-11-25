@@ -86,16 +86,6 @@ func (m *memStore) GetTelephonyProfile(_ context.Context, owner, id string) (sto
 	return p, nil
 }
 
-func (m *memStore) ListOwnedTelephonyProfiles(_ context.Context, owner string) ([]storage.TelephonyProfileRecord, error) {
-	var out []storage.TelephonyProfileRecord
-	for _, p := range m.profiles {
-		if p.OwnerUserID == owner {
-			out = append(out, p)
-		}
-	}
-	return out, nil
-}
-
 // usableAccess applies the same rule as the SQL predicate in storage: an owner
 // may use a profile while active; a grantee may use it while active and only
 // while the owner is an active admin. It returns "" when the user may not.
@@ -209,13 +199,16 @@ func (m *memStore) DeleteOwnedSecret(_ context.Context, owner, id string) error 
 	return nil
 }
 
-func (m *memStore) SetTelephonyConnectivity(_ context.Context, owner, id, status, reason, checkedAt string) error {
+func (m *memStore) SetTelephonyConnectivity(_ context.Context, owner, id, expectedUpdatedAt, status, reason, checkedAt string) error {
 	if err := m.fail("SetTelephonyConnectivity"); err != nil {
 		return err
 	}
 	p, ok := m.profiles[id]
 	if !ok || p.OwnerUserID != owner {
 		return storage.ErrTelephonyProfileNotFound
+	}
+	if p.UpdatedAt != expectedUpdatedAt {
+		return storage.ErrTelephonyProfileChanged
 	}
 	p.ConnectivityStatus = status
 	p.ConnectivityReason = reason
@@ -236,6 +229,9 @@ func (m *memStore) UpsertTelephonyGrant(_ context.Context, g storage.TelephonyGr
 }
 
 func (m *memStore) DeleteTelephonyGrant(_ context.Context, profile, grantee string) error {
+	if err := m.fail("DeleteTelephonyGrant"); err != nil {
+		return err
+	}
 	for i, g := range m.grants {
 		if g.ProfileID == profile && g.GranteeUserID == grantee {
 			m.grants = append(m.grants[:i], m.grants[i+1:]...)
@@ -681,7 +677,7 @@ func TestValidateVerifiedWithGETOnly(t *testing.T) {
 	if calls[0].path != "/v2/call_control_applications/"+testAppID {
 		t.Fatalf("first request %s", calls[0].path)
 	}
-	if !strings.Contains(calls[1].query, "filter%5Bphone_number%5D=%2B14155550100") {
+	if calls[1].query != "filter%5Bphone_number%5D=14155550100" {
 		t.Fatalf("number query %q", calls[1].query)
 	}
 }

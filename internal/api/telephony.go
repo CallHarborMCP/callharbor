@@ -3,10 +3,12 @@ package api
 import (
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"strings"
 
 	"github.com/CallHarborMCP/callharbor/internal/service"
+	"github.com/CallHarborMCP/callharbor/internal/storage"
 	"github.com/CallHarborMCP/callharbor/internal/telephonyprofile"
 )
 
@@ -15,34 +17,41 @@ import (
 const maxTelephonyBodyBytes = 32 << 10
 
 // telephonyWriteBody is the TelephonyProfileWrite request schema. Unknown
-// fields are rejected.
+// fields are rejected. webhook_public_key is a *string so an explicit JSON null
+// (removal on update) is distinct from an omitted or empty value (keep).
 type telephonyWriteBody struct {
-	Name             string `json:"name"`
-	CallerNumber     string `json:"caller_number"`
-	ConnectionID     string `json:"connection_id"`
-	APIKey           string `json:"api_key"`
-	WebhookPublicKey string `json:"webhook_public_key"`
+	Name         string `json:"name"`
+	CallerNumber string `json:"caller_number"`
+	ConnectionID string `json:"connection_id"`
+	APIKey       string `json:"api_key"`
+	// WebhookRaw keeps the raw value so "absent" and "null" can be told apart.
+	WebhookRaw json.RawMessage `json:"webhook_public_key"`
 }
 
 // telephonyProfileBody is the TelephonyProfile response schema. It carries no
-// secret reference and no connection_id, because the pinned contract does not
-// declare that field.
+// secret reference. connection_id is returned to the owner only, so the owner
+// can read back what they set. A granted view omits it.
 type telephonyProfileBody struct {
 	ID                 string `json:"id"`
 	Name               string `json:"name"`
 	Provider           string `json:"provider"`
 	CallerNumber       string `json:"caller_number"`
+	ConnectionID       string `json:"connection_id,omitempty"`
 	ConnectivityStatus string `json:"connectivity_status"`
 	ConnectivityReason string `json:"connectivity_reason"`
 	Access             string `json:"access"`
 }
 
 func telephonyBody(v telephonyprofile.View) telephonyProfileBody {
-	return telephonyProfileBody{
+	body := telephonyProfileBody{
 		ID: v.ID, Name: v.Name, Provider: v.Provider, CallerNumber: v.CallerNumber,
 		ConnectivityStatus: v.ConnectivityStatus, ConnectivityReason: v.ConnectivityReason,
 		Access: v.Access,
 	}
+	if v.Access == storage.TelephonyAccessOwner {
+		body.ConnectionID = v.ConnectionID
+	}
+	return body
 }
 
 // telephonyCaller resolves the signed-in session for a telephony route.
@@ -71,14 +80,37 @@ func (h *Handler) decodeTelephonyWrite(w http.ResponseWriter, r *http.Request) (
 	var b telephonyWriteBody
 	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxTelephonyBodyBytes))
 	dec.DisallowUnknownFields()
-	if err := dec.Decode(&b); err != nil {
+	if err := dec.Decode(&b); err != nil || !atJSONEnd(dec) {
+		// One body is one JSON value. Anything after it, even whitespace-separated
+		// junk such as a stray closing brace or a second object, is rejected.
 		h.fail(w, service.AsErrorWith(service.CodeInvalidInput, "invalid JSON body"))
 		return telephonyprofile.Input{}, false
 	}
-	return telephonyprofile.Input{
+	in := telephonyprofile.Input{
 		Name: b.Name, CallerNumber: b.CallerNumber, ConnectionID: b.ConnectionID,
-		APIKey: b.APIKey, WebhookPublicKey: b.WebhookPublicKey,
-	}, true
+		APIKey: b.APIKey,
+	}
+	switch raw := strings.TrimSpace(string(b.WebhookRaw)); raw {
+	case "":
+		// Absent: keep the stored webhook key.
+	case "null":
+		in.ClearWebhookPublicKey = true
+	default:
+		var key string
+		if err := json.Unmarshal(b.WebhookRaw, &key); err != nil {
+			h.fail(w, service.AsErrorWith(service.CodeInvalidInput, "invalid JSON body"))
+			return telephonyprofile.Input{}, false
+		}
+		in.WebhookPublicKey = key
+	}
+	return in, true
+}
+
+// atJSONEnd reports whether nothing follows the decoded value but whitespace.
+// Any further token, including a stray closing bracket, is trailing content.
+func atJSONEnd(dec *json.Decoder) bool {
+	_, err := dec.Token()
+	return errors.Is(err, io.EOF)
 }
 
 func (h *Handler) listTelephonyProfiles(w http.ResponseWriter, r *http.Request) {
@@ -233,6 +265,8 @@ func (h *Handler) failTelephony(w http.ResponseWriter, err error) {
 		h.fail(w, service.AsErrorWith(service.CodeConflict, "telephony profile name already exists"))
 	case errors.Is(err, telephonyprofile.ErrInUse):
 		h.fail(w, service.AsErrorWith(service.CodeConflict, "telephony profile is referenced by calls"))
+	case errors.Is(err, telephonyprofile.ErrValidationRace):
+		h.fail(w, service.AsErrorWith(service.CodeConflict, "telephony profile changed during validation"))
 	default:
 		h.fail(w, err)
 	}

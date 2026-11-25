@@ -72,7 +72,7 @@ func TestTelephonyProfileCreateWithoutMasterKeyIs503InRealApp(t *testing.T) {
 	admin := e.admin
 	const placeholderKey = "KEY-x-0123456789" // gitleaks:allow
 	status, _, body := sendJSON(t, admin.client, http.MethodPost, admin.base+"/api/v1/telephony-profiles",
-		map[string]any{"name": "main", "caller_number": "+14155550100", "api_key": placeholderKey},
+		map[string]any{"name": "main", "caller_number": "+14155550100", "connection_id": "app-7", "api_key": placeholderKey},
 		admin.headers(true))
 	if status != http.StatusServiceUnavailable || !strings.Contains(string(body), `"code":"internal"`) {
 		t.Fatalf("create without key = %d %s, want 503 internal", status, body)

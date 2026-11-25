@@ -56,10 +56,6 @@ func TestTelephonyProfileCreateGetListOwnerScoped(t *testing.T) {
 	if _, err := s.GetTelephonyProfile(ctx, "bob", "tp-a"); !errors.Is(err, ErrTelephonyProfileNotFound) {
 		t.Fatalf("cross-user get = %v, want not found", err)
 	}
-	list, err := s.ListOwnedTelephonyProfiles(ctx, "bob")
-	if err != nil || len(list) != 0 {
-		t.Fatalf("bob list = %v, %v", list, err)
-	}
 }
 
 func TestTelephonyProfileDuplicateNameConflicts(t *testing.T) {
@@ -92,7 +88,7 @@ func TestTelephonyUpdateReplacesSecretsAndResetsConnectivity(t *testing.T) {
 	if err := s.CreateTelephonyProfile(ctx, telRecord("tp-u", "alice", "a-api", "a-pk")); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.SetTelephonyConnectivity(ctx, "alice", "tp-u", ConnectivityVerified, "", testTime); err != nil {
+	if err := s.SetTelephonyConnectivity(ctx, "alice", "tp-u", testTime, ConnectivityVerified, "", testTime); err != nil {
 		t.Fatal(err)
 	}
 
@@ -126,7 +122,7 @@ func TestTelephonyUpdateCrossUserDenied(t *testing.T) {
 	if err := s.DeleteTelephonyProfile(ctx, "bob", "tp-x"); !errors.Is(err, ErrTelephonyProfileNotFound) {
 		t.Fatalf("cross-user delete = %v", err)
 	}
-	if err := s.SetTelephonyConnectivity(ctx, "bob", "tp-x", ConnectivityVerified, "", testTime); !errors.Is(err, ErrTelephonyProfileNotFound) {
+	if err := s.SetTelephonyConnectivity(ctx, "bob", "tp-x", testTime, ConnectivityVerified, "", testTime); !errors.Is(err, ErrTelephonyProfileNotFound) {
 		t.Fatalf("cross-user connectivity = %v", err)
 	}
 	if n := scalarInt(t, s, "SELECT COUNT(*) FROM telephony_profiles WHERE id = 'tp-x'"); n != 1 {
@@ -187,10 +183,6 @@ func TestTelephonyGrantLifecycle(t *testing.T) {
 	list, err := s.ListTelephonyGrants(ctx, "tp-g")
 	if err != nil || len(list) != 1 || list[0].GrantedByUserID != "root" {
 		t.Fatalf("grants = %+v, %v", list, err)
-	}
-	ok, err := s.HasTelephonyGrant(ctx, "tp-g", "bob")
-	if err != nil || !ok {
-		t.Fatalf("HasTelephonyGrant = %v, %v", ok, err)
 	}
 	if err := s.DeleteTelephonyGrant(ctx, "tp-g", "bob"); err != nil {
 		t.Fatal(err)
@@ -266,6 +258,16 @@ func TestTelephonyGrantRowsNeverCarrySecrets(t *testing.T) {
 
 // seedRootSecret inserts an encrypted-shape API key owned by root. A profile
 // may reference only a secret its own owner holds.
+// seedSecret inserts a Telnyx API key secret owned by owner, so a profile can
+// reference it through the foreign key.
+func seedSecret(t *testing.T, s *Store, id, owner string) {
+	t.Helper()
+	if _, err := s.db.ExecContext(context.Background(), `INSERT INTO secrets (id, owner_user_id, name, purpose, ciphertext, nonce, key_version, created_at)
+		VALUES (?, ?, ?, 'telnyx_api_key', x'00', x'000000000000000000000000', 1, ?)`, id, owner, "name-"+id, testTime); err != nil {
+		t.Fatalf("seed secret %s: %v", id, err)
+	}
+}
+
 func seedRootSecret(t *testing.T, s *Store, id string) {
 	t.Helper()
 	if _, err := s.db.ExecContext(context.Background(), `INSERT INTO secrets (id, owner_user_id, name, purpose, ciphertext, nonce, key_version, created_at)
@@ -380,5 +382,40 @@ func TestResolveUsableIsScopedToOneProfile(t *testing.T) {
 	got, err := s.ResolveUsableTelephonyProfile(ctx, "alice", "tp-a")
 	if err != nil || got.Access != TelephonyAccessOwner {
 		t.Fatalf("owner resolve = %+v, %v", got, err)
+	}
+}
+
+// TestSetTelephonyConnectivityRefusesStaleUpdate proves a validation result is
+// not written when the profile changed after it was read. The owner updates the
+// profile between the read and the store, so the stale result must be dropped.
+func TestSetTelephonyConnectivityRefusesStaleUpdate(t *testing.T) {
+	ctx := context.Background()
+	s := openMigrated(t, filepath.Join(t.TempDir(), "stale.db"))
+	seedTelephonyUsers(t, s)
+	seedSecret(t, s, "s-api", "alice")
+	if err := s.CreateTelephonyProfile(ctx, telRecord("tp-s", "alice", "s-api", "")); err != nil {
+		t.Fatal(err)
+	}
+	read, err := s.GetTelephonyProfile(ctx, "alice", "tp-s")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Edit between the read and the write, moving updated_at forward.
+	edited := read
+	edited.Name = "renamed"
+	edited.UpdatedAt = "2026-11-25T11:00:00.000Z"
+	if err := s.UpdateTelephonyProfile(ctx, edited); err != nil {
+		t.Fatal(err)
+	}
+	err = s.SetTelephonyConnectivity(ctx, "alice", "tp-s", read.UpdatedAt, ConnectivityVerified, "", testTime)
+	if !errors.Is(err, ErrTelephonyProfileChanged) {
+		t.Fatalf("stale result = %v, want ErrTelephonyProfileChanged", err)
+	}
+	got, err := s.GetTelephonyProfile(ctx, "alice", "tp-s")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.ConnectivityStatus != ConnectivityUnknown {
+		t.Fatalf("stale validation overwrote status to %s", got.ConnectivityStatus)
 	}
 }

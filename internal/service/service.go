@@ -10,12 +10,6 @@ import (
 	"github.com/CallHarborMCP/callharbor/internal/storage"
 )
 
-// ConnectivityUnknown is the connectivity status of a telephony profile that
-// has not been validated since its last change. It is never reported as
-// healthy. The other statuses are verified and failed, stored by the
-// read-only validation in the telephonyprofile package.
-const ConnectivityUnknown = "unknown"
-
 // callStates is the complete call status vocabulary from the calls table.
 var callStates = map[string]struct{}{
 	"queued": {}, "initiating": {}, "ringing": {}, "active": {},

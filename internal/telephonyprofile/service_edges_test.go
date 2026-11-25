@@ -379,17 +379,19 @@ func TestValidateProviderErrorBranches(t *testing.T) {
 		}
 	})
 
-	t.Run("profile without a connection skips the application check", func(t *testing.T) {
+	t.Run("legacy profile without a connection fails as application not found", func(t *testing.T) {
 		h := newHarness(t)
-		in := validInput()
-		in.ConnectionID = ""
-		v := h.create(adminAlice, in)
+		v := h.create(adminAlice, validInput())
+		// Simulate a pre-B2 row: connection_id was optional when it was written.
+		rec := h.store.profiles[v.ID]
+		rec.ConnectionID = ""
+		h.store.profiles[v.ID] = rec
 		h.svc.provider = func(string) (Provider, error) {
 			return statusProvider{number: good}, nil
 		}
 		res, err := h.svc.Validate(context.Background(), adminAlice, v.ID)
-		if err != nil || res.ConnectivityStatus != storage.ConnectivityVerified {
-			t.Fatalf("result = %+v, %v", res, err)
+		if err != nil || res.ConnectivityStatus != storage.ConnectivityFailed || res.ConnectivityReason != ReasonApplicationNotFound {
+			t.Fatalf("result = %+v, %v; want failed/%s", res, err, ReasonApplicationNotFound)
 		}
 	})
 }
@@ -445,5 +447,29 @@ func TestSecretResolveDoesNotCrossOwnersOrPurposes(t *testing.T) {
 	}
 	if n := len(h.fake.recorded()); n != 0 {
 		t.Fatalf("resolve reached the provider %d times", n)
+	}
+}
+
+func TestConnectionIDIsRequiredOnCreateAndUpdate(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	for name, mutate := range map[string]func(*Input){
+		"empty":    func(in *Input) { in.ConnectionID = "" },
+		"too long": func(in *Input) { in.ConnectionID = strings.Repeat("c", maxConnectionID+1) },
+	} {
+		in := validInput()
+		mutate(&in)
+		if _, err := h.svc.Create(ctx, adminAlice, in); !errors.Is(err, ErrInvalidInput) {
+			t.Fatalf("create %s connection_id = %v, want ErrInvalidInput", name, err)
+		}
+	}
+	v := h.create(adminAlice, validInput())
+	in := validInput()
+	in.ConnectionID = ""
+	if _, err := h.svc.Update(ctx, adminAlice, v.ID, in); !errors.Is(err, ErrInvalidInput) {
+		t.Fatalf("update empty connection_id = %v, want ErrInvalidInput", err)
+	}
+	if got := h.store.profiles[v.ID].ConnectionID; got != testConnID {
+		t.Fatalf("rejected update changed connection_id to %q", got)
 	}
 }

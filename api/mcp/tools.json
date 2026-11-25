@@ -67,6 +67,7 @@
                 "name": { "type": "string" },
                 "provider": { "type": "string", "enum": ["telnyx"] },
                 "caller_number": { "type": "string" },
+                "connection_id": { "type": "string", "maxLength": 128 },
                 "connectivity_status": { "type": "string", "enum": ["unknown", "verified", "failed"] },
                 "connectivity_reason": { "type": "string", "enum": ["", "secrets_unavailable", "invalid_credentials", "application_not_found", "application_inactive", "number_not_found", "number_inactive", "number_not_on_application", "provider_unreachable"] },
                 "access": { "type": "string", "enum": ["owner", "granted"] }

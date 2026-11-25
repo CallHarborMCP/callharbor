@@ -215,7 +215,7 @@ func TestGetProfilesReturnsOnlyNonSecretFieldsForOwner(t *testing.T) {
 		t.Fatalf("store queried owner %q, want alice", store.lastOwner)
 	}
 	if len(res.TelephonyProfiles) != 1 || res.TelephonyProfiles[0].ID != "tel-a" ||
-		res.TelephonyProfiles[0].ConnectivityStatus != ConnectivityUnknown ||
+		res.TelephonyProfiles[0].ConnectivityStatus != storage.ConnectivityUnknown ||
 		res.TelephonyProfiles[0].Access != "owner" {
 		t.Fatalf("telephony = %+v", res.TelephonyProfiles)
 	}

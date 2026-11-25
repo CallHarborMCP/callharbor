@@ -68,16 +68,38 @@ func (f *telnyxFake) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		_, _ = fmt.Fprintf(w, `{"data":{"id":%q,"active":%t,"application_name":"app"}}`, id, active)
 	case r.URL.Path == "/v2/phone_numbers":
-		e164 := r.URL.Query().Get("filter[phone_number]")
-		status, ok := f.numbers[e164]
-		if !ok {
+		// Like the pinned contract, a filter with non-numeric characters (such
+		// as a leading "+") matches nothing. Digits match the stored E.164
+		// number with its "+" removed.
+		digits := r.URL.Query().Get("filter[phone_number]")
+		if !allDigitsFake(digits) {
 			_, _ = w.Write([]byte(`{"data":[]}`))
 			return
 		}
-		_, _ = fmt.Fprintf(w, `{"data":[{"id":"num-1","phone_number":%q,"status":%q,"connection_id":%q}]}`, e164, status, f.numberOn[e164])
+		for e164, status := range f.numbers {
+			if strings.TrimPrefix(e164, "+") != digits {
+				continue
+			}
+			_, _ = fmt.Fprintf(w, `{"data":[{"id":"num-1","phone_number":%q,"status":%q,"connection_id":%q}]}`, e164, status, f.numberOn[e164])
+			return
+		}
+		_, _ = w.Write([]byte(`{"data":[]}`))
 	default:
 		w.WriteHeader(http.StatusNotFound)
 	}
+}
+
+// allDigitsFake reports whether s is non-empty and contains only ASCII digits.
+func allDigitsFake(s string) bool {
+	if s == "" {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		if s[i] < '0' || s[i] > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 // requests returns a copy of every request the fake has seen.
@@ -211,17 +233,26 @@ func (f *telFixture) login(t *testing.T, user string) {
 // the user's CSRF token header.
 func (f *telFixture) do(t *testing.T, user, method, path string, body any, withCSRF bool) *httptest.ResponseRecorder {
 	t.Helper()
-	var rd *bytes.Reader
-	if body != nil {
-		b, err := json.Marshal(body)
-		if err != nil {
-			t.Fatalf("marshal: %v", err)
-		}
-		rd = bytes.NewReader(b)
-	} else {
-		rd = bytes.NewReader(nil)
+	if body == nil {
+		return f.send(user, method, path, nil, withCSRF)
 	}
-	req := httptest.NewRequest(method, path, rd)
+	b, err := json.Marshal(body)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	return f.send(user, method, path, b, withCSRF)
+}
+
+// doRaw sends an exact JSON text as the body, so a test can send content that
+// marshalling would not produce, such as trailing values or explicit nulls.
+func (f *telFixture) doRaw(t *testing.T, user, method, path, raw string, withCSRF bool) *httptest.ResponseRecorder {
+	t.Helper()
+	return f.send(user, method, path, []byte(raw), withCSRF)
+}
+
+// send is the shared request path for do and doRaw.
+func (f *telFixture) send(user, method, path string, body []byte, withCSRF bool) *httptest.ResponseRecorder {
+	req := httptest.NewRequest(method, path, bytes.NewReader(body))
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
@@ -261,7 +292,7 @@ func TestTelephonyCRUDRoundTripNeverReturnsSecret(t *testing.T) {
 		t.Fatalf("get = %d", rec.Code)
 	}
 	body := rec.Body.String()
-	for _, banned := range []string{"KEY-good", "api_key", "api_secret", "sec_", "webhook", "connection_id"} {
+	for _, banned := range []string{"KEY-good", "api_key", "api_secret", "sec_", "webhook"} {
 		if strings.Contains(body, banned) {
 			t.Fatalf("response leaks %q: %s", banned, body)
 		}
@@ -269,6 +300,9 @@ func TestTelephonyCRUDRoundTripNeverReturnsSecret(t *testing.T) {
 	got := decodeMap(t, rec)
 	if got["connectivity_status"] != "unknown" || got["access"] != "owner" || got["provider"] != "telnyx" {
 		t.Fatalf("profile = %v", got)
+	}
+	if got["connection_id"] != "app-live" {
+		t.Fatalf("owner connection_id = %v, want app-live", got["connection_id"])
 	}
 
 	list := f.do(t, "alice", http.MethodGet, "/api/v1/telephony-profiles", nil, false)
@@ -450,8 +484,11 @@ func TestTelephonyGrantsAreAdminOnlyAndScoped(t *testing.T) {
 	if rec := f.do(t, "admin", http.MethodPut, base+"/grants/bob", nil, true); rec.Code != http.StatusNoContent {
 		t.Fatalf("admin grant = %d %s", rec.Code, rec.Body.String())
 	}
-	if got := decodeMap(t, f.do(t, "bob", http.MethodGet, base, nil, false)); got["access"] != "granted" {
+	bobView := f.do(t, "bob", http.MethodGet, base, nil, false)
+	if got := decodeMap(t, bobView); got["access"] != "granted" {
 		t.Fatalf("bob access = %v", got)
+	} else if _, leaked := got["connection_id"]; leaked {
+		t.Fatalf("granted view exposes the owner's connection_id: %s", bobView.Body.String())
 	}
 
 	list := f.do(t, "admin", http.MethodGet, base+"/grants", nil, false)
@@ -538,5 +575,109 @@ func TestTelephonyCreateWithoutMasterKeyIs503AndPersistsNothing(t *testing.T) {
 	}
 	if got := f.fake.requests(); len(got) != 0 {
 		t.Fatalf("fail-closed create reached Telnyx: %v", got)
+	}
+}
+
+// TestTelephonyRevokedKeyTurnsVerifiedIntoFailed: a verified profile whose key
+// Telnyx revokes is reported failed with invalid_credentials on the next validate.
+func TestTelephonyRevokedKeyTurnsVerifiedIntoFailed(t *testing.T) {
+	f := newTelFixture(t)
+	id := createTel(t, f, "alice", validWrite())
+	rec := f.do(t, "alice", http.MethodPost, "/api/v1/telephony-profiles/"+id+"/validate", nil, true)
+	if got := decodeMap(t, rec); rec.Code != http.StatusOK || got["connectivity_status"] != "verified" {
+		t.Fatalf("first validate = %d %v", rec.Code, got)
+	}
+	f.fake.validKey = "KEY-revoked-by-telnyx" // gitleaks:allow
+	rec = f.do(t, "alice", http.MethodPost, "/api/v1/telephony-profiles/"+id+"/validate", nil, true)
+	got := decodeMap(t, rec)
+	if rec.Code != http.StatusOK || got["connectivity_status"] != "failed" || got["connectivity_reason"] != "invalid_credentials" {
+		t.Fatalf("revoked-key validate = %d %v, want failed/invalid_credentials", rec.Code, got)
+	}
+	read := decodeMap(t, f.do(t, "alice", http.MethodGet, "/api/v1/telephony-profiles/"+id, nil, false))
+	if read["connectivity_status"] != "failed" {
+		t.Fatalf("stored status after revocation = %v, want failed", read["connectivity_status"])
+	}
+}
+
+// TestFailTelephonyRaceIsConflictWithMessage pins the 409 mapping for a validation
+// that lost a race with an edit, with its fixed message.
+func TestFailTelephonyRaceIsConflictWithMessage(t *testing.T) {
+	rec := httptest.NewRecorder()
+	h := &Handler{}
+	h.failTelephony(rec, telephonyprofile.ErrValidationRace)
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("race status = %d, want 409", rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), "telephony profile changed during validation") {
+		t.Fatalf("race body = %s", rec.Body.String())
+	}
+}
+
+// TestTelephonyRejectsTrailingJSON: one body is one JSON value. A second value
+// after the first is an invalid body, not silently ignored.
+func TestTelephonyRejectsTrailingJSON(t *testing.T) {
+	f := newTelFixture(t)
+	valid := `{"name":"main","caller_number":"+14155550100","connection_id":"app-live","api_key":"KEY-good"}` // gitleaks:allow
+	for _, body := range []string{valid + `{"name":"x"}`, valid + `}`, valid + `]`} {
+		rec := f.doRaw(t, "alice", http.MethodPost, "/api/v1/telephony-profiles", body, true)
+		if rec.Code != http.StatusBadRequest || errCode(t, rec) != "invalid_input" {
+			t.Fatalf("trailing content %q = %d %s, want 400 invalid_input", body[len(valid):], rec.Code, rec.Body.String())
+		}
+	}
+	// Whitespace after the value is not content: the same body is accepted.
+	rec := f.doRaw(t, "alice", http.MethodPost, "/api/v1/telephony-profiles", valid+" \n\t ", true)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("trailing whitespace = %d %s, want 201", rec.Code, rec.Body.String())
+	}
+}
+
+// TestTelephonyWebhookKeyNullRemovesAndEmptyKeeps covers the update semantics of
+// webhook_public_key: null removes the stored key, an empty string keeps it, and
+// an absent field keeps it. Removal also deletes the sealed secret row.
+func TestTelephonyWebhookKeyNullRemovesAndEmptyKeeps(t *testing.T) {
+	f := newTelFixture(t)
+	const webhook = "11qYAYKxCrfVS/7TyWQHOg7hcvPapiMlrwIaaPcHURo=" // gitleaks:allow
+	create := validWrite()
+	create["webhook_public_key"] = webhook
+	id := createTel(t, f, "alice", create)
+
+	countWebhookSecrets := func() int {
+		var n int
+		if err := f.db.QueryRow(`SELECT COUNT(*) FROM secrets WHERE purpose = 'telnyx_webhook_public_key'`).Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		return n
+	}
+	if countWebhookSecrets() != 1 {
+		t.Fatalf("webhook secrets after create = %d, want 1", countWebhookSecrets())
+	}
+
+	update := func(raw string) {
+		t.Helper()
+		rec := f.doRaw(t, "alice", http.MethodPut, "/api/v1/telephony-profiles/"+id, raw, true)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("update %s = %d %s", raw, rec.Code, rec.Body.String())
+		}
+	}
+	// Empty string keeps the stored key.
+	update(`{"name":"main","caller_number":"+14155550100","connection_id":"app-live","webhook_public_key":""}`)
+	if countWebhookSecrets() != 1 {
+		t.Fatalf("empty string removed the webhook key")
+	}
+	// Absent keeps the stored key.
+	update(`{"name":"main","caller_number":"+14155550100","connection_id":"app-live"}`)
+	if countWebhookSecrets() != 1 {
+		t.Fatalf("absent field removed the webhook key")
+	}
+	// Explicit null removes it and deletes the sealed row.
+	update(`{"name":"main","caller_number":"+14155550100","connection_id":"app-live","webhook_public_key":null}`)
+	if countWebhookSecrets() != 0 {
+		t.Fatalf("explicit null did not remove the webhook secret row")
+	}
+	// On create, null has no stored key to remove, so it is refused.
+	rec := f.doRaw(t, "alice", http.MethodPost, "/api/v1/telephony-profiles",
+		`{"name":"other","caller_number":"+14155550101","connection_id":"app-live","api_key":"KEY-good","webhook_public_key":null}`, true) // gitleaks:allow
+	if rec.Code != http.StatusBadRequest || errCode(t, rec) != "invalid_input" {
+		t.Fatalf("create with null webhook = %d %s, want 400 invalid_input", rec.Code, rec.Body.String())
 	}
 }

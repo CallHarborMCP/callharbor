@@ -18,30 +18,6 @@ func seedCallRow(t *testing.T, s *Store, id, owner, tel, ai, key, createdAt stri
 	}
 }
 
-func TestListTelephonyProfilesIsOwnerScoped(t *testing.T) {
-	s := openMigrated(t, filepath.Join(t.TempDir(), "db.sqlite"))
-	seedTenants(t, s)
-	ctx := context.Background()
-
-	got, err := s.ListTelephonyProfiles(ctx, "alice")
-	if err != nil {
-		t.Fatalf("ListTelephonyProfiles: %v", err)
-	}
-	if len(got) != 1 || got[0].ID != "alice-tel" || got[0].Provider != "telnyx" || got[0].CallerNumber != "+14155550100" {
-		t.Fatalf("alice profiles = %+v", got)
-	}
-	if got[0].ConnectionID != "" {
-		t.Fatalf("connection id = %q, want empty", got[0].ConnectionID)
-	}
-	none, err := s.ListTelephonyProfiles(ctx, "nobody")
-	if err != nil {
-		t.Fatalf("ListTelephonyProfiles(nobody): %v", err)
-	}
-	if none == nil || len(none) != 0 {
-		t.Fatalf("unknown owner profiles = %#v, want empty non-nil slice", none)
-	}
-}
-
 func TestListCallsKeysetPaginationAndOwnerScope(t *testing.T) {
 	s := openMigrated(t, filepath.Join(t.TempDir(), "db.sqlite"))
 	seedTenants(t, s)

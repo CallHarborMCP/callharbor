@@ -22,7 +22,10 @@ const (
 // owner silences their grants without deleting them. Re-promotion restores
 // them. Both branches are joined against the users table in SQL.
 //
-// Parameters, in order: userID (owner branch), userID (grantee branch).
+// It has four placeholders, all bound to userID. The owner branch binds two
+// (ownership and the user's active check). The grant branch binds two (the
+// grantee match and the grantee's active check). The owner's active-admin check
+// binds none. usableSelect adds one more userID placeholder for its access CASE.
 const usablePredicate = `(
 	(p.owner_user_id = ? AND EXISTS (SELECT 1 FROM users u WHERE u.id = ? AND u.active = 1))
 	OR (

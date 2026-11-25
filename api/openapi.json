@@ -506,9 +506,6 @@
           "403": {
             "$ref": "#/components/responses/Error"
           },
-          "404": {
-            "$ref": "#/components/responses/Error"
-          },
           "409": {
             "$ref": "#/components/responses/Error"
           },
@@ -763,9 +760,6 @@
           "404": {
             "$ref": "#/components/responses/Error"
           },
-          "409": {
-            "$ref": "#/components/responses/Error"
-          },
           "500": {
             "$ref": "#/components/responses/Error"
           }
@@ -817,10 +811,10 @@
           "404": {
             "$ref": "#/components/responses/Error"
           },
-          "409": {
+          "500": {
             "$ref": "#/components/responses/Error"
           },
-          "500": {
+          "400": {
             "$ref": "#/components/responses/Error"
           }
         }
@@ -867,9 +861,6 @@
             "$ref": "#/components/responses/Error"
           },
           "404": {
-            "$ref": "#/components/responses/Error"
-          },
-          "409": {
             "$ref": "#/components/responses/Error"
           },
           "500": {
@@ -1021,6 +1012,11 @@
           "caller_number": {
             "type": "string"
           },
+          "connection_id": {
+            "type": "string",
+            "maxLength": 128,
+            "description": "Telnyx Call Control application id that calls dial through. Required on create and update. Returned to the owner only; omitted when access is granted."
+          },
           "connectivity_status": {
             "type": "string",
             "enum": [
@@ -1031,7 +1027,18 @@
           },
           "connectivity_reason": {
             "type": "string",
-            "description": "Fixed reason code from the last validation; empty when verified or unknown."
+            "description": "Fixed reason code from the last validation; empty when verified or unknown.",
+            "enum": [
+              "",
+              "secrets_unavailable",
+              "invalid_credentials",
+              "application_not_found",
+              "application_inactive",
+              "number_not_found",
+              "number_inactive",
+              "number_not_on_application",
+              "provider_unreachable"
+            ]
           },
           "access": {
             "type": "string",
@@ -1443,7 +1450,8 @@
         "required": [
           "name",
           "caller_number",
-          "api_key"
+          "api_key",
+          "connection_id"
         ],
         "additionalProperties": false,
         "properties": {
@@ -1459,7 +1467,8 @@
           "connection_id": {
             "type": "string",
             "maxLength": 128,
-            "description": "Telnyx Call Control application id. Optional."
+            "description": "Telnyx Call Control application id that calls dial through. Required.",
+            "minLength": 1
           },
           "api_key": {
             "type": "string",
@@ -1470,10 +1479,9 @@
           },
           "webhook_public_key": {
             "type": "string",
-            "minLength": 1,
             "maxLength": 4096,
             "writeOnly": true,
-            "description": "Write-only base64 Ed25519 webhook public key. Optional."
+            "description": "Write-only base64 Ed25519 webhook public key. Optional. Empty or omitted means no key."
           }
         }
       },
@@ -1481,7 +1489,8 @@
         "type": "object",
         "required": [
           "name",
-          "caller_number"
+          "caller_number",
+          "connection_id"
         ],
         "additionalProperties": false,
         "properties": {
@@ -1497,7 +1506,8 @@
           "connection_id": {
             "type": "string",
             "maxLength": 128,
-            "description": "Telnyx Call Control application id. Optional."
+            "description": "Telnyx Call Control application id that calls dial through. Required.",
+            "minLength": 1
           },
           "api_key": {
             "type": "string",
@@ -1507,11 +1517,13 @@
             "description": "Write-only Telnyx API key. Optional on update: when omitted, the stored key is kept."
           },
           "webhook_public_key": {
-            "type": "string",
-            "minLength": 1,
+            "type": [
+              "string",
+              "null"
+            ],
             "maxLength": 4096,
             "writeOnly": true,
-            "description": "Write-only base64 Ed25519 webhook public key. Optional."
+            "description": "Write-only base64 Ed25519 webhook public key. Omitted or empty keeps the stored key. JSON null removes the stored key. Not allowed on create."
           }
         }
       },

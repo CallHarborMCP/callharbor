@@ -384,3 +384,78 @@ func TestAllManifestSchemasCompile(t *testing.T) {
 		}
 	}
 }
+
+// TestMCPContractFilesHaveNoDuplicateKeys fails when any object in the manifest
+// or the embedded schema file repeats a key. encoding/json keeps the last
+// duplicate silently, so a drift test alone cannot see it.
+func TestMCPContractFilesHaveNoDuplicateKeys(t *testing.T) {
+	for _, path := range []string{toolsManifest, "schemas.json"} {
+		b, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("read %s: %v", path, err)
+		}
+		if key, ok := firstDuplicateKey(b); ok {
+			t.Fatalf("%s repeats object key %q", path, key)
+		}
+	}
+}
+
+// firstDuplicateKey walks the JSON token stream and reports the first object
+// key that appears twice in the same object.
+func firstDuplicateKey(b []byte) (string, bool) {
+	dec := json.NewDecoder(bytes.NewReader(b))
+	type frame struct {
+		isObject  bool
+		keys      map[string]bool
+		expectKey bool
+	}
+	var stack []frame
+	for {
+		tok, err := dec.Token()
+		if err != nil {
+			return "", false
+		}
+		if d, ok := tok.(json.Delim); ok {
+			switch d {
+			case '{':
+				stack = append(stack, frame{isObject: true, keys: map[string]bool{}, expectKey: true})
+			case '[':
+				stack = append(stack, frame{})
+			case '}', ']':
+				stack = stack[:len(stack)-1]
+				if len(stack) > 0 && stack[len(stack)-1].isObject {
+					stack[len(stack)-1].expectKey = true
+				}
+			}
+			continue
+		}
+		if len(stack) == 0 {
+			continue
+		}
+		top := &stack[len(stack)-1]
+		if top.isObject && top.expectKey {
+			key, _ := tok.(string)
+			if top.keys[key] {
+				return key, true
+			}
+			top.keys[key] = true
+			top.expectKey = false
+			continue
+		}
+		if top.isObject {
+			top.expectKey = true
+		}
+	}
+}
+
+// TestFirstDuplicateKeyDetectsRepeatedKeysOnly proves the detector itself
+// catches a repeated key in a nested object and ignores repeats in sibling
+// objects, which are legal.
+func TestFirstDuplicateKeyDetectsRepeatedKeysOnly(t *testing.T) {
+	if key, ok := firstDuplicateKey([]byte(`{"a":{"x":1,"caller_number":{},"caller_number":{}}}`)); !ok || key != "caller_number" {
+		t.Fatalf("nested duplicate = %q, %v; want caller_number", key, ok)
+	}
+	if key, ok := firstDuplicateKey([]byte(`{"items":[{"id":1},{"id":2}],"id":[]}`)); ok {
+		t.Fatalf("valid document reported duplicate %q", key)
+	}
+}
