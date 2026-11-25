@@ -133,10 +133,10 @@ func (s *Server) Decide(ctx context.Context, requestID, userID string, approve b
 		CreatedAt:     nowText,
 		ExpiresAt:     formatTime(now.Add(codeTTL)),
 	}
-	if err := s.store.DecideOAuthAuthRequest(ctx, requestID, userID, nowText); err != nil {
-		return "", mapDecisionErr(err)
-	}
-	if err := s.store.ApproveOAuthRequest(ctx, requestID, userID, grant, codeRow, nowText, audit); err != nil {
+	// Decision, active-user check, grant and code are one transaction, so an
+	// approval cannot be left half-recorded or land for a user deactivated
+	// between the checks above and this write.
+	if err := s.store.DecideAndApproveOAuthRequest(ctx, requestID, userID, grant, codeRow, nowText, audit); err != nil {
 		return "", mapDecisionErr(err)
 	}
 

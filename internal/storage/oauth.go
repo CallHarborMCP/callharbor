@@ -220,6 +220,32 @@ func (s *Store) ApproveOAuthRequest(ctx context.Context, requestID, userID strin
 	})
 }
 
+// DecideAndApproveOAuthRequest records an approval in one transaction: the
+// request is decided and consumed, the grant, code and audit event are
+// inserted. The user must be active at the same moment. A failure at any step
+// rolls everything back, so a request is never left decided without a code.
+func (s *Store) DecideAndApproveOAuthRequest(ctx context.Context, requestID, userID string, grant OAuthGrant, code OAuthCode, now string, audit AuditEvent) error {
+	return s.inTx(ctx, func(tx *sql.Tx) error {
+		res, err := tx.ExecContext(ctx, `UPDATE oauth_auth_requests SET user_id = ?, decided_at = ?, consumed_at = ?
+			WHERE id = ? AND decided_at IS NULL AND consumed_at IS NULL AND expires_at > ?
+			AND EXISTS (SELECT 1 FROM users WHERE id = ? AND active = 1)`,
+			userID, now, now, requestID, now, userID)
+		if err != nil {
+			return err
+		}
+		if n, _ := res.RowsAffected(); n == 0 {
+			return ErrOAuthRequestNotDecidable
+		}
+		if err := insertOAuthGrant(ctx, tx, grant); err != nil {
+			return err
+		}
+		if err := insertOAuthCode(ctx, tx, code); err != nil {
+			return err
+		}
+		return insertAudit(ctx, tx, audit)
+	})
+}
+
 // DenyOAuthRequest marks a pending request as decided-denied and consumed.
 func (s *Store) DenyOAuthRequest(ctx context.Context, requestID, userID, now string, audit AuditEvent) error {
 	return s.inTx(ctx, func(tx *sql.Tx) error {

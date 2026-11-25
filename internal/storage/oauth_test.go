@@ -188,6 +188,46 @@ func TestPurgeExpiredOAuthAuthRemovesOnlyExpiredRows(t *testing.T) {
 	}
 }
 
+// TestDecideAndApproveRefusesUserDeactivatedAfterCheck: a user deactivated
+// after the handler's own check but before the approval write must get no
+// grant or code, and the request stays undecided, so nothing is stranded.
+func TestDecideAndApproveRefusesUserDeactivatedAfterCheck(t *testing.T) {
+	ctx := context.Background()
+	s := openOAuthFixture(t)
+	const reqID = "req-race"
+	const cid = "https://client.example/meta.json"
+	if err := s.InsertOAuthAuthRequest(ctx, OAuthAuthRequest{
+		ID: reqID, ClientID: cid, RedirectURI: "https://client.example/cb", Scopes: "mcp:read",
+		Resource: "https://cb.example/mcp", CodeChallenge: testChallenge, CreatedAt: oauthNow, ExpiresAt: oauthLater,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	inactive := false
+	if err := s.UpdateUser(ctx, "alice", nil, &inactive, oauthNow, AuditEvent{OccurredAt: oauthNow, Action: "user.update", ResourceType: "user", Outcome: "success", DetailJSON: "{}"}); err != nil {
+		t.Fatal(err)
+	}
+
+	grant := OAuthGrant{ID: "grant-race", UserID: "alice", ClientID: cid, Resource: "https://cb.example/mcp", Scopes: "mcp:read", CreatedAt: oauthNow}
+	code := OAuthCode{CodeHash: hex64('e'), GrantID: "grant-race", AuthRequestID: reqID, ClientID: cid, RedirectURI: "https://client.example/cb", CodeChallenge: testChallenge, CreatedAt: oauthNow, ExpiresAt: oauthLater}
+	err := s.DecideAndApproveOAuthRequest(ctx, reqID, "alice", grant, code, oauthNow, AuditEvent{OccurredAt: oauthNow, Action: "oauth.consent", ResourceType: "oauth_grant", Outcome: "success", DetailJSON: "{}"})
+	if !errors.Is(err, ErrOAuthRequestNotDecidable) {
+		t.Fatalf("approval for a deactivated user: err = %v, want ErrOAuthRequestNotDecidable", err)
+	}
+	if _, err := s.GetOAuthCode(ctx, hex64('e')); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("code written for a deactivated user: err = %v", err)
+	}
+	if _, err := s.GetOAuthGrantByID(ctx, "grant-race"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("grant written for a deactivated user: err = %v", err)
+	}
+	r, err := s.GetOAuthAuthRequest(ctx, reqID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.DecidedAt != "" || r.ConsumedAt != "" {
+		t.Fatalf("request left decided after refusal: decided=%q consumed=%q", r.DecidedAt, r.ConsumedAt)
+	}
+}
+
 func TestTouchOAuthGrantUnknownIsNoOp(t *testing.T) {
 	s := openOAuthFixture(t)
 	if err := s.TouchOAuthGrant(context.Background(), "missing", oauthNow, oauthNow); err != nil {
