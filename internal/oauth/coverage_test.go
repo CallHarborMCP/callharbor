@@ -56,7 +56,7 @@ func TestDenyAfterDecisionIsNotFound(t *testing.T) {
 	}
 }
 
-func TestDecisionCannotBeMadeOnAnotherUsersRequest(t *testing.T) {
+func TestDecisionRequiresAnExistingUser(t *testing.T) {
 	f := newFixture(t)
 	id := location(t, get(t, f.authorizeURL(nil))).Query().Get("request")
 	// An unknown user cannot satisfy the active-user lookup.
