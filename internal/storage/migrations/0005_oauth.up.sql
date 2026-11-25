@@ -30,6 +30,8 @@ CREATE TABLE oauth_grants (
 );
 
 CREATE INDEX oauth_grants_user_idx ON oauth_grants (user_id);
+-- Metadata-client eviction checks whether any row still references a client.
+CREATE INDEX oauth_grants_client_idx ON oauth_grants (client_id);
 
 CREATE TABLE oauth_auth_requests (
     id TEXT PRIMARY KEY CHECK (length(id) BETWEEN 1 AND 64),
@@ -48,6 +50,7 @@ CREATE TABLE oauth_auth_requests (
 );
 
 CREATE INDEX oauth_auth_requests_expires_idx ON oauth_auth_requests (expires_at);
+CREATE INDEX oauth_auth_requests_client_idx ON oauth_auth_requests (client_id);
 
 CREATE TABLE oauth_codes (
     code_hash TEXT PRIMARY KEY CHECK (length(code_hash) = 64),
@@ -60,6 +63,8 @@ CREATE TABLE oauth_codes (
     expires_at TEXT NOT NULL,
     consumed_at TEXT
 );
+
+CREATE INDEX oauth_codes_client_idx ON oauth_codes (client_id);
 
 CREATE TABLE oauth_access_tokens (
     token_hash TEXT PRIMARY KEY CHECK (length(token_hash) = 64),
@@ -74,6 +79,7 @@ CREATE TABLE oauth_access_tokens (
 );
 
 CREATE INDEX oauth_access_tokens_grant_idx ON oauth_access_tokens (grant_id);
+CREATE INDEX oauth_access_tokens_client_idx ON oauth_access_tokens (client_id);
 
 CREATE TABLE oauth_refresh_tokens (
     token_hash TEXT PRIMARY KEY CHECK (length(token_hash) = 64),
@@ -89,3 +95,4 @@ CREATE TABLE oauth_refresh_tokens (
 );
 
 CREATE INDEX oauth_refresh_tokens_grant_idx ON oauth_refresh_tokens (grant_id);
+CREATE INDEX oauth_refresh_tokens_client_idx ON oauth_refresh_tokens (client_id);

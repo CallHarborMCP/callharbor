@@ -1,10 +1,15 @@
+DROP INDEX IF EXISTS oauth_refresh_tokens_client_idx;
 DROP INDEX IF EXISTS oauth_refresh_tokens_grant_idx;
 DROP TABLE IF EXISTS oauth_refresh_tokens;
+DROP INDEX IF EXISTS oauth_access_tokens_client_idx;
 DROP INDEX IF EXISTS oauth_access_tokens_grant_idx;
 DROP TABLE IF EXISTS oauth_access_tokens;
+DROP INDEX IF EXISTS oauth_codes_client_idx;
 DROP TABLE IF EXISTS oauth_codes;
+DROP INDEX IF EXISTS oauth_auth_requests_client_idx;
 DROP INDEX IF EXISTS oauth_auth_requests_expires_idx;
 DROP TABLE IF EXISTS oauth_auth_requests;
+DROP INDEX IF EXISTS oauth_grants_client_idx;
 DROP INDEX IF EXISTS oauth_grants_user_idx;
 DROP TABLE IF EXISTS oauth_grants;
 DROP TABLE IF EXISTS oauth_clients;
