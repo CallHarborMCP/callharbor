@@ -1,11 +1,20 @@
 // Package oauth implements the CallHarbor OAuth 2.1 authorization server used
 // by remote MCP clients, and the protected-resource checks for /mcp.
 //
-// Protocol parsing and validation use github.com/zitadel/oidc/v3 types and
-// helpers (oidc.AuthRequest, oidc.AccessTokenRequest, oidc.Error,
-// op.ValidateAuthReqRedirectURI and friends). This package owns only storage,
-// opaque token minting (crypto/rand, hashed at rest), rotation and grant
-// families, and the MCP-specific resource and issuer rules.
+// Library use, from github.com/zitadel/oidc/v3:
+//   - Request, error and metadata types: oidc.AuthRequest,
+//     oidc.AccessTokenRequest, oidc.RevocationRequest, oidc.Error and its
+//     constructors, oidc.DiscoveryConfiguration.
+//   - Helpers: op.ParseAuthorizeRequest, the redirect-URI, response-type and
+//     code-challenge-method validators, op.HTTPLoopbackOrLocalhost, and
+//     op.AuthorizeCodeChallenge for the PKCE verifier check.
+//
+// In-repo code, not the library: token issuance, rotation and reuse detection,
+// grant families and storage, bearer validation on /mcp, CIMD resolution, and
+// dynamic client registration on crypto/rand with SHA-256 hashes at rest. The
+// library's full OpenID Provider is not used. It needs a JWT signing key for
+// ID tokens, and it has no RFC 8707 resource binding and no client ID metadata
+// document support, so those parts are implemented here.
 //
 // No JWTs or ID tokens are issued, so the server needs no signing key.
 package oauth

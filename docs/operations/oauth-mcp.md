@@ -57,6 +57,15 @@ Metadata, token, revocation and registration endpoints send `Access-Control-Allo
 - **Accounts:** consent requires a CallHarbor session and the CSRF token. Identity comes only from the validated token, never from request parameters. Deactivating a user revokes all of their OAuth grants in the same transaction, and every token use checks that the user is still active.
 - **Audit:** client registration, consent decisions, grant revocation and refresh-token reuse are written to the audit log. Tokens, codes and verifiers are never logged.
 
+## Implementation
+
+The server uses `github.com/zitadel/oidc/v3` for protocol types and checks, and implements the rest itself:
+
+- **From the library:** request and error types, the redirect-URI, response-type and code-challenge-method validators, the loopback check, the PKCE verifier comparison, and the RFC 8414 discovery struct.
+- **In this repository:** token issuance, refresh rotation and reuse detection, grant storage, bearer validation on `/mcp`, client ID metadata document resolution, and dynamic client registration. Tokens and codes come from `crypto/rand` and are stored only as SHA-256 hashes.
+
+The library's full OpenID Provider is not used. It signs ID tokens with a JWT key that this server does not need, and it does not provide RFC 8707 resource binding or client ID metadata documents, so those are implemented here.
+
 ## Verification status
 
 Tested automatically in CI (`go test`, Playwright) against the real application and SQLite:
