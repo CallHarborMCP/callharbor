@@ -288,6 +288,60 @@ func TestTokenRejectsRedirectURIMismatch(t *testing.T) {
 	}
 }
 
+// TestTokenRejectsCodeForAnotherClient: a code is bound to the client it was
+// issued to. A different client_id presented with the code is refused, and no
+// tokens are issued.
+func TestTokenRejectsCodeForAnotherClient(t *testing.T) {
+	f := newFixture(t)
+	code := codeFrom(t, f.approveAuthorize(nil))
+	const otherClient = "https://other.example/meta.json"
+	f.registerClient(otherClient, []string{testRedirectURI})
+	status, body := f.exchange(url.Values{
+		"grant_type":    {"authorization_code"},
+		"code":          {code},
+		"client_id":     {otherClient},
+		"redirect_uri":  {testRedirectURI},
+		"code_verifier": {testVerifier},
+	})
+	if status != http.StatusBadRequest || body["error"] != "invalid_grant" {
+		t.Fatalf("status=%d body=%v, want invalid_grant", status, body)
+	}
+	if _, ok := body["access_token"]; ok {
+		t.Fatal("a token was issued to a client that does not hold the code")
+	}
+}
+
+// TestTokenRejectsCodeWhoseGrantWasRevoked: revoking the grant, for example
+// from the consent API, refuses a code that was issued before the revocation.
+// The code itself is unconsumed, so only the grant check can refuse it.
+func TestTokenRejectsCodeWhoseGrantWasRevoked(t *testing.T) {
+	f := newFixture(t)
+	code := codeFrom(t, f.approveAuthorize(nil))
+	row, err := f.store.GetOAuthCode(f.ctx, hashToken(code))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := f.store.RevokeOAuthGrant(f.ctx, row.GrantID, formatTime(f.clock.Now()), storage.AuditEvent{
+		OccurredAt: formatTime(f.clock.Now()), Action: "oauth.grant_revoked", ResourceType: "oauth_grant",
+		ResourceID: row.GrantID, Outcome: "success", DetailJSON: "{}",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	status, body := f.exchange(url.Values{
+		"grant_type":    {"authorization_code"},
+		"code":          {code},
+		"client_id":     {testClientID},
+		"redirect_uri":  {testRedirectURI},
+		"code_verifier": {testVerifier},
+	})
+	if status != http.StatusBadRequest || body["error"] != "invalid_grant" {
+		t.Fatalf("status=%d body=%v, want invalid_grant", status, body)
+	}
+	if _, ok := body["access_token"]; ok {
+		t.Fatal("a token was issued from a revoked grant")
+	}
+}
+
 func TestTokenWrongVerifierDoesNotBurnCode(t *testing.T) {
 	f := newFixture(t)
 	code := codeFrom(t, f.approveAuthorize(nil))
