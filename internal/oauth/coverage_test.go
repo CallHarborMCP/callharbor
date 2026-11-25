@@ -194,6 +194,27 @@ func TestRevokeHintedRefreshTokenScopesLookup(t *testing.T) {
 	}
 }
 
+// TestRevokeMismatchedHintCannotBypassOwnerCheck: a refresh token owned by one
+// client, revoked by another client with a misleading access_token hint, must
+// survive. The hint must not hide the owner and skip the client check.
+func TestRevokeMismatchedHintCannotBypassOwnerCheck(t *testing.T) {
+	f := newFixture(t)
+	refresh := f.refreshTokenForDefaultClient(t)
+	resp, err := http.PostForm(f.http.URL+"/oauth/revoke", url.Values{
+		"token": {refresh}, "client_id": {"https://attacker.example/meta.json"}, "token_type_hint": {"access_token"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = resp.Body.Close()
+	status, body := f.exchange(url.Values{
+		"grant_type": {"refresh_token"}, "refresh_token": {refresh}, "client_id": {testClientID},
+	})
+	if status != http.StatusOK {
+		t.Fatalf("foreign client revoked the owner's family via a hint: status=%d body=%v", status, body)
+	}
+}
+
 func TestClientViewSatisfiesLibraryInterface(t *testing.T) {
 	var v clientView
 	v.c = Client{ID: testClientID, RedirectURIs: []string{testRedirectURI}}

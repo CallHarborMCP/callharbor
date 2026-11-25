@@ -50,7 +50,9 @@ func (s *Server) handleRevoke(w http.ResponseWriter, r *http.Request) {
 func (s *Server) revokeToken(ctx context.Context, req oidc.RevocationRequest, clientID string) error {
 	hash := hashToken(req.Token)
 	now := formatTime(s.clock())
-	owner, ok, err := s.tokenOwner(ctx, hash, req.TokenTypeHint)
+	// The owner lookup ignores the hint: a mismatched hint must not hide the
+	// token's owner, or the family would be revoked without the client check.
+	owner, ok, err := s.tokenOwner(ctx, hash)
 	if err != nil {
 		return err
 	}
@@ -74,26 +76,23 @@ func (s *Server) revokeToken(ctx context.Context, req oidc.RevocationRequest, cl
 	return nil
 }
 
-// tokenOwner returns the client a token was issued to. It is used only to
-// scope revocation; it does not disclose the token's existence to the caller.
-func (s *Server) tokenOwner(ctx context.Context, hash, hint string) (string, bool, error) {
-	if hint != "refresh_token" {
-		t, err := s.store.GetOAuthAccessToken(ctx, hash)
-		if err == nil {
-			return t.ClientID, true, nil
-		}
-		if !errors.Is(err, storage.ErrNotFound) {
-			return "", false, err
-		}
+// tokenOwner returns the client a token was issued to, searching both token
+// types whatever the hint says. It is used only to scope revocation; it does
+// not disclose the token's existence to the caller.
+func (s *Server) tokenOwner(ctx context.Context, hash string) (string, bool, error) {
+	t, err := s.store.GetOAuthAccessToken(ctx, hash)
+	if err == nil {
+		return t.ClientID, true, nil
 	}
-	if hint != "access_token" {
-		t, err := s.store.GetOAuthRefreshToken(ctx, hash)
-		if err == nil {
-			return t.ClientID, true, nil
-		}
-		if !errors.Is(err, storage.ErrNotFound) {
-			return "", false, err
-		}
+	if !errors.Is(err, storage.ErrNotFound) {
+		return "", false, err
+	}
+	t, err = s.store.GetOAuthRefreshToken(ctx, hash)
+	if err == nil {
+		return t.ClientID, true, nil
+	}
+	if !errors.Is(err, storage.ErrNotFound) {
+		return "", false, err
 	}
 	return "", false, nil
 }
