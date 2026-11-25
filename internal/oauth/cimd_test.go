@@ -531,10 +531,9 @@ func TestTokenTimeResolveFailureIsInvalidClient(t *testing.T) {
 		"refresh_token": {refresh},
 		"client_id":     {testClientID},
 	})
-	// No Authorization header was sent, so RFC 6749 section 5.2 does not
-	// require 401; invalid_client is returned with 400.
-	if status != http.StatusBadRequest || body["error"] != "invalid_client" {
-		t.Fatalf("status=%d body=%v, want 400 invalid_client", status, body)
+	// RFC 6749 section 5.2: invalid_client is answered with 401.
+	if status != http.StatusUnauthorized || body["error"] != "invalid_client" {
+		t.Fatalf("status=%d body=%v, want 401 invalid_client", status, body)
 	}
 }
 

@@ -71,9 +71,14 @@ func (s *Server) writeTokenError(w http.ResponseWriter, err error) {
 		oerr = oidc.ErrServerError()
 	}
 	status := http.StatusBadRequest
-	if errorCode(oerr) == string(oidc.ServerError) {
+	switch errorCode(oerr) {
+	case string(oidc.ServerError):
 		status = http.StatusInternalServerError
 		s.logger.Error("oauth token: internal failure", "error", err)
+	case string(oidc.InvalidClient):
+		// RFC 6749 section 5.2. The endpoint takes no Authorization header
+		// (public clients only), so no WWW-Authenticate challenge applies.
+		status = http.StatusUnauthorized
 	}
 	writeNoStore(w, status, oerr)
 }
