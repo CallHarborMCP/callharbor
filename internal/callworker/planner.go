@@ -115,7 +115,9 @@ func telnyxTimeLimit(seconds int) int {
 // revoked. A profile that no longer resolves returns an error, so the leg is
 // skipped and logged.
 func (p ProductionPlanner) LegHanger(ctx context.Context, leg storage.LiveCallLeg) (Hanger, error) {
-	res, err := p.Profiles.ResolveForHangup(ctx, leg.OwnerUserID, leg.TelephonyProfileID)
+	// The profile belongs to its owner, who can differ from the call's owner
+	// when a grantee placed the call. The lookup is by that owner.
+	res, err := p.Profiles.ResolveForHangup(ctx, leg.TelephonyOwnerUserID, leg.TelephonyProfileID)
 	if err != nil {
 		return nil, fmt.Errorf("resolve telephony profile: %w", err)
 	}

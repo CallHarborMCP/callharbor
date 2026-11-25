@@ -16,12 +16,14 @@ var ErrCallForeignProvider = errors.New("storage: signal for a different provide
 // the minimum the call state machine needs to rebuild its position, plus the
 // leg's profile so a hangup can be sent with the owner's key.
 type CallSignalState struct {
-	ID                    string
-	OwnerUserID           string
-	TelephonyProfileID    string
-	Status                string
-	Outcome               string
-	ReasonCode            string
+	ID                   string
+	OwnerUserID          string
+	TelephonyProfileID   string
+	TelephonyOwnerUserID string
+	Status               string
+	Outcome              string
+	ReasonCode           string
+	// ProviderCallControlID is the leg's control id, or empty when none is recorded.
 	ProviderCallControlID string
 }
 
@@ -30,10 +32,11 @@ type CallSignalState struct {
 func ReadCallForSignal(ctx context.Context, tx *sql.Tx, callID string) (CallSignalState, error) {
 	var c CallSignalState
 	var control, outcome, reason sql.NullString
-	err := tx.QueryRowContext(ctx, `SELECT id, owner_user_id, telephony_profile_id, status, outcome,
-		outcome_reason_code, provider_call_control_id
-		FROM calls WHERE id = ?`, callID).Scan(&c.ID, &c.OwnerUserID, &c.TelephonyProfileID, &c.Status,
-		&outcome, &reason, &control)
+	err := tx.QueryRowContext(ctx, `SELECT c.id, c.owner_user_id, c.telephony_profile_id, tp.owner_user_id,
+		c.status, c.outcome, c.outcome_reason_code, c.provider_call_control_id
+		FROM calls c JOIN telephony_profiles tp ON tp.id = c.telephony_profile_id
+		WHERE c.id = ?`, callID).Scan(&c.ID, &c.OwnerUserID, &c.TelephonyProfileID, &c.TelephonyOwnerUserID,
+		&c.Status, &outcome, &reason, &control)
 	if errors.Is(err, sql.ErrNoRows) {
 		return CallSignalState{}, ErrCallNotFound
 	}

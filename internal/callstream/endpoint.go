@@ -108,9 +108,13 @@ func (m *Media) Handler() http.Handler {
 // sinkFactory runs when a stream's start frame validates. It returns an error,
 // which closes the stream, when the call cannot take media. A failure the
 // caller should see marks the call failed with a reason code.
+//
+// frameCtx is the stream's frame-loop context. Shutdown cancels it, so setup
+// (the store reads and the AI dial) stops with the connection rather than
+// running on a context nothing cancels.
 func (m *Media) sinkFactory(upgrade storage.MediaCall) telnyx.SinkFactory {
-	return func(start telnyx.Frame, send telnyx.Send) (telnyx.MediaSink, error) {
-		ctx := context.Background()
+	return func(frameCtx context.Context, start telnyx.Frame, send telnyx.Send) (telnyx.MediaSink, error) {
+		ctx := frameCtx
 		// Setup counts as in flight until it returns, so shutdown waits for it
 		// before the store closes. A stream that starts after shutdown is refused.
 		exit, err := m.sessions.enter()
@@ -128,7 +132,9 @@ func (m *Media) sinkFactory(upgrade storage.MediaCall) telnyx.SinkFactory {
 		if err := BindControlID(st.ID, st.ControlID, start.CallControlID, start.ClientState); err != nil {
 			// A stream that cannot bind is refused, and the live call is ended
 			// visibly: a leg that dialed but cannot be bound is never left up.
-			if st.ControlID == "" && isLive(st.Status) {
+			// During shutdown the local end is skipped, as for the run's end:
+			// shutdown's hangup pass covers every live leg.
+			if st.ControlID == "" && isLive(st.Status) && !m.sessions.stopping() {
 				m.endLocally(ctx, st.ID, ReasonMediaFailed)
 			}
 			return nil, err
@@ -175,7 +181,7 @@ func (m *Media) buildSink(ctx context.Context, st storage.MediaCall, start telny
 	format := m.Format
 	prof, err := m.Resolver.Resolve(ctx, st.OwnerUserID, st.AIProfileID)
 	if err != nil {
-		m.fail(ctx, st.ID, ReasonAIDialFailed)
+		m.failSetup(ctx, st.ID, ReasonAIDialFailed)
 		return nil, fmt.Errorf("resolve ai profile: %w", err)
 	}
 	prof.Instructions, err = Render(prof.Instructions, st.BriefJSON, m.MaxBytes)
@@ -184,7 +190,7 @@ func (m *Media) buildSink(ctx context.Context, st storage.MediaCall, start telny
 		if errors.Is(err, ErrInstructionsTooLarge) {
 			reason = ReasonBriefTooLarge
 		}
-		m.fail(ctx, st.ID, reason)
+		m.failSetup(ctx, st.ID, reason)
 		return nil, err
 	}
 	sess, err := m.Dialers.Dial(ctx, prof, realtime.Requirements{Format: format})
@@ -193,7 +199,7 @@ func (m *Media) buildSink(ctx context.Context, st storage.MediaCall, start telny
 		if errors.Is(err, realtime.ErrCapability) {
 			reason = ReasonCapabilityMismatch
 		}
-		m.fail(ctx, st.ID, reason)
+		m.failSetup(ctx, st.ID, reason)
 		return nil, err
 	}
 	return m.attach(sess, st, start.Format, format, send, release)
@@ -277,9 +283,16 @@ func (s *stoppingSink) Close() error {
 	return s.BridgeSink.Close()
 }
 
-// fail ends a call whose AI session could not start. The Telnyx leg is already
-// up, so it is ended the same way a running call is: ending, then one hangup.
-func (m *Media) fail(ctx context.Context, callID, reason string) {
+// failSetup ends a call whose AI session could not start. The Telnyx leg is
+// already up, so it is ended the same way a running call is: ending, then one
+// hangup. This runs on a setup path, which the frame loop may cancel during
+// shutdown. During shutdown the local end is skipped, matching the run
+// goroutine: HangupLive ends every live leg, and a reason written now would not
+// be true.
+func (m *Media) failSetup(ctx context.Context, callID, reason string) {
+	if m.sessions.stopping() {
+		return
+	}
 	m.endLocally(ctx, callID, reason)
 }
 

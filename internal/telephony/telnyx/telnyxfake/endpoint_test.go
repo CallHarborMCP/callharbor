@@ -189,7 +189,7 @@ func runSignedCall(t *testing.T, leg audio.Format, connect func(ctx context.Cont
 	t.Cleanup(srv.Close)
 	streamURL := "ws" + strings.TrimPrefix(srv.URL, "http") + "/media?token=e2e"
 
-	me, err = telnyx.NewMediaEndpoint(v, streamURL, func(start telnyx.Frame, send telnyx.Send) (telnyx.MediaSink, error) {
+	me, err = telnyx.NewMediaEndpoint(v, streamURL, func(_ context.Context, start telnyx.Frame, send telnyx.Send) (telnyx.MediaSink, error) {
 		b, err := voicebridge.New(start.Format, leg, 5*time.Millisecond, 2*time.Second)
 		if err != nil {
 			return nil, err

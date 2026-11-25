@@ -121,3 +121,47 @@ func TestBeginLocalHangupRequiresReason(t *testing.T) {
 		t.Fatal("empty reason accepted")
 	}
 }
+
+// A grantee's call is placed by bob on alice's profile. Its leg must carry the
+// profile owner, alice, so a hangup resolves alice's key. The call owner alone
+// is the wrong key holder (R1).
+func TestLiveLegCarriesProfileOwnerForGranteeCall(t *testing.T) {
+	ctx := context.Background()
+	s := openMigrated(t, filepath.Join(t.TempDir(), "g.db"))
+	seedTenants(t, s)
+	// The call insert requires a grant from the profile owner to the caller.
+	if _, err := s.db.ExecContext(ctx, `INSERT INTO telephony_profile_grants
+		(profile_id, grantee_user_id, granted_by_user_id, created_at) VALUES ('alice-tel', 'bob', 'alice', ?)`,
+		testTime); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.InsertCall(ctx, newCallInsert("bob-on-alice", "bob", "alice-tel", "bob-ai", "k-grantee")); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.ClaimQueuedCall(ctx, "bob-on-alice", mustParse(testTime)); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.RecordProviderCallControlID(ctx, "bob-on-alice", "bob", "v3:grantee", mustParse(testTime)); err != nil {
+		t.Fatal(err)
+	}
+
+	legs, err := s.ListLiveCallLegs(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(legs) != 1 {
+		t.Fatalf("live legs = %d, want 1", len(legs))
+	}
+	if legs[0].OwnerUserID != "bob" || legs[0].TelephonyOwnerUserID != "alice" {
+		t.Fatalf("leg owners = call %q, profile %q; want bob, alice", legs[0].OwnerUserID, legs[0].TelephonyOwnerUserID)
+	}
+
+	// The local hangup path reads the same owners inside its transaction.
+	leg, ok, err := s.BeginLocalHangup(ctx, "bob-on-alice", "max_duration", mustParse(testTime))
+	if err != nil || !ok {
+		t.Fatalf("BeginLocalHangup = ok %v, err %v", ok, err)
+	}
+	if leg.TelephonyOwnerUserID != "alice" {
+		t.Fatalf("local hangup profile owner = %q, want alice", leg.TelephonyOwnerUserID)
+	}
+}

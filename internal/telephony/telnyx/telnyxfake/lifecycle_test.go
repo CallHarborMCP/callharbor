@@ -74,7 +74,7 @@ func TestSignedStreamLifecycleSurfacesProviderEventsThroughLive(t *testing.T) {
 
 	events := make(chan realtime.Event, 16)
 	closedCh := make(chan realtime.Event, 1)
-	me, err = telnyx.NewMediaEndpoint(v, streamURL, func(start telnyx.Frame, send telnyx.Send) (telnyx.MediaSink, error) {
+	me, err = telnyx.NewMediaEndpoint(v, streamURL, func(_ context.Context, start telnyx.Frame, send telnyx.Send) (telnyx.MediaSink, error) {
 		b, err := voicebridge.New(start.Format, pcmuLeg, 5*time.Millisecond, 2*time.Second)
 		if err != nil {
 			return nil, err
@@ -235,7 +235,7 @@ func TestSignedStreamLifecycleSurfacesProviderEventsThroughRealtime(t *testing.T
 
 	events := make(chan realtime.Event, 16)
 	closedCh := make(chan struct{}, 1)
-	me, err = telnyx.NewMediaEndpoint(v, streamURL, func(start telnyx.Frame, send telnyx.Send) (telnyx.MediaSink, error) {
+	me, err = telnyx.NewMediaEndpoint(v, streamURL, func(_ context.Context, start telnyx.Frame, send telnyx.Send) (telnyx.MediaSink, error) {
 		b, err := voicebridge.New(start.Format, pcmuLeg, 5*time.Millisecond, 2*time.Second)
 		if err != nil {
 			return nil, err

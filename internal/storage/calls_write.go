@@ -353,20 +353,26 @@ func (s *Store) ListQueuedCalls(ctx context.Context, limit int) ([]QueuedCallRef
 // LiveCallLeg is one call with a provider leg that has not ended. Shutdown
 // hangs these up. The owner is included so the caller's key can be resolved.
 type LiveCallLeg struct {
-	ID                 string
-	OwnerUserID        string
+	ID          string
+	OwnerUserID string
+	// TelephonyProfileID is the profile the leg was dialed on. It can belong to
+	// someone other than the call's owner, when a grantee placed the call.
 	TelephonyProfileID string
-	ControlID          string
+	// TelephonyOwnerUserID owns that profile. Its key ends the leg, so a hangup
+	// resolves the profile by this id, never by the call owner.
+	TelephonyOwnerUserID string
+	ControlID            string
 }
 
 // ListLiveCallLegs returns calls that Telnyx may still be carrying: a recorded
 // control id and a status before a terminal one.
 func (s *Store) ListLiveCallLegs(ctx context.Context) ([]LiveCallLeg, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT id, owner_user_id, telephony_profile_id, provider_call_control_id
-		FROM calls
-		WHERE status IN ('initiating', 'ringing', 'active', 'ending')
-		  AND provider_call_control_id IS NOT NULL AND ended_at IS NULL
-		ORDER BY created_at, id`)
+	rows, err := s.db.QueryContext(ctx, `SELECT c.id, c.owner_user_id, c.telephony_profile_id, tp.owner_user_id, c.provider_call_control_id
+		FROM calls c
+		JOIN telephony_profiles tp ON tp.id = c.telephony_profile_id
+		WHERE c.status IN ('initiating', 'ringing', 'active', 'ending')
+		  AND c.provider_call_control_id IS NOT NULL AND c.ended_at IS NULL
+		ORDER BY c.created_at, c.id`)
 	if err != nil {
 		return nil, fmt.Errorf("list live call legs: %w", err)
 	}
@@ -374,7 +380,7 @@ func (s *Store) ListLiveCallLegs(ctx context.Context) ([]LiveCallLeg, error) {
 	var out []LiveCallLeg
 	for rows.Next() {
 		var l LiveCallLeg
-		if err := rows.Scan(&l.ID, &l.OwnerUserID, &l.TelephonyProfileID, &l.ControlID); err != nil {
+		if err := rows.Scan(&l.ID, &l.OwnerUserID, &l.TelephonyProfileID, &l.TelephonyOwnerUserID, &l.ControlID); err != nil {
 			return nil, fmt.Errorf("scan live call leg: %w", err)
 		}
 		out = append(out, l)

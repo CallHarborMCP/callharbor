@@ -80,6 +80,17 @@ docker start callharbor
 
 On `SIGTERM`, the server sets `/readyz` to unavailable, stops accepting new connections and waits up to `CALLHARBOR_SHUTDOWN_TIMEOUT` for in-flight requests. It then exits.
 
+When calls are enabled, shutdown can take longer than the drain. It also ends every live call leg at Telnyx. The worst-case sequence is:
+
+1. Drain HTTP and the dial worker, up to `T` (`CALLHARBOR_SHUTDOWN_TIMEOUT`).
+2. If the worker is still dialing at `T`, wait up to 5 s more for it to stop.
+3. Wait up to `B` for media sessions to finish.
+4. Hang up every live leg, within a budget of `B`.
+
+Here `B = max(T/3, 5 s)`. The worst case is `T + 5 s + 2B`. At the default `T = 15s`, `B = 5s`, so the sum is 30 s. At the maximum `T = 5m`, `B = 100s`, so the sum is 505 s.
+
+Docker's default stop timeout is 10 s, which is shorter than the sum. If Docker sends `SIGKILL` first, the hangups are never sent and live legs can stay up at Telnyx. Set the stop timeout to at least the sum, for example `docker stop --time 30 callharbor` at the default. In Compose, set `stop_grace_period` to the same value. Add a margin if the host is slow to exit.
+
 Data stays in the named volume. `docker rm` removes the container, not the volume. Removing the volume with `docker volume rm callharbor-data` deletes all stored data.
 
 ## Troubleshooting

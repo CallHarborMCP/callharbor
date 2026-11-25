@@ -299,6 +299,51 @@ func TestClientStateForAnotherCallIsRejectedWithoutWrite(t *testing.T) {
 	}
 }
 
+// Once a call's leg is bound to a control id, the control id is the proof, so a
+// signed call.hangup without client_state still ends the call (r2).
+func TestHangupWithoutClientStateOnBoundCallEndsIt(t *testing.T) {
+	s, db := newWebhookStore(t)
+	seedCall(t, db, "c1", "active", "cc-1")
+	f := newFixture(t, s)
+	body, err := json.Marshal(map[string]any{"data": map[string]any{
+		"record_type": "event", "id": "e-nocs", "event_type": "call.hangup", "occurred_at": seedTime,
+		"payload": map[string]any{"call_control_id": "cc-1", "hangup_cause": "normal_clearing"},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rec := f.post(t, "c1", body); rec.Code != http.StatusOK {
+		t.Fatalf("hangup without client_state = %d, want 200", rec.Code)
+	}
+	st, control, _ := callStatus(t, db, "c1")
+	if st != "ended" || control != "cc-1" {
+		t.Fatalf("status=%s control=%s, want ended/cc-1", st, control)
+	}
+}
+
+// Without client_state, a bound call still refuses a control id that is not
+// its own. The control id is the proof once the leg is bound (r2).
+func TestForeignControlIDWithoutClientStateIsRejected(t *testing.T) {
+	s, db := newWebhookStore(t)
+	seedCall(t, db, "c1", "active", "cc-1")
+	f := newFixture(t, s)
+	_, _, before := callStatus(t, db, "c1")
+	body, err := json.Marshal(map[string]any{"data": map[string]any{
+		"record_type": "event", "id": "e-fcs", "event_type": "call.hangup", "occurred_at": seedTime,
+		"payload": map[string]any{"call_control_id": "cc-OTHER", "hangup_cause": "normal_clearing"},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rec := f.post(t, "c1", body); rec.Code != http.StatusOK {
+		t.Fatalf("foreign control id without client_state = %d, want 200", rec.Code)
+	}
+	st, control, after := callStatus(t, db, "c1")
+	if st != "active" || control != "cc-1" || after != before {
+		t.Fatalf("foreign control id changed state: status=%s control=%s events %d->%d", st, control, before, after)
+	}
+}
+
 // A call left in initiating with no recorded control id takes the id from the
 // first verified event that names it, inside the same transaction.
 func TestControlIDRecordedFromFirstEventWhenUnset(t *testing.T) {
@@ -334,11 +379,12 @@ func (r *recordingHangup) count() int {
 }
 
 // A leg that answers after its call already ended is still live at Telnyx. The
-// webhook records no change, then sends exactly one hangup for that leg after
-// commit. The receipt makes a redelivery send nothing more.
+// call ended before its control id was known, so the event that first records
+// the id sends exactly one hangup for that leg after commit. The receipt makes
+// a redelivery send nothing more (n1).
 func TestOrphanLegOnTerminalCallGetsOneHangup(t *testing.T) {
 	s, db := newWebhookStore(t)
-	seedCall(t, db, "c1", "ended", "cc-1")
+	seedCall(t, db, "c1", "ended", "")
 	rh := &recordingHangup{}
 	wh, err := NewWebhooks(s, func() time.Time { return seedNow }, rh.hang, nil)
 	if err != nil {
@@ -354,6 +400,28 @@ func TestOrphanLegOnTerminalCallGetsOneHangup(t *testing.T) {
 	}
 	if n := rh.count(); n != 1 {
 		t.Fatalf("hangups = %d, want exactly 1", n)
+	}
+}
+
+// Once the control id is recorded, later non-hangup events on a terminal call do
+// not hang up again. The earlier event that recorded the id already decided it
+// (n1), so a stream of late events sends no repeated hangups.
+func TestLaterEventsOnBoundTerminalCallSendNoHangup(t *testing.T) {
+	s, db := newWebhookStore(t)
+	seedCall(t, db, "c1", "ended", "cc-1")
+	rh := &recordingHangup{}
+	wh, err := NewWebhooks(s, func() time.Time { return seedNow }, rh.hang, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f := newFixtureWith(t, wh)
+	for _, id := range []string{"e1", "e2", "e3"} {
+		if rec := f.post(t, "c1", event(t, "c1", id, "call.answered", "cc-1", nil)); rec.Code != http.StatusOK {
+			t.Fatalf("late event %s = %d", id, rec.Code)
+		}
+	}
+	if n := rh.count(); n != 0 {
+		t.Fatalf("hangups = %d, want 0 for a bound terminal call", n)
 	}
 }
 

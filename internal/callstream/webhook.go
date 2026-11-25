@@ -183,24 +183,50 @@ func (w *Webhooks) hangupOrphan(r *http.Request, leg storage.LiveCallLeg) {
 //   - A non-hangup event for a call already ended or failed names a leg that
 //     is still alive at Telnyx. It is recorded in *orphan for one hangup.
 func (w *Webhooks) dispatch(callID string, orphan **storage.LiveCallLeg) telnyx.Dispatch {
+	inner := w.apply(callID, orphan)
+	return func(ctx context.Context, tx *sql.Tx, ev telnyx.WebhookEvent, sig call.Signal) error {
+		err := inner(ctx, tx, ev, sig)
+		if errors.Is(err, telnyx.ErrRejectedEvent) {
+			// Permanent: Telnyx gets 200 and stops retrying. Logged here, with the
+			// class only. The message holds no secrets, tokens or brief content.
+			w.logger.Warn("webhook event rejected", "call_id", callID, "reason", err.Error())
+		} else if err != nil {
+			w.logger.Error("webhook dispatch failed; provider will retry", "call_id", callID, "error", err.Error())
+		}
+		return err
+	}
+}
+
+// apply is the state change for one verified signal. dispatch wraps it for
+// logging.
+func (w *Webhooks) apply(callID string, orphan **storage.LiveCallLeg) telnyx.Dispatch {
 	return func(ctx context.Context, tx *sql.Tx, ev telnyx.WebhookEvent, sig call.Signal) error {
 		*orphan = nil
-		if clientStateOf(ev.ClientState) != callID {
-			return fmt.Errorf("%w: client_state names another call", telnyx.ErrRejectedEvent)
-		}
 		cur, err := storage.ReadCallForSignal(ctx, tx, callID)
 		if errors.Is(err, storage.ErrCallNotFound) {
-			return fmt.Errorf("%w: unknown call", telnyx.ErrRejectedEvent)
+			return rejectClass(classUnknownCall, "unknown call")
 		}
 		if err != nil {
 			return err
 		}
+		// client_state binds the event to this call before a control id is
+		// recorded. Once the leg is bound, the control id is the proof, so an
+		// event without client_state is still accepted. An event that names
+		// another call is refused either way.
+		stateCall := clientStateOf(ev.ClientState)
+		if stateCall != "" && stateCall != callID {
+			return rejectClass(classClientState, "client_state names another call")
+		}
+		if cur.ProviderCallControlID == "" && stateCall != callID {
+			return rejectClass(classClientState, "no recorded control id and client_state does not name this call")
+		}
 		if cur.Status == string(call.Queued) {
 			// A call that was never dialed cannot have a live leg.
-			return fmt.Errorf("%w: call was never dialed", telnyx.ErrRejectedEvent)
+			return rejectClass(classNeverDialed, "call was never dialed")
 		}
 		terminal := cur.Status == string(call.Ended) || cur.Status == string(call.Failed)
-		if cur.ProviderCallControlID == "" && sig.ProviderCallControlID != "" {
+		firstControlID := cur.ProviderCallControlID == "" && sig.ProviderCallControlID != ""
+		if firstControlID {
 			if err := storage.RecordCallControlID(ctx, tx, callID, sig.ProviderCallControlID, w.now()); err != nil {
 				return rejectOrFault(err)
 			}
@@ -217,12 +243,31 @@ func (w *Webhooks) dispatch(callID string, orphan **storage.LiveCallLeg) telnyx.
 				return err
 			}
 		}
-		if terminal && sig.Kind != call.KindHangup && sig.ProviderCallControlID != "" {
+		// n1: only the event that first records the leg's control id on a
+		// terminal call can name a leg Telnyx still carries. Later events for the
+		// same call do not, and a hangup event is the leg ending.
+		if terminal && firstControlID && sig.Kind != call.KindHangup {
 			*orphan = &storage.LiveCallLeg{ID: cur.ID, OwnerUserID: cur.OwnerUserID,
-				TelephonyProfileID: cur.TelephonyProfileID, ControlID: sig.ProviderCallControlID}
+				TelephonyProfileID: cur.TelephonyProfileID, TelephonyOwnerUserID: cur.TelephonyOwnerUserID,
+				ControlID: sig.ProviderCallControlID}
 		}
 		return nil
 	}
+}
+
+// Reason classes for a permanent rejection. They are logged with the call id,
+// and carry no secrets, tokens or brief content.
+const (
+	classUnknownCall = "unknown_call"
+	classClientState = "client_state_mismatch"
+	classNeverDialed = "never_dialed"
+	classForeignLeg  = "foreign_control_id"
+)
+
+// rejectClass wraps ErrRejectedEvent with a reason class and a short detail.
+// The detail is fixed text written in this file, never input from the event.
+func rejectClass(class, detail string) error {
+	return fmt.Errorf("%w: %s: %s", telnyx.ErrRejectedEvent, class, detail)
 }
 
 // rejectOrFault maps a signal refusal to ErrRejectedEvent. A control id that
@@ -230,7 +275,7 @@ func (w *Webhooks) dispatch(callID string, orphan **storage.LiveCallLeg) telnyx.
 // and is retried.
 func rejectOrFault(err error) error {
 	if errors.Is(err, call.ErrForeignProvider) || errors.Is(err, storage.ErrCallForeignProvider) {
-		return fmt.Errorf("%w: %v", telnyx.ErrRejectedEvent, err)
+		return rejectClass(classForeignLeg, "control id belongs to another leg")
 	}
 	return err
 }

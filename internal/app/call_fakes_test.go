@@ -33,6 +33,9 @@ type fakeTelnyx struct {
 	mu      sync.Mutex
 	dials   []map[string]any
 	hangups []string // "control_id|command_id", in arrival order
+	// hangupKeys holds the bearer key each hangup was sent with, in the same
+	// order as hangups. A grantee's leg must be hung up with the owner's key.
+	hangupKeys []string
 	// badDialBody makes POST /v2/calls answer 200 with a body that has no
 	// call_control_id. The dial was accepted but the response cannot confirm it.
 	badDialBody bool
@@ -64,6 +67,13 @@ func (f *fakeTelnyx) hangupsSeen() []string {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return append([]string(nil), f.hangups...)
+}
+
+// hangupKeysSeen returns the bearer key of each hangup, in arrival order.
+func (f *fakeTelnyx) hangupKeysSeen() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]string(nil), f.hangupKeys...)
 }
 
 // newFakeTelnyx starts the fake. The base URL it serves includes /v2, the
@@ -109,6 +119,7 @@ func newFakeTelnyx(t *testing.T, controlID string) *fakeTelnyx {
 		_ = json.NewDecoder(r.Body).Decode(&body)
 		f.mu.Lock()
 		f.hangups = append(f.hangups, r.PathValue("id")+"|"+fmt.Sprint(body["command_id"]))
+		f.hangupKeys = append(f.hangupKeys, strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer "))
 		f.mu.Unlock()
 		writeFakeJSON(w, map[string]any{"data": map[string]any{}})
 	})

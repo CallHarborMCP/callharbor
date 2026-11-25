@@ -45,8 +45,9 @@ func (s *Store) BeginLocalHangup(ctx context.Context, callID, reasonCode string,
 	// A call with no provider control id still moves to ending, but leg.ControlID
 	// stays empty, and the caller sends nothing to Telnyx.
 	var control sql.NullString
-	if err := tx.QueryRowContext(ctx, `SELECT id, owner_user_id, telephony_profile_id, provider_call_control_id
-		FROM calls WHERE id = ?`, callID).Scan(&leg.ID, &leg.OwnerUserID, &leg.TelephonyProfileID, &control); err != nil {
+	if err := tx.QueryRowContext(ctx, `SELECT c.id, c.owner_user_id, c.telephony_profile_id, tp.owner_user_id, c.provider_call_control_id
+		FROM calls c JOIN telephony_profiles tp ON tp.id = c.telephony_profile_id
+		WHERE c.id = ?`, callID).Scan(&leg.ID, &leg.OwnerUserID, &leg.TelephonyProfileID, &leg.TelephonyOwnerUserID, &control); err != nil {
 		return LiveCallLeg{}, false, fmt.Errorf("read leg for local hangup: %w", err)
 	}
 	leg.ControlID = control.String
