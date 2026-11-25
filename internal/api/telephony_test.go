@@ -681,3 +681,42 @@ func TestTelephonyWebhookKeyNullRemovesAndEmptyKeeps(t *testing.T) {
 		t.Fatalf("create with null webhook = %d %s, want 400 invalid_input", rec.Code, rec.Body.String())
 	}
 }
+
+// TestProfilesEndpointShowsConnectionIDToOwnerOnly checks GET /api/v1/profiles
+// against the TelephonyProfile schema: the owner sees connection_id and a grantee
+// does not, so the granted view matches what the grant is allowed to read.
+func TestProfilesEndpointShowsConnectionIDToOwnerOnly(t *testing.T) {
+	f := newTelFixture(t)
+	id := createTel(t, f, "admin", validWrite())
+	if rec := f.do(t, "admin", http.MethodPut, "/api/v1/telephony-profiles/"+id+"/grants/bob", nil, true); rec.Code != http.StatusNoContent {
+		t.Fatalf("grant = %d %s", rec.Code, rec.Body.String())
+	}
+
+	find := func(user string) map[string]any {
+		t.Helper()
+		rec := f.do(t, user, http.MethodGet, "/api/v1/profiles", nil, false)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("%s profiles = %d %s", user, rec.Code, rec.Body.String())
+		}
+		for _, p := range decodeMap(t, rec)["telephony_profiles"].([]any) {
+			m := p.(map[string]any)
+			if m["id"] == id {
+				return m
+			}
+		}
+		t.Fatalf("%s does not see profile %s", user, id)
+		return nil
+	}
+
+	owner := find("admin")
+	if owner["access"] != "owner" || owner["connection_id"] != "app-live" {
+		t.Fatalf("owner view = %v, want access owner with connection_id app-live", owner)
+	}
+	granted := find("bob")
+	if granted["access"] != "granted" {
+		t.Fatalf("grantee access = %v, want granted", granted["access"])
+	}
+	if _, present := granted["connection_id"]; present {
+		t.Fatalf("grantee view exposes connection_id: %v", granted)
+	}
+}

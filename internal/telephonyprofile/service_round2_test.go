@@ -42,8 +42,9 @@ func TestValidateRefusesResultWhenProfileChangedDuringValidation(t *testing.T) {
 	if got.UpdatedAt == before {
 		t.Fatal("test setup did not move updated_at")
 	}
-	if last := h.store.audits[len(h.store.audits)-1]; last.Outcome != "conflict" {
-		t.Fatalf("audit outcome = %q, want conflict", last.Outcome)
+	last := h.store.audits[len(h.store.audits)-1]
+	if last.Action != "telephony_profile.validate" || last.Outcome != "failed" || last.DetailJSON != raceAuditDetail {
+		t.Fatalf("race audit = %+v, want validate/failed with %s", last, raceAuditDetail)
 	}
 }
 

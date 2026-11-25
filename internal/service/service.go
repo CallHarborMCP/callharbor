@@ -49,10 +49,13 @@ func New(store Store) *Service {
 // TelephonyProfileView is one telephony profile as the API exposes it. Secret
 // references never appear here.
 type TelephonyProfileView struct {
-	ID                 string `json:"id"`
-	Name               string `json:"name"`
-	Provider           string `json:"provider"`
-	CallerNumber       string `json:"caller_number"`
+	ID           string `json:"id"`
+	Name         string `json:"name"`
+	Provider     string `json:"provider"`
+	CallerNumber string `json:"caller_number"`
+	// ConnectionID is set for the owner only. A granted view leaves it empty,
+	// and omitempty drops the key.
+	ConnectionID       string `json:"connection_id,omitempty"`
 	ConnectivityStatus string `json:"connectivity_status"`
 	ConnectivityReason string `json:"connectivity_reason"`
 	Access             string `json:"access"`
@@ -136,11 +139,16 @@ func (s *Service) GetProfiles(ctx context.Context, actor Actor) (ProfilesResult,
 		TelephonyProfiles: make([]TelephonyProfileView, 0, len(telRows)),
 	}
 	for _, p := range telRows {
-		out.TelephonyProfiles = append(out.TelephonyProfiles, TelephonyProfileView{
+		v := TelephonyProfileView{
 			ID: p.ID, Name: p.Name, Provider: p.Provider, CallerNumber: p.CallerNumber,
 			ConnectivityStatus: p.ConnectivityStatus, ConnectivityReason: p.ConnectivityReason,
 			Access: p.Access,
-		})
+		}
+		// connection_id is the owner's configuration. A grantee never sees it.
+		if p.Access == storage.TelephonyAccessOwner {
+			v.ConnectionID = p.ConnectionID
+		}
+		out.TelephonyProfiles = append(out.TelephonyProfiles, v)
 	}
 	for _, p := range aiRows {
 		out.AIProfiles = append(out.AIProfiles, AIProfileView{

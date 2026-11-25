@@ -259,9 +259,16 @@ func (m *memStore) GetUserByID(_ context.Context, id string) (storage.User, erro
 	return u, nil
 }
 
+// auditOutcomes mirrors the audit_events.outcome CHECK constraint in the
+// migrations. The fake rejects anything else, as SQLite would.
+var auditOutcomes = map[string]bool{"success": true, "denied": true, "failed": true}
+
 func (m *memStore) InsertAudit(_ context.Context, e storage.AuditEvent) error {
 	if m.auditErr != nil {
 		return m.auditErr
+	}
+	if !auditOutcomes[e.Outcome] {
+		return fmt.Errorf("audit outcome %q violates the CHECK constraint", e.Outcome)
 	}
 	m.audits = append(m.audits, e)
 	return nil

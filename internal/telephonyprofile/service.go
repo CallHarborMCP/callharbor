@@ -53,6 +53,10 @@ var (
 	ErrValidationRace = errors.New("telephonyprofile: changed during validation")
 )
 
+// raceAuditDetail is the fixed audit detail for a validation that lost a race
+// with an edit. It is a constant, so no input or provider text reaches the row.
+const raceAuditDetail = `{"reason":"changed_during_validation"}`
+
 var (
 	e164Pattern = regexp.MustCompile(`^\+[1-9][0-9]{6,14}$`)
 	idPattern   = regexp.MustCompile(`^[A-Za-z0-9_.:-]{1,64}$`)
@@ -222,22 +226,23 @@ func (s *Service) now3339() string {
 }
 
 // audit records one owner-scoped action. It stores no secret material and no
-// provider text, only the action, the profile id and the outcome.
-// audit records an action with its outcome and no target user.
+// provider text, only the action, the profile id, the outcome and a fixed
+// detail string. outcome must be one of the audit_events CHECK values:
+// success, denied or failed.
 func (s *Service) audit(ctx context.Context, actor Actor, action, profileID, outcome string) {
-	s.writeAudit(ctx, actor, action, profileID, "", outcome)
+	s.writeAudit(ctx, actor, action, profileID, "", outcome, "{}")
 }
 
 // auditTarget records a grant or revoke. targetUserID names the grantee.
 func (s *Service) auditTarget(ctx context.Context, actor Actor, action, profileID, targetUserID string) {
-	s.writeAudit(ctx, actor, action, profileID, targetUserID, "success")
+	s.writeAudit(ctx, actor, action, profileID, targetUserID, "success", "{}")
 }
 
-func (s *Service) writeAudit(ctx context.Context, actor Actor, action, profileID, targetUserID, outcome string) {
+func (s *Service) writeAudit(ctx context.Context, actor Actor, action, profileID, targetUserID, outcome, detail string) {
 	if err := s.store.InsertAudit(ctx, storage.AuditEvent{
 		OccurredAt: s.now3339(), ActorUserID: actor.UserID, ActorRole: roleOf(actor),
 		TargetUserID: targetUserID, ResourceType: "telephony_profile", ResourceID: profileID,
-		Action: action, Outcome: outcome, DetailJSON: "{}",
+		Action: action, Outcome: outcome, DetailJSON: detail,
 	}); err != nil {
 		s.logger.Error("audit write failed", "action", action, "err", err.Error())
 	}
@@ -508,7 +513,9 @@ func (s *Service) Validate(ctx context.Context, actor Actor, id string) (Validat
 	// during validation, the stale result is refused rather than stored.
 	if err := s.store.SetTelephonyConnectivity(ctx, actor.UserID, id, rec.UpdatedAt, status, reason, checked); err != nil {
 		if errors.Is(err, storage.ErrTelephonyProfileChanged) {
-			s.audit(ctx, actor, "telephony_profile.validate", id, "conflict")
+			// The audit enum allows success, denied and failed only. A race is a
+			// failed validation; the fixed detail records why.
+			s.writeAudit(ctx, actor, "telephony_profile.validate", id, "", "failed", raceAuditDetail)
 			return Validation{}, ErrValidationRace
 		}
 		return Validation{}, mapNotFound(err)
