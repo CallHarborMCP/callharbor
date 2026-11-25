@@ -51,10 +51,19 @@ Each user can see and revoke connected clients under **Connected apps** in the w
 | `POST /oauth/token` | `authorization_code` and `refresh_token` grants |
 | `POST /oauth/revoke` | RFC 7009 token revocation |
 | `POST /oauth/register` | RFC 7591 dynamic client registration |
-| `POST /mcp`, `GET /mcp`, `DELETE /mcp` | Protected MCP Streamable HTTP endpoint (JSON responses, 1 MiB body limit) |
+| `POST /mcp` | Protected MCP Streamable HTTP endpoint (stateless, JSON responses, 1 MiB body limit) |
 | `OPTIONS /mcp` | CORS preflight, answered without credentials |
 
-Metadata, token, revocation and registration endpoints send `Access-Control-Allow-Origin: *` without credentials so browser-based clients can use them. No other route sends CORS headers.
+Metadata, token, revocation and registration endpoints send `Access-Control-Allow-Origin: *` without credentials so browser-based clients can use them. `/mcp` does the same and allows only `POST, OPTIONS` with `Authorization` and `Content-Type` request headers, and exposes only `WWW-Authenticate` to the browser. No credentials are ever allowed. No other route sends CORS headers.
+
+### MCP endpoint details
+
+- **Methods:** only `POST` reaches the MCP transport. `GET`, `DELETE`, `PUT` and any other method return `405 Method Not Allowed` from the router, before authentication runs. The server keeps no sessions and opens no server-sent event stream, so `GET` and `DELETE` have nothing to do.
+- **Scope:** a token must hold `mcp:read` to use `/mcp`. A token without it gets `403` with `error="insufficient_scope"` before the MCP transport runs. Tool-level scope checks (`mcp:call`) are part of the planned operations. The broader route-level gate is tracked in #79.
+- **Body limit:** a request body over 1 MiB is refused with `413` and is never decoded or processed. The route applies the limit, and the transport enforces the same value.
+- **Tools:** the server registers only `get_profiles`, `list_calls` and `get_call`. Planned tools are not registered: `make_call`, `get_transcript`, `get_recording` and `hangup_call`. A call to one of them fails as an unknown tool. The contract, with input and output schemas, is `api/mcp/tools.json`.
+- **Errors:** a tool failure is returned as a result with `isError` set and no structured content. Its text is the same envelope the REST API uses, `{"error":{"code","message"}}`, with codes from the shared taxonomy (`not_found`, `invalid_input`, `insufficient_scope`, `unauthenticated`, `internal`). Internal causes are logged on the server and never returned to the client.
+- **Input rejected by the schema:** the SDK checks arguments against the tool's input schema before the handler runs. A bad argument, such as an unknown status, an over-length cursor or a limit out of range, is reported as an `isError` result whose text names the rule that failed. That text is not the service envelope, so clients should treat the `code` field as present only for failures reported by the service.
 
 ## Protocol behavior
 
@@ -97,4 +106,4 @@ Tested automatically in CI (`go test`, Playwright). Most cases run through the r
 - Client ID Metadata Documents served by a local TLS test server. The ChatGPT case uses the exact bytes of the document published at `https://chatgpt.com/oauth/client.json` as of 2026-11-25, with only `client_id` changed to the test server's URL. It is accepted as a public client that uses `none`, although the document names `private_key_jwt`, because `none` is in its `token_endpoint_auth_methods_supported` list. Its unsupported `jwt-bearer` grant is dropped, and refresh tokens still issue. The token endpoint never authenticates a client by assertion. Negative cases cover a singular `private_key_jwt` with no `none` support, a supported list without `none`, and a grant list without `authorization_code`.
 - The consent screen and Connected apps page in a browser against the production build.
 
-**Not verified:** a connection from the ChatGPT or Claude user interfaces, or any other hosted MCP client. The ChatGPT fixture test checks only that the published document is accepted by this server. Connecting from ChatGPT also needs a publicly reachable `https` origin. The MCP transport (#67) is in place; the go-sdk client is verified end to end in this repository.
+**Not verified:** a connection from the ChatGPT or Claude user interfaces, or any other hosted MCP client. The ChatGPT fixture test checks only that the published document is accepted by this server. Connecting from ChatGPT also needs a publicly reachable `https` origin. The MCP transport (#67) is verified only by the go-sdk client in this repository: tool success and error paths, owner isolation, the planned tools not being registered, `/mcp` method and CORS behavior, the body limit, and the `mcp:read` check. No hosted client, including ChatGPT or Claude, has been verified against `/mcp`.

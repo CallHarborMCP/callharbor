@@ -89,7 +89,7 @@ func (f *fakeStore) GetCall(_ context.Context, owner, id string) (storage.Call, 
 
 const ts = "2026-11-23T10:00:00.000Z"
 
-var alice = Actor{UserID: "alice", Scopes: []string{ScopeRead, ScopeCall}, Channel: ChannelREST}
+var alice = Actor{UserID: "alice", Scopes: []string{ScopeRead, ScopeCall}}
 
 func sampleCall(id, owner, created string) storage.Call {
 	return storage.Call{
@@ -406,17 +406,6 @@ func TestActorRequireEnforcesIdentityAndScope(t *testing.T) {
 	mustErrCode(t, err, CodeInsufficientScope)
 	_, err = New(&fakeStore{}).GetCall(context.Background(), noScope, "c1")
 	mustErrCode(t, err, CodeInsufficientScope)
-}
-
-func TestActorContextRoundTrip(t *testing.T) {
-	ctx := WithActor(context.Background(), alice)
-	got, ok := ActorFrom(ctx)
-	if !ok || got.UserID != "alice" {
-		t.Fatalf("ActorFrom = %+v, %v", got, ok)
-	}
-	if _, ok := ActorFrom(context.Background()); ok {
-		t.Fatal("ActorFrom on empty context reported an actor")
-	}
 }
 
 func TestErrorTaxonomyStatusMapping(t *testing.T) {

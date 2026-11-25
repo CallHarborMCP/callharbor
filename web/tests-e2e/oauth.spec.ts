@@ -88,6 +88,23 @@ async function signInIfPrompted(page: Page) {
   }
 }
 
+/**
+ * Sends a JSON-RPC tools/list request to /mcp with a bearer token. Streamable
+ * HTTP requires the client to accept both JSON and event streams.
+ */
+function mcpToolsList(context: BrowserContext, token: string) {
+  return context.request.post(`${ORIGIN}/mcp`, {
+    headers: {
+      Authorization: `Bearer ${token}`,
+      Accept: "application/json, text/event-stream",
+      "Content-Type": "application/json",
+      "MCP-Protocol-Version": "2025-11-25",
+    },
+    data: { jsonrpc: "2.0", id: 1, method: "tools/list" },
+    failOnStatusCode: false,
+  });
+}
+
 /** Opens an authorization request, signs in if needed, and waits for the consent heading. */
 async function openConsent(page: Page, url: string): Promise<string> {
   await page.goto(url);
@@ -163,11 +180,12 @@ test.describe.serial("OAuth consent and connected apps", () => {
     expect(exchange.status()).toBe(200);
     accessToken = ((await exchange.json()) as { access_token: string }).access_token;
 
-    const mcp = await context.request.get(`${ORIGIN}/mcp`, {
-      headers: { Authorization: `Bearer ${accessToken}` },
-      failOnStatusCode: false,
-    });
-    expect(mcp.status()).toBe(501);
+    // A valid bearer passes authorization and reaches the MCP transport. The
+    // Accept header is required by Streamable HTTP; tools/list is a real read.
+    const mcp = await mcpToolsList(context, accessToken);
+    expect(mcp.status()).toBe(200);
+    const listed = (await mcp.json()) as { result?: { tools?: { name: string }[] } };
+    expect(listed.result?.tools?.map((tool) => tool.name).sort()).toEqual(["get_call", "get_profiles", "list_calls"]);
   });
 
   test("connected apps lists the client, and revoking it stops MCP access", async () => {
@@ -188,11 +206,9 @@ test.describe.serial("OAuth consent and connected apps", () => {
     await expect(page.getByRole("status")).toContainText(`Access for ${clientName} was revoked.`);
     await expect(page.getByRole("listitem").filter({ hasText: clientName })).toHaveCount(0);
 
-    const mcp = await context.request.get(`${ORIGIN}/mcp`, {
-      headers: { Authorization: `Bearer ${accessToken}` },
-      failOnStatusCode: false,
-    });
+    const mcp = await mcpToolsList(context, accessToken);
     expect(mcp.status()).toBe(401);
+    expect(mcp.headers()["www-authenticate"]).toContain('error="invalid_token"');
   });
 
   test("denying redirects the client with error=access_denied and no code", async ({ playwright }) => {

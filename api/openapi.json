@@ -5,8 +5,16 @@
     "version": "1.0.0",
     "description": "Versioned REST API v1. Every route requires a signed-in browser session. Identity comes only from that session; no route accepts a user or owner identifier. Timestamps are UTC RFC 3339 with a Z suffix. Only operations listed here are implemented."
   },
-  "servers": [{ "url": "/" }],
-  "security": [{ "sessionCookie": [] }],
+  "servers": [
+    {
+      "url": "/"
+    }
+  ],
+  "security": [
+    {
+      "sessionCookie": []
+    }
+  ],
   "paths": {
     "/api/v1/profiles": {
       "get": {
@@ -16,10 +24,20 @@
         "responses": {
           "200": {
             "description": "Profiles owned by the caller",
-            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ProfilesResponse" } } }
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProfilesResponse"
+                }
+              }
+            }
           },
-          "401": { "$ref": "#/components/responses/Error" },
-          "500": { "$ref": "#/components/responses/Error" }
+          "401": {
+            "$ref": "#/components/responses/Error"
+          },
+          "500": {
+            "$ref": "#/components/responses/Error"
+          }
         }
       }
     },
@@ -29,18 +47,117 @@
         "summary": "List the caller's calls, newest first",
         "description": "Keyset pagination over (created_at DESC, id DESC). Pass next_cursor back as cursor to read the next page. Cursors are opaque.",
         "parameters": [
-          { "name": "cursor", "in": "query", "required": false, "schema": { "type": "string", "maxLength": 512 }, "description": "Opaque cursor from a previous next_cursor." },
-          { "name": "limit", "in": "query", "required": false, "schema": { "type": "integer", "minimum": 1, "maximum": 100, "default": 50 } },
-          { "name": "status", "in": "query", "required": false, "schema": { "$ref": "#/components/schemas/TechnicalStatus" } }
+          {
+            "name": "cursor",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "maxLength": 512
+            },
+            "description": "Opaque cursor from a previous next_cursor."
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100,
+              "default": 50
+            }
+          },
+          {
+            "name": "status",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/TechnicalStatus"
+            }
+          }
         ],
         "responses": {
           "200": {
             "description": "One page of calls",
-            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/CallsPage" } } }
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CallsPage"
+                }
+              }
+            }
           },
-          "400": { "$ref": "#/components/responses/Error" },
-          "401": { "$ref": "#/components/responses/Error" },
-          "500": { "$ref": "#/components/responses/Error" }
+          "400": {
+            "$ref": "#/components/responses/Error"
+          },
+          "401": {
+            "$ref": "#/components/responses/Error"
+          },
+          "500": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      },
+      "post": {
+        "operationId": "createCall",
+        "summary": "Start a call (planned)",
+        "description": "Planned. Not mounted yet: the operation is not implemented. Requests return 404, or 405 when the path is mounted for another method. Requires an Idempotency-Key header. A repeated key returns the original call.",
+        "x-callharbor-availability": "planned",
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": true,
+            "description": "Client-chosen key that makes a retried create return the same call.",
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            }
+          }
+        ],
+        "responses": {
+          "201": {
+            "description": "Call created",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CreatedCall"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Error"
+          },
+          "401": {
+            "$ref": "#/components/responses/Error"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error"
+          },
+          "409": {
+            "$ref": "#/components/responses/Error"
+          },
+          "500": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateCallRequest"
+              }
+            }
+          }
         }
       }
     },
@@ -50,54 +167,344 @@
         "summary": "Get one call owned by the caller",
         "description": "A call owned by another user is reported as not_found, the same as a missing call.",
         "parameters": [
-          { "name": "call_id", "in": "path", "required": true, "schema": { "type": "string", "minLength": 1, "maxLength": 64 } }
+          {
+            "name": "call_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64
+            }
+          }
         ],
         "responses": {
           "200": {
             "description": "The call",
-            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Call" } } }
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Call"
+                }
+              }
+            }
           },
-          "401": { "$ref": "#/components/responses/Error" },
-          "404": { "$ref": "#/components/responses/Error" },
-          "500": { "$ref": "#/components/responses/Error" }
+          "401": {
+            "$ref": "#/components/responses/Error"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error"
+          },
+          "500": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
+    "/api/v1/calls/{call_id}/transcript": {
+      "get": {
+        "operationId": "getCallTranscript",
+        "summary": "Get a call transcript (planned)",
+        "description": "Planned. Not mounted yet: the operation is not implemented. Requests return 404, or 405 when the path is mounted for another method. Returns timed speaker turns and quality flags. Only the caller's own calls.",
+        "x-callharbor-availability": "planned",
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "call_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "maxLength": 512
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Transcript page",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TranscriptPage"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Error"
+          },
+          "401": {
+            "$ref": "#/components/responses/Error"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error"
+          },
+          "500": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
+    "/api/v1/calls/{call_id}/recording": {
+      "get": {
+        "operationId": "getCallRecording",
+        "summary": "Get recording metadata (planned)",
+        "description": "Planned. Not mounted yet: the operation is not implemented. Requests return 404, or 405 when the path is mounted for another method. Returns metadata and the authenticated audio path. The audio bytes are not returned here.",
+        "x-callharbor-availability": "planned",
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "call_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Recording metadata",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RecordingMetadata"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Error"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error"
+          },
+          "500": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
+    "/api/v1/calls/{call_id}/recording/audio": {
+      "get": {
+        "operationId": "getCallRecordingAudio",
+        "summary": "Stream recording audio (planned)",
+        "description": "Planned. Not mounted yet: the operation is not implemented. Requests return 404, or 405 when the path is mounted for another method. Streams audio/wav over authenticated REST. Supports single-range Range requests.",
+        "x-callharbor-availability": "planned",
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "call_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64
+            }
+          },
+          {
+            "name": "Range",
+            "in": "header",
+            "required": false,
+            "description": "Single byte range, for example bytes=0-1023.",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Full audio",
+            "content": {
+              "audio/wav": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              }
+            }
+          },
+          "206": {
+            "description": "Partial audio for a Range request",
+            "content": {
+              "audio/wav": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Error"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error"
+          },
+          "416": {
+            "description": "Range not satisfiable"
+          },
+          "500": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
+    "/api/v1/calls/{call_id}/hangup": {
+      "post": {
+        "operationId": "hangupCall",
+        "summary": "Hang up a call (planned)",
+        "description": "Planned. Not mounted yet: the operation is not implemented. Requests return 404, or 405 when the path is mounted for another method. Explicit user-authorized emergency stop. Returns the call's status and outcome.",
+        "x-callharbor-availability": "planned",
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "call_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": true,
+            "description": "Client-chosen key that makes a retried create return the same call.",
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Hangup result",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HangupResult"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Error"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error"
+          },
+          "409": {
+            "$ref": "#/components/responses/Error"
+          },
+          "500": {
+            "$ref": "#/components/responses/Error"
+          }
         }
       }
     }
   },
   "components": {
     "securitySchemes": {
-      "sessionCookie": { "type": "apiKey", "in": "cookie", "name": "callharbor_session" }
+      "sessionCookie": {
+        "type": "apiKey",
+        "in": "cookie",
+        "name": "callharbor_session"
+      }
     },
     "responses": {
       "Error": {
         "description": "Error envelope with a stable code",
-        "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } }
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Error"
+            }
+          }
+        }
       }
     },
     "schemas": {
       "Error": {
         "type": "object",
-        "required": ["error"],
+        "required": [
+          "error"
+        ],
         "additionalProperties": false,
         "properties": {
           "error": {
             "type": "object",
-            "required": ["code", "message"],
+            "required": [
+              "code",
+              "message"
+            ],
             "additionalProperties": false,
             "properties": {
-              "code": { "$ref": "#/components/schemas/ErrorCode" },
-              "message": { "type": "string" }
+              "code": {
+                "$ref": "#/components/schemas/ErrorCode"
+              },
+              "message": {
+                "type": "string"
+              }
             }
           }
         }
       },
       "ErrorCode": {
         "type": "string",
-        "enum": ["unauthenticated", "forbidden", "insufficient_scope", "not_found", "invalid_input", "conflict", "internal"]
+        "enum": [
+          "unauthenticated",
+          "forbidden",
+          "insufficient_scope",
+          "not_found",
+          "invalid_input",
+          "conflict",
+          "internal"
+        ]
       },
       "TechnicalStatus": {
         "type": "string",
-        "enum": ["queued", "initiating", "ringing", "active", "ending", "ended", "failed"]
+        "enum": [
+          "queued",
+          "initiating",
+          "ringing",
+          "active",
+          "ending",
+          "ended",
+          "failed"
+        ]
       },
       "Timestamp": {
         "type": "string",
@@ -106,75 +513,471 @@
       },
       "AIProfile": {
         "type": "object",
-        "required": ["id", "name", "protocol", "primary_transport", "model", "voice"],
+        "required": [
+          "id",
+          "name",
+          "protocol",
+          "primary_transport",
+          "model",
+          "voice"
+        ],
         "additionalProperties": false,
         "properties": {
-          "id": { "type": "string" },
-          "name": { "type": "string" },
-          "protocol": { "type": "string", "enum": ["realtime_ws", "live_ws"] },
-          "primary_transport": { "type": "string", "enum": ["websocket"] },
-          "model": { "type": "string" },
-          "voice": { "type": "string" }
+          "id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "protocol": {
+            "type": "string",
+            "enum": [
+              "realtime_ws",
+              "live_ws"
+            ]
+          },
+          "primary_transport": {
+            "type": "string",
+            "enum": [
+              "websocket"
+            ]
+          },
+          "model": {
+            "type": "string"
+          },
+          "voice": {
+            "type": "string"
+          }
         }
       },
       "TelephonyProfile": {
         "type": "object",
-        "required": ["id", "name", "provider", "caller_number", "connectivity_status"],
+        "required": [
+          "id",
+          "name",
+          "provider",
+          "caller_number",
+          "connectivity_status"
+        ],
         "additionalProperties": false,
         "properties": {
-          "id": { "type": "string" },
-          "name": { "type": "string" },
-          "provider": { "type": "string", "enum": ["telnyx"] },
-          "caller_number": { "type": "string" },
-          "connectivity_status": { "type": "string", "enum": ["unknown"] }
+          "id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "provider": {
+            "type": "string",
+            "enum": [
+              "telnyx"
+            ]
+          },
+          "caller_number": {
+            "type": "string"
+          },
+          "connectivity_status": {
+            "type": "string",
+            "enum": [
+              "unknown"
+            ]
+          }
         }
       },
       "ProfilesResponse": {
         "type": "object",
-        "required": ["ai_profiles", "telephony_profiles"],
+        "required": [
+          "ai_profiles",
+          "telephony_profiles"
+        ],
         "additionalProperties": false,
         "properties": {
-          "ai_profiles": { "type": "array", "items": { "$ref": "#/components/schemas/AIProfile" } },
-          "telephony_profiles": { "type": "array", "items": { "$ref": "#/components/schemas/TelephonyProfile" } }
+          "ai_profiles": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AIProfile"
+            }
+          },
+          "telephony_profiles": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/TelephonyProfile"
+            }
+          }
         }
       },
       "CallDetails": {
         "type": "object",
-        "required": ["max_duration_seconds", "record_requested", "record_effective"],
+        "required": [
+          "max_duration_seconds",
+          "record_requested",
+          "record_effective"
+        ],
         "additionalProperties": false,
         "properties": {
-          "outcome_reason_code": { "type": "string" },
-          "max_duration_seconds": { "type": "integer", "minimum": 1, "maximum": 7200 },
-          "record_requested": { "type": "boolean" },
-          "record_effective": { "type": "boolean" }
+          "outcome_reason_code": {
+            "type": "string"
+          },
+          "max_duration_seconds": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 7200
+          },
+          "record_requested": {
+            "type": "boolean"
+          },
+          "record_effective": {
+            "type": "boolean"
+          }
         }
       },
       "Call": {
         "type": "object",
-        "required": ["call_id", "telephony_profile_id", "ai_profile_id", "to_number", "technical_status", "task_outcome", "details", "transcript_available", "recording_available", "created_at", "updated_at", "ended_at"],
+        "required": [
+          "call_id",
+          "telephony_profile_id",
+          "ai_profile_id",
+          "to_number",
+          "technical_status",
+          "task_outcome",
+          "details",
+          "transcript_available",
+          "recording_available",
+          "created_at",
+          "updated_at",
+          "ended_at"
+        ],
         "additionalProperties": false,
         "properties": {
-          "call_id": { "type": "string" },
-          "telephony_profile_id": { "type": "string" },
-          "ai_profile_id": { "type": "string" },
-          "to_number": { "type": "string" },
-          "technical_status": { "$ref": "#/components/schemas/TechnicalStatus" },
-          "task_outcome": { "type": ["string", "null"], "enum": ["success", "partial", "failed", "unknown", null] },
-          "details": { "$ref": "#/components/schemas/CallDetails" },
-          "transcript_available": { "type": "boolean" },
-          "recording_available": { "type": "boolean" },
-          "created_at": { "$ref": "#/components/schemas/Timestamp" },
-          "updated_at": { "$ref": "#/components/schemas/Timestamp" },
-          "ended_at": { "oneOf": [{ "$ref": "#/components/schemas/Timestamp" }, { "type": "null" }] }
+          "call_id": {
+            "type": "string"
+          },
+          "telephony_profile_id": {
+            "type": "string"
+          },
+          "ai_profile_id": {
+            "type": "string"
+          },
+          "to_number": {
+            "type": "string"
+          },
+          "technical_status": {
+            "$ref": "#/components/schemas/TechnicalStatus"
+          },
+          "task_outcome": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "enum": [
+              "success",
+              "partial",
+              "failed",
+              "unknown",
+              null
+            ]
+          },
+          "details": {
+            "$ref": "#/components/schemas/CallDetails"
+          },
+          "transcript_available": {
+            "type": "boolean"
+          },
+          "recording_available": {
+            "type": "boolean"
+          },
+          "created_at": {
+            "$ref": "#/components/schemas/Timestamp"
+          },
+          "updated_at": {
+            "$ref": "#/components/schemas/Timestamp"
+          },
+          "ended_at": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/Timestamp"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
         }
       },
       "CallsPage": {
         "type": "object",
-        "required": ["calls", "next_cursor"],
+        "required": [
+          "calls",
+          "next_cursor"
+        ],
         "additionalProperties": false,
         "properties": {
-          "calls": { "type": "array", "items": { "$ref": "#/components/schemas/Call" } },
-          "next_cursor": { "type": "string" }
+          "calls": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Call"
+            }
+          },
+          "next_cursor": {
+            "type": "string"
+          }
+        }
+      },
+      "CallStatus": {
+        "type": "string",
+        "enum": [
+          "queued",
+          "initiating",
+          "ringing",
+          "active",
+          "ending",
+          "ended",
+          "failed"
+        ]
+      },
+      "Speaker": {
+        "type": "string",
+        "enum": [
+          "assistant",
+          "callee",
+          "system"
+        ]
+      },
+      "Finality": {
+        "type": "string",
+        "enum": [
+          "partial",
+          "final"
+        ]
+      },
+      "TranscriptTurn": {
+        "type": "object",
+        "required": [
+          "seq",
+          "speaker",
+          "finality",
+          "started_ms",
+          "ended_ms",
+          "text"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "seq": {
+            "type": "integer"
+          },
+          "speaker": {
+            "$ref": "#/components/schemas/Speaker"
+          },
+          "finality": {
+            "$ref": "#/components/schemas/Finality"
+          },
+          "started_ms": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "ended_ms": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "text": {
+            "type": "string"
+          }
+        }
+      },
+      "TranscriptPage": {
+        "type": "object",
+        "required": [
+          "call_id",
+          "turns",
+          "quality_flags",
+          "next_cursor"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "call_id": {
+            "type": "string"
+          },
+          "turns": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/TranscriptTurn"
+            }
+          },
+          "quality_flags": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "next_cursor": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "CreateCallRequest": {
+        "type": "object",
+        "required": [
+          "profile_id",
+          "to",
+          "objective"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "profile_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64
+          },
+          "to": {
+            "type": "string",
+            "pattern": "^\\+[1-9][0-9]{6,14}$"
+          },
+          "recipient": {
+            "type": "string"
+          },
+          "language": {
+            "type": "string",
+            "maxLength": 35,
+            "description": "BCP 47 language tag."
+          },
+          "objective": {
+            "type": "string"
+          },
+          "context": {
+            "type": "string",
+            "description": "Configurable server limit; oversized input is rejected, never truncated."
+          },
+          "instructions": {
+            "type": "string",
+            "description": "Configurable server limit; oversized input is rejected, never truncated."
+          },
+          "constraints": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "fallbacks": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "success_criteria": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "max_duration_seconds": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 7200
+          },
+          "record": {
+            "type": "boolean",
+            "description": "Never enables recording unless the account owner has opted in through the WebGUI setting. Omission means no recording unless the per-user default policy enables it."
+          }
+        }
+      },
+      "CreatedCall": {
+        "type": "object",
+        "required": [
+          "call_id",
+          "status",
+          "created_at"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "call_id": {
+            "type": "string"
+          },
+          "status": {
+            "$ref": "#/components/schemas/CallStatus"
+          },
+          "created_at": {
+            "$ref": "#/components/schemas/Timestamp"
+          }
+        }
+      },
+      "RecordingStatus": {
+        "type": "string",
+        "enum": [
+          "recording",
+          "complete",
+          "partial",
+          "failed",
+          "deleted"
+        ]
+      },
+      "RecordingMetadata": {
+        "type": "object",
+        "required": [
+          "call_id",
+          "status",
+          "content_type",
+          "duration_ms",
+          "byte_count",
+          "download_path"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "call_id": {
+            "type": "string"
+          },
+          "status": {
+            "$ref": "#/components/schemas/RecordingStatus"
+          },
+          "content_type": {
+            "const": "audio/wav"
+          },
+          "duration_ms": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "byte_count": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "download_path": {
+            "type": "string",
+            "description": "Authenticated REST path, not a public URL."
+          }
+        }
+      },
+      "HangupResult": {
+        "type": "object",
+        "required": [
+          "call_id",
+          "technical_status",
+          "task_outcome"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "call_id": {
+            "type": "string"
+          },
+          "technical_status": {
+            "$ref": "#/components/schemas/CallStatus"
+          },
+          "task_outcome": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "enum": [
+              "success",
+              "partial",
+              "failed",
+              "unknown",
+              null
+            ]
+          }
         }
       }
     }

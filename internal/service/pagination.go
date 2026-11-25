@@ -19,6 +19,10 @@ const (
 	// MaxIDLength matches the storage identifier bound.
 	MaxIDLength = 64
 	cursorV1    = 1
+
+	// storageTimeLayout is the fixed-width UTC layout the storage layer
+	// writes. Keyset comparison is a string comparison, so it must match.
+	storageTimeLayout = "2006-01-02T15:04:05.000Z"
 )
 
 // NormalizeLimit applies the default and enforces the bounds. Zero means
@@ -48,11 +52,22 @@ func encodeCursor(c storage.CallCursor) string {
 	return base64.RawURLEncoding.EncodeToString(raw)
 }
 
+// MaxCursorLength bounds the opaque cursor token in bytes. A longer token is
+// invalid input, rejected before any decoding.
+const MaxCursorLength = 512
+
 // decodeCursor parses a cursor. An empty token means the first page and
 // returns nil. Any malformed or tampered token is invalid input.
+//
+// The timestamp is parsed and re-formatted to the storage layout in UTC, so a
+// cursor that names the same instant with another offset resolves to the same
+// keyset position, and the query always compares fixed-width strings.
 func decodeCursor(token string) (*storage.CallCursor, error) {
 	if token == "" {
 		return nil, nil
+	}
+	if len(token) > MaxCursorLength {
+		return nil, invalidInput("cursor exceeds %d bytes", MaxCursorLength)
 	}
 	raw, err := base64.RawURLEncoding.DecodeString(token)
 	if err != nil {
@@ -73,8 +88,10 @@ func decodeCursor(token string) (*storage.CallCursor, error) {
 	if p.V != cursorV1 || p.I == "" || len(p.I) > MaxIDLength {
 		return nil, invalidInput("cursor is malformed")
 	}
-	if _, err := time.Parse(time.RFC3339Nano, p.C); err != nil {
+	ts, err := time.Parse(time.RFC3339Nano, p.C)
+	if err != nil {
 		return nil, invalidInput("cursor is malformed")
 	}
-	return &storage.CallCursor{CreatedAt: p.C, ID: p.I}, nil
+	stored := ts.UTC().Format(storageTimeLayout)
+	return &storage.CallCursor{CreatedAt: stored, ID: p.I}, nil
 }

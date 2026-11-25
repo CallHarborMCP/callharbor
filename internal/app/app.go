@@ -141,7 +141,7 @@ func Run(ctx context.Context, cfg config.Config, logger *slog.Logger, ln net.Lis
 	profiles := aiprofile.NewHandler(identityHandler, store, time.Now)
 	secretsAPI := secrets.NewHandler(identityHandler, secretSvc, store)
 	svc := service.New(store)
-	restV1 := api.NewHandler(identityHandler, svc)
+	restV1 := api.NewHandler(identityHandler, svc, logger)
 	routes := []func(*http.ServeMux){identityHandler.Register, profiles.Register, secretsAPI.Register, restV1.Register}
 	if cfg.PublicURL != "" {
 		authz := oauth.NewServer(oauth.Config{PublicURL: cfg.PublicURL, TrustedProxies: cfg.TrustedProxies}, store,

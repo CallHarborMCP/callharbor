@@ -6,6 +6,7 @@ package service
 import (
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 )
 
@@ -85,6 +86,44 @@ func CodeOf(err error) Code {
 // message. Transports use it for input they parse themselves.
 func AsErrorWith(code Code, message string) *Error {
 	return newError(code, message)
+}
+
+// Envelope is the error body shared by REST and MCP tool errors. Its JSON form
+// is {"error":{"code":...,"message":...}}. Cause is never part of it.
+type Envelope struct {
+	Error EnvelopeDetail `json:"error"`
+}
+
+// EnvelopeDetail carries the stable code and the caller-safe message.
+type EnvelopeDetail struct {
+	Code    string `json:"code"`
+	Message string `json:"message"`
+}
+
+// EnvelopeOf converts err to the shared envelope. Unknown errors and internal
+// failures always carry the generic message, never the cause text.
+func EnvelopeOf(err error) Envelope {
+	se := AsError(err)
+	return Envelope{Error: EnvelopeDetail{Code: string(se.Code), Message: se.Message}}
+}
+
+// LogCause records the server-side cause of an internal failure. Only the
+// code, the operation label and the cause text are logged. Callers pass no
+// tokens, secrets or request bodies, because the operation layer never holds
+// them.
+func LogCause(logger *slog.Logger, transport string, err error) {
+	if logger == nil {
+		return
+	}
+	se := AsError(err)
+	if se.Code != CodeInternal {
+		return
+	}
+	cause := se.Cause
+	if cause == nil {
+		cause = se
+	}
+	logger.Error("request failed", "transport", transport, "code", string(se.Code), "cause", cause.Error())
 }
 
 // AsError returns the service error for err, converting unknown failures to

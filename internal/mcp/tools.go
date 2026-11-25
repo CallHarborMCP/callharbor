@@ -2,8 +2,10 @@ package mcp
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 
 	"github.com/google/jsonschema-go/jsonschema"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -49,85 +51,57 @@ type ListCallsOutput struct {
 	NextCursor string             `json:"next_cursor"`
 }
 
-// callStatusEnum is the complete technical status vocabulary.
-var callStatusEnum = []any{"queued", "initiating", "ringing", "active", "ending", "ended", "failed"}
-
-// listCallsSchema derives the list_calls input schema from the struct and then
-// applies the documented constraints: bounded limit, bounded cursor, a closed
-// status enum, and a non-null filters object. The SDK validates arguments
-// against this schema before the handler runs.
-func listCallsSchema() (*jsonschema.Schema, error) {
-	s, err := jsonschema.For[ListCallsInput](nil)
+// registerTools adds the implemented tools to srv. Each tool's input and output
+// schema comes from the embedded manifest copy, so the served contract is the
+// reviewed one. Invalid embedded schemas panic during New, not per request.
+func registerTools(srv *mcp.Server, svc *service.Service, logger *slog.Logger) {
+	schemas, err := loadToolSchemas()
 	if err != nil {
-		return nil, err
+		panic(err)
 	}
-	s.Properties["limit"].Minimum = jsonschema.Ptr(float64(service.MinLimit))
-	s.Properties["limit"].Maximum = jsonschema.Ptr(float64(service.MaxLimit))
-	s.Properties["cursor"].MaxLength = jsonschema.Ptr(maxCursorLength)
-	filters := s.Properties["filters"]
-	filters.Types = nil
-	filters.Type = "object"
-	status := filters.Properties["status"]
-	if status == nil {
-		return nil, errors.New("list_calls schema has no filters.status")
+	inputOf := func(name string) *jsonschema.Schema {
+		s, err := decodeSchema(schemas[name].InputSchema)
+		if err != nil {
+			panic(fmt.Errorf("%s input schema: %w", name, err))
+		}
+		return s
 	}
-	status.Enum = callStatusEnum
-	return s, nil
-}
-
-// maxCursorLength bounds the opaque cursor token a client may send.
-const maxCursorLength = 512
-
-// getCallSchema constrains call_id to the identifier bounds.
-func getCallSchema() (*jsonschema.Schema, error) {
-	s, err := jsonschema.For[GetCallInput](nil)
-	if err != nil {
-		return nil, err
-	}
-	id := s.Properties["call_id"]
-	if id == nil {
-		return nil, errors.New("get_call schema has no call_id")
-	}
-	id.MinLength = jsonschema.Ptr(1)
-	id.MaxLength = jsonschema.Ptr(service.MaxIDLength)
-	return s, nil
-}
-
-func registerTools(srv *mcp.Server, svc *service.Service) {
-	listSchema, err := listCallsSchema()
-	if err != nil {
-		panic(fmt.Errorf("list_calls input schema: %w", err))
-	}
-	callSchema, err := getCallSchema()
-	if err != nil {
-		panic(fmt.Errorf("get_call input schema: %w", err))
+	outputOf := func(name string) *jsonschema.Schema {
+		s, err := decodeSchema(schemas[name].OutputSchema)
+		if err != nil {
+			panic(fmt.Errorf("%s output schema: %w", name, err))
+		}
+		return s
 	}
 
-	mcp.AddTool(srv, &mcp.Tool{
-		Name:        ToolGetProfiles,
-		Description: "Return the caller's AI and telephony profiles with non-secret fields only.",
-		Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true},
+	addTool(srv, &mcp.Tool{
+		Name:         ToolGetProfiles,
+		Description:  "Return the caller's AI and telephony profiles with non-secret fields only.",
+		Annotations:  &mcp.ToolAnnotations{ReadOnlyHint: true},
+		InputSchema:  inputOf(ToolGetProfiles),
+		OutputSchema: outputOf(ToolGetProfiles),
 	}, func(ctx context.Context, req *mcp.CallToolRequest, _ GetProfilesInput) (*mcp.CallToolResult, service.ProfilesResult, error) {
 		actor, err := actorFromRequest(req)
 		if err != nil {
-			return toolError(err), service.ProfilesResult{}, nil
+			return nil, service.ProfilesResult{}, toolFailure(logger, err)
 		}
 		res, err := svc.GetProfiles(ctx, actor)
 		if err != nil {
-			return toolError(err), service.ProfilesResult{}, nil
+			return nil, service.ProfilesResult{}, toolFailure(logger, err)
 		}
 		return nil, res, nil
 	})
 
-	mcp.AddTool(srv, &mcp.Tool{
-		Name:        ToolListCalls,
-		Description: "List the caller's calls, newest first, one keyset page at a time.",
-		Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true},
-		InputSchema: listSchema,
+	addTool(srv, &mcp.Tool{
+		Name:         ToolListCalls,
+		Description:  "List the caller's calls, newest first, one keyset page at a time.",
+		Annotations:  &mcp.ToolAnnotations{ReadOnlyHint: true},
+		InputSchema:  inputOf(ToolListCalls),
+		OutputSchema: outputOf(ToolListCalls),
 	}, func(ctx context.Context, req *mcp.CallToolRequest, in ListCallsInput) (*mcp.CallToolResult, ListCallsOutput, error) {
 		actor, err := actorFromRequest(req)
 		if err != nil {
-			return toolError(err), ListCallsOutput{}, nil
+			return nil, ListCallsOutput{}, toolFailure(logger, err)
 		}
 		status := ""
 		if in.Filters != nil {
@@ -135,35 +109,50 @@ func registerTools(srv *mcp.Server, svc *service.Service) {
 		}
 		res, err := svc.ListCalls(ctx, actor, service.ListCallsInput{Cursor: in.Cursor, Limit: in.Limit, Status: status})
 		if err != nil {
-			return toolError(err), ListCallsOutput{}, nil
+			return nil, ListCallsOutput{}, toolFailure(logger, err)
 		}
 		return nil, ListCallsOutput{Calls: res.Calls, NextCursor: res.NextCursor}, nil
 	})
 
-	mcp.AddTool(srv, &mcp.Tool{
-		Name:        ToolGetCall,
-		Description: "Return one call owned by the caller. Foreign or missing calls return not_found.",
-		Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true},
-		InputSchema: callSchema,
+	addTool(srv, &mcp.Tool{
+		Name:         ToolGetCall,
+		Description:  "Return one call owned by the caller. Foreign or missing calls return not_found.",
+		Annotations:  &mcp.ToolAnnotations{ReadOnlyHint: true},
+		InputSchema:  inputOf(ToolGetCall),
+		OutputSchema: outputOf(ToolGetCall),
 	}, func(ctx context.Context, req *mcp.CallToolRequest, in GetCallInput) (*mcp.CallToolResult, service.CallView, error) {
 		actor, err := actorFromRequest(req)
 		if err != nil {
-			return toolError(err), service.CallView{}, nil
+			return nil, service.CallView{}, toolFailure(logger, err)
 		}
 		res, err := svc.GetCall(ctx, actor, in.CallID)
 		if err != nil {
-			return toolError(err), service.CallView{}, nil
+			return nil, service.CallView{}, toolFailure(logger, err)
 		}
 		return nil, res, nil
 	})
 }
 
-// toolError returns a tool-level failure: IsError is set and the message carries
-// the stable code, so the caller sees a failure and never a success.
-func toolError(err error) *mcp.CallToolResult {
-	se := service.AsError(err)
-	return &mcp.CallToolResult{
-		IsError: true,
-		Content: []mcp.Content{&mcp.TextContent{Text: string(se.Code) + ": " + se.Message}},
+// addTool registers a typed tool. The explicit schemas are already set on t,
+// so the SDK serves them as given instead of reflecting them from Out.
+func addTool[In, Out any](srv *mcp.Server, t *mcp.Tool, h mcp.ToolHandlerFor[In, Out]) {
+	mcp.AddTool(srv, t, h)
+}
+
+// toolFailure converts a service error into a tool execution failure.
+//
+// The SDK turns a non-nil handler error into a result with IsError set and
+// StructuredContent left nil. It does not marshal the zero-value output, so a
+// client never sees an empty structured object next to a failure. The text
+// content is the shared error envelope, {"error":{"code","message"}}, the same
+// body the REST API returns. Cause is logged server-side and never rendered.
+func toolFailure(logger *slog.Logger, err error) error {
+	service.LogCause(logger, "mcp", err)
+	body, mErr := json.Marshal(service.EnvelopeOf(err))
+	if mErr != nil {
+		// The envelope holds only two strings, so this cannot fail in
+		// practice. Fall back to the generic internal envelope regardless.
+		body = []byte(`{"error":{"code":"internal","message":"internal error"}}`)
 	}
+	return errors.New(string(body))
 }

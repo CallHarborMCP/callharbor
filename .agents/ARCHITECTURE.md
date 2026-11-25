@@ -4,7 +4,7 @@ One Go process hosts HTTPS-ready REST/MCP/OAuth handlers, the admin/user React S
 
 ## Canonical source layout and mandatory gates
 - One Go module at repository root (`go.mod`), service entry `cmd/callharbor/`.
-- Business/application packages under `internal/`: `identity/`, `oauth/`, `mcp/`,
+- Business/application packages under `internal/`: `identity/`, `oauth/`, `api/`, `service/`, `mcp/`,
   `storage/`, `calls/`, `telephony/`, `realtime/`, `audio/`, `recording/`,
   `security/`, `backup/`. Web frontend is `web/`; public contracts in `api/`.
 - Any intentionally different package tree MUST update the relevant contract/E2E tests in the SAME PR. Moving

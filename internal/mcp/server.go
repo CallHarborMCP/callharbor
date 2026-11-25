@@ -6,6 +6,7 @@ package mcp
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"net/http"
 
@@ -19,31 +20,48 @@ import (
 // ServerName is the implementation name reported during initialization.
 const ServerName = "callharbor"
 
-// MaxRequestBodyBytes bounds one JSON-RPC request body.
-const MaxRequestBodyBytes = 1 << 20
+// errMissingPrincipal means the bearer middleware accepted a request but left
+// no principal in the context. That is a wiring bug, not a client error, so it
+// surfaces as a server error and is logged.
+var errMissingPrincipal = errors.New("mcp: bearer middleware did not attach a principal")
 
-// Handler is the protected MCP endpoint. It is an http.Handler that expects
-// the OAuth principal to be attached by the bearer middleware in front of it.
+// Handler is the protected MCP endpoint. Its *mcp.Server is built once in New,
+// so a bad tool schema panics at startup rather than on the first request.
 type Handler struct {
-	svc     *service.Service
-	version string
-	logger  *slog.Logger
-	inner   http.Handler
+	logger *slog.Logger
+	srv    *mcp.Server
+	inner  http.Handler
 }
 
 // New builds the MCP endpoint. version is reported to clients; an empty value
-// becomes "dev".
+// becomes "dev". New panics if a tool schema is invalid.
 func New(svc *service.Service, version string, logger *slog.Logger) *Handler {
 	if version == "" {
 		version = "dev"
 	}
-	h := &Handler{svc: svc, version: version, logger: logger}
+	srv := mcp.NewServer(&mcp.Implementation{Name: ServerName, Version: version}, &mcp.ServerOptions{
+		Logger: logger,
+	})
+	registerTools(srv, svc, logger)
+	h := &Handler{logger: logger, srv: srv}
 	h.inner = mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server {
-		return h.newServer()
+		return h.srv
 	}, &mcp.StreamableHTTPOptions{
-		Stateless:           true,
-		JSONResponse:        true,
-		MaxRequestBodyBytes: MaxRequestBodyBytes,
+		Stateless:    true,
+		JSONResponse: true,
+		// DisableLocalhostProtection turns off the SDK's DNS-rebinding check.
+		// That check rejects a request whose Host is not loopback when the
+		// listener is loopback, which is exactly the shape of a same-host
+		// reverse proxy serving a public origin, and it would refuse every
+		// legitimate remote client. The protection it adds is unnecessary
+		// here: every request must carry an OAuth bearer token, which a
+		// rebinding page cannot obtain, because the token is bound to this
+		// origin and is never sent by a cross-origin page.
+		DisableLocalhostProtection: true,
+		// The same limit the oauth route applies in front of this handler.
+		// The SDK enforces it again on the read, so the transport can never
+		// decode a larger body than the route admits.
+		MaxRequestBodyBytes: oauth.MCPBodyLimit,
 		Logger:              logger,
 	})
 	return h
@@ -54,13 +72,16 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	h.inner.ServeHTTP(w, r)
 }
 
-// Wrap returns the handler protected by the OAuth bearer check. The
-// verifier maps the OAuth principal to the SDK's TokenInfo, so the SDK can
-// pass it to tool handlers through RequestExtra.
+// Wrap returns the handler protected by the OAuth bearer check. The verifier
+// maps the OAuth principal to the SDK's TokenInfo, so the SDK can pass it to
+// tool handlers through RequestExtra. bearer is the middleware that validates
+// the token; this method never accepts a token itself.
 func (h *Handler) Wrap(bearer func(http.Handler) http.Handler, resourceMetadataURL string) http.Handler {
-	verified := auth.RequireBearerToken(verifyPrincipal, &auth.RequireBearerTokenOptions{
+	verify := func(ctx context.Context, token string, req *http.Request) (*auth.TokenInfo, error) {
+		return verifyPrincipal(ctx, h.logger, token, req)
+	}
+	verified := auth.RequireBearerToken(verify, &auth.RequireBearerTokenOptions{
 		ResourceMetadataURL: resourceMetadataURL,
-		Scopes:              nil,
 	})
 	return bearer(verified(h))
 }
@@ -68,30 +89,26 @@ func (h *Handler) Wrap(bearer func(http.Handler) http.Handler, resourceMetadataU
 // verifyPrincipal reads the principal the OAuth middleware already validated
 // and maps it to TokenInfo. It never accepts a token itself. The expiry comes
 // from the stored grant row, which RequireBearer checked on this request.
-func verifyPrincipal(ctx context.Context, _ string, _ *http.Request) (*auth.TokenInfo, error) {
+//
+// A request with no principal is a wiring bug: the bearer middleware must have
+// run first. It is reported as a server error and logged, not as a 401,
+// because a 401 would tell the client to re-authenticate for a server fault.
+func verifyPrincipal(ctx context.Context, logger *slog.Logger, _ string, _ *http.Request) (*auth.TokenInfo, error) {
 	p, ok := oauth.PrincipalFromContext(ctx)
-	if !ok || p.UserID == "" || p.ExpiresAt.IsZero() {
+	if !ok {
+		if logger != nil {
+			logger.Error("mcp request reached the verifier without a principal", "cause", errMissingPrincipal.Error())
+		}
+		return nil, errMissingPrincipal
+	}
+	if p.UserID == "" || p.ExpiresAt.IsZero() {
 		return nil, auth.ErrInvalidToken
 	}
 	return &auth.TokenInfo{
 		UserID:     p.UserID,
 		Scopes:     p.Scopes,
 		Expiration: p.ExpiresAt,
-		Extra: map[string]any{
-			"client_id": p.ClientID,
-			"grant_id":  p.GrantID,
-		},
 	}, nil
-}
-
-// newServer builds one SDK server with the implemented tools registered.
-// Planned operations are not registered at all, so clients cannot call them.
-func (h *Handler) newServer() *mcp.Server {
-	srv := mcp.NewServer(&mcp.Implementation{Name: ServerName, Version: h.version}, &mcp.ServerOptions{
-		Logger: h.logger,
-	})
-	registerTools(srv, h.svc)
-	return srv
 }
 
 // actorFromRequest converts the SDK's TokenInfo into a service Actor. It is
@@ -101,11 +118,8 @@ func actorFromRequest(req *mcp.CallToolRequest) (service.Actor, error) {
 		return service.Actor{}, service.AsErrorWith(service.CodeUnauthenticated, "authentication required")
 	}
 	ti := req.Extra.TokenInfo
-	clientID, _ := ti.Extra["client_id"].(string)
 	return service.Actor{
-		UserID:   ti.UserID,
-		Scopes:   ti.Scopes,
-		ClientID: clientID,
-		Channel:  service.ChannelMCP,
+		UserID: ti.UserID,
+		Scopes: ti.Scopes,
 	}, nil
 }

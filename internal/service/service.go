@@ -248,5 +248,5 @@ func formatTimestamp(stored string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("parse stored timestamp: %w", err)
 	}
-	return t.UTC().Format("2006-01-02T15:04:05.000Z"), nil
+	return t.UTC().Format(storageTimeLayout), nil
 }

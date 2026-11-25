@@ -2,7 +2,6 @@ package api
 
 import (
 	"encoding/json"
-	"net/http"
 	"os"
 	"sort"
 	"strings"
@@ -56,19 +55,44 @@ func TestOpenAPIDocumentIsValidJSONSchema(t *testing.T) {
 	}
 }
 
-// TestOpenAPIPathsMatchImplementedRoutes ensures every documented operation is
-// a real route, and every REST route is documented.
+// TestOpenAPIPathsMatchImplementedRoutes checks the document against the code
+// in both directions. Operations without x-callharbor-availability are
+// available and must equal Routes. Operations marked planned must equal
+// PlannedRoutes. Nothing is documented that the code does not know about.
 func TestOpenAPIPathsMatchImplementedRoutes(t *testing.T) {
 	d, _ := loadOpenAPI(t)
-	documented := map[string]bool{}
+	available := map[string]bool{}
+	planned := map[string]bool{}
 	for path, ops := range d.Paths {
-		for method := range ops {
-			documented[strings.ToUpper(method)+" "+path] = true
+		for method, raw := range ops {
+			op, ok := raw.(map[string]any)
+			if !ok {
+				t.Fatalf("%s %s is not an operation object", method, path)
+			}
+			key := strings.ToUpper(method) + " " + path
+			switch op["x-callharbor-availability"] {
+			case nil:
+				available[key] = true
+			case "planned":
+				planned[key] = true
+			default:
+				t.Fatalf("%s has unknown x-callharbor-availability %v", key, op["x-callharbor-availability"])
+			}
 		}
 	}
-	implemented := registeredRoutes(t)
-	if strings.Join(sortedKeys(documented), ",") != strings.Join(sortedKeys(implemented), ",") {
-		t.Fatalf("documented routes = %v\nimplemented routes = %v", sortedKeys(documented), sortedKeys(implemented))
+	mounted := map[string]bool{}
+	for _, r := range Routes {
+		mounted[r.Method+" "+r.Path] = true
+	}
+	plannedCode := map[string]bool{}
+	for _, r := range PlannedRoutes {
+		plannedCode[r.Method+" "+r.Path] = true
+	}
+	if strings.Join(sortedKeys(available), ",") != strings.Join(sortedKeys(mounted), ",") {
+		t.Fatalf("available operations = %v\nRoutes = %v", sortedKeys(available), sortedKeys(mounted))
+	}
+	if strings.Join(sortedKeys(planned), ",") != strings.Join(sortedKeys(plannedCode), ",") {
+		t.Fatalf("planned operations = %v\nPlannedRoutes = %v", sortedKeys(planned), sortedKeys(plannedCode))
 	}
 }
 
@@ -117,30 +141,6 @@ func TestOpenAPIStatusEnumMatchesServiceStates(t *testing.T) {
 	if strings.Join(got, ",") != strings.Join(want, ",") {
 		t.Fatalf("documented statuses = %v", got)
 	}
-}
-
-// registeredRoutes returns the method+path pairs the REST handler mounts,
-// read from the live mux so the contract cannot silently drift.
-func registeredRoutes(t *testing.T) map[string]bool {
-	t.Helper()
-	f := newFixture(t)
-	routes := map[string]bool{}
-	for _, route := range []string{
-		"GET /api/v1/profiles",
-		"GET /api/v1/calls",
-		"GET /api/v1/calls/{call_id}",
-	} {
-		// Probe each pattern: a registered pattern answers with something other
-		// than the mux's own 404 for an anonymous request.
-		parts := strings.SplitN(route, " ", 2)
-		probe := strings.ReplaceAll(parts[1], "{call_id}", "probe")
-		rec := get(t, f.mux, probe, nil)
-		if rec.Code == http.StatusNotFound && !strings.Contains(rec.Body.String(), `"error"`) {
-			t.Fatalf("%s is not registered", route)
-		}
-		routes[route] = true
-	}
-	return routes
 }
 
 func sortedKeys(m map[string]bool) []string {

@@ -3,6 +3,28 @@
   "transport": "streamable-http",
   "endpoint": "/mcp",
   "authorization": "OAuth 2.1 bearer token; resource metadata at /.well-known/oauth-protected-resource/mcp",
+  "errorResult": {
+    "description": "A tool failure sets isError=true, leaves structuredContent unset, and returns one text content item whose text is the JSON envelope {\"error\":{\"code\",\"message\"}}. The code is one of the ErrorCode values in api/openapi.json. Cause is logged server-side and never returned.",
+    "envelope": {
+      "type": "object",
+      "required": ["error"],
+      "additionalProperties": false,
+      "properties": {
+        "error": {
+          "type": "object",
+          "required": ["code", "message"],
+          "additionalProperties": false,
+          "properties": {
+            "code": {
+              "type": "string",
+              "enum": ["unauthenticated", "forbidden", "insufficient_scope", "not_found", "invalid_input", "conflict", "internal"]
+            },
+            "message": { "type": "string" }
+          }
+        }
+      }
+    }
+  },
   "tools": [
     {
       "name": "get_profiles",
@@ -12,6 +34,44 @@
       "inputSchema": {
         "type": "object",
         "additionalProperties": false
+      },
+      "outputSchema": {
+        "type": "object",
+        "required": ["ai_profiles", "telephony_profiles"],
+        "additionalProperties": false,
+        "properties": {
+          "ai_profiles": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["id", "name", "protocol", "primary_transport", "model", "voice"],
+              "additionalProperties": false,
+              "properties": {
+                "id": { "type": "string" },
+                "name": { "type": "string" },
+                "protocol": { "type": "string", "enum": ["realtime_ws", "live_ws"] },
+                "primary_transport": { "type": "string", "enum": ["websocket"] },
+                "model": { "type": "string" },
+                "voice": { "type": "string" }
+              }
+            }
+          },
+          "telephony_profiles": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["id", "name", "provider", "caller_number", "connectivity_status"],
+              "additionalProperties": false,
+              "properties": {
+                "id": { "type": "string" },
+                "name": { "type": "string" },
+                "provider": { "type": "string", "enum": ["telnyx"] },
+                "caller_number": { "type": "string" },
+                "connectivity_status": { "type": "string", "enum": ["unknown"] }
+              }
+            }
+          }
+        }
       },
       "readOnly": true
     },
@@ -39,16 +99,49 @@
             "properties": {
               "status": {
                 "type": "string",
-                "enum": [
-                  "queued",
-                  "initiating",
-                  "ringing",
-                  "active",
-                  "ending",
-                  "ended",
-                  "failed"
-                ]
+                "enum": ["queued", "initiating", "ringing", "active", "ending", "ended", "failed"]
               }
+            }
+          }
+        }
+      },
+      "outputSchema": {
+        "type": "object",
+        "required": ["calls", "next_cursor"],
+        "additionalProperties": false,
+        "properties": {
+          "calls": { "type": "array", "items": { "$ref": "#/$defs/call" } },
+          "next_cursor": { "type": "string" }
+        },
+        "$defs": {
+          "call": {
+            "type": "object",
+            "required": ["call_id", "telephony_profile_id", "ai_profile_id", "to_number", "technical_status", "task_outcome", "details", "transcript_available", "recording_available", "created_at", "updated_at", "ended_at"],
+            "additionalProperties": false,
+            "properties": {
+              "call_id": { "type": "string" },
+              "telephony_profile_id": { "type": "string" },
+              "ai_profile_id": { "type": "string" },
+              "to_number": { "type": "string" },
+              "technical_status": { "type": "string", "enum": ["queued", "initiating", "ringing", "active", "ending", "ended", "failed"] },
+              "task_outcome": { "type": ["string", "null"], "enum": ["success", "partial", "failed", "unknown", null] },
+              "details": { "$ref": "#/$defs/callDetails" },
+              "transcript_available": { "type": "boolean" },
+              "recording_available": { "type": "boolean" },
+              "created_at": { "type": "string", "format": "date-time" },
+              "updated_at": { "type": "string", "format": "date-time" },
+              "ended_at": { "type": ["string", "null"], "format": "date-time" }
+            }
+          },
+          "callDetails": {
+            "type": "object",
+            "required": ["max_duration_seconds", "record_requested", "record_effective"],
+            "additionalProperties": false,
+            "properties": {
+              "outcome_reason_code": { "type": "string" },
+              "max_duration_seconds": { "type": "integer" },
+              "record_requested": { "type": "boolean" },
+              "record_effective": { "type": "boolean" }
             }
           }
         }
@@ -62,9 +155,7 @@
       "description": "Return one call owned by the caller. Foreign or missing calls return not_found.",
       "inputSchema": {
         "type": "object",
-        "required": [
-          "call_id"
-        ],
+        "required": ["call_id"],
         "additionalProperties": false,
         "properties": {
           "call_id": {
@@ -74,27 +165,167 @@
           }
         }
       },
+      "outputSchema": {
+        "type": "object",
+        "required": ["call_id", "telephony_profile_id", "ai_profile_id", "to_number", "technical_status", "task_outcome", "details", "transcript_available", "recording_available", "created_at", "updated_at", "ended_at"],
+        "additionalProperties": false,
+        "properties": {
+          "call_id": { "type": "string" },
+          "telephony_profile_id": { "type": "string" },
+          "ai_profile_id": { "type": "string" },
+          "to_number": { "type": "string" },
+          "technical_status": { "type": "string", "enum": ["queued", "initiating", "ringing", "active", "ending", "ended", "failed"] },
+          "task_outcome": { "type": ["string", "null"], "enum": ["success", "partial", "failed", "unknown", null] },
+          "details": {
+            "type": "object",
+            "required": ["max_duration_seconds", "record_requested", "record_effective"],
+            "additionalProperties": false,
+            "properties": {
+              "outcome_reason_code": { "type": "string" },
+              "max_duration_seconds": { "type": "integer" },
+              "record_requested": { "type": "boolean" },
+              "record_effective": { "type": "boolean" }
+            }
+          },
+          "transcript_available": { "type": "boolean" },
+          "recording_available": { "type": "boolean" },
+          "created_at": { "type": "string", "format": "date-time" },
+          "updated_at": { "type": "string", "format": "date-time" },
+          "ended_at": { "type": ["string", "null"], "format": "date-time" }
+        }
+      },
       "readOnly": true
     },
     {
       "name": "make_call",
       "status": "planned",
-      "description": "Planned. Not registered. Calling it returns an unknown-tool error and never starts a call."
+      "scope": "mcp:call",
+      "description": "Planned. Not registered. Calling it returns an unknown-tool error and never starts a call.",
+      "inputSchema": {
+        "type": "object",
+        "required": ["profile_id", "to", "objective", "idempotency_key"],
+        "additionalProperties": false,
+        "properties": {
+          "profile_id": { "type": "string", "minLength": 1, "maxLength": 64 },
+          "to": { "type": "string", "pattern": "^\\+[1-9][0-9]{6,14}$" },
+          "recipient": { "type": "string" },
+          "language": { "type": "string", "maxLength": 35, "description": "BCP 47 language tag." },
+          "objective": { "type": "string" },
+          "context": { "type": "string", "description": "Configurable server limit; oversized input is rejected, never truncated." },
+          "instructions": { "type": "string", "description": "Configurable server limit; oversized input is rejected, never truncated." },
+          "constraints": { "type": "array", "items": { "type": "string" } },
+          "fallbacks": { "type": "array", "items": { "type": "string" } },
+          "success_criteria": { "type": "array", "items": { "type": "string" } },
+          "max_duration_seconds": { "type": "integer", "minimum": 1, "maximum": 7200 },
+          "record": {
+            "type": "boolean",
+            "description": "Optional per-call request. Never enables recording unless the account owner has opted in through the WebGUI setting. Omission means no recording unless the per-user default policy enables it. An owner-disabled setting is never bypassed."
+          },
+          "idempotency_key": { "type": "string", "minLength": 1, "maxLength": 128 }
+        }
+      },
+      "outputSchema": {
+        "type": "object",
+        "required": ["call_id", "status", "created_at"],
+        "additionalProperties": false,
+        "properties": {
+          "call_id": { "type": "string" },
+          "status": { "type": "string", "enum": ["queued", "initiating", "ringing", "active", "ending", "ended", "failed"] },
+          "created_at": { "type": "string", "format": "date-time" }
+        }
+      }
     },
     {
       "name": "get_transcript",
       "status": "planned",
-      "description": "Planned. Not registered. Calling it returns an unknown-tool error."
+      "scope": "mcp:read",
+      "description": "Planned. Not registered. Calling it returns an unknown-tool error.",
+      "inputSchema": {
+        "type": "object",
+        "required": ["call_id"],
+        "additionalProperties": false,
+        "properties": {
+          "call_id": { "type": "string", "minLength": 1, "maxLength": 64 },
+          "cursor": { "type": "string", "maxLength": 512 }
+        }
+      },
+      "outputSchema": {
+        "type": "object",
+        "required": ["call_id", "turns", "quality_flags", "next_cursor"],
+        "additionalProperties": false,
+        "properties": {
+          "call_id": { "type": "string" },
+          "turns": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["seq", "speaker", "finality", "started_ms", "ended_ms", "text"],
+              "additionalProperties": false,
+              "properties": {
+                "seq": { "type": "integer" },
+                "speaker": { "type": "string", "enum": ["assistant", "callee", "system"] },
+                "finality": { "type": "string", "enum": ["partial", "final"] },
+                "started_ms": { "type": "integer", "minimum": 0 },
+                "ended_ms": { "type": ["integer", "null"] },
+                "text": { "type": "string" }
+              }
+            }
+          },
+          "quality_flags": { "type": "array", "items": { "type": "string" } },
+          "next_cursor": { "type": ["string", "null"] }
+        }
+      }
     },
     {
       "name": "get_recording",
       "status": "planned",
-      "description": "Planned. Not registered. Calling it returns an unknown-tool error."
+      "scope": "mcp:read",
+      "description": "Planned. Not registered. Calling it returns an unknown-tool error. Returns metadata only; audio is read over authenticated REST.",
+      "inputSchema": {
+        "type": "object",
+        "required": ["call_id"],
+        "additionalProperties": false,
+        "properties": {
+          "call_id": { "type": "string", "minLength": 1, "maxLength": 64 }
+        }
+      },
+      "outputSchema": {
+        "type": "object",
+        "required": ["call_id", "status", "content_type", "duration_ms", "byte_count", "download_path"],
+        "additionalProperties": false,
+        "properties": {
+          "call_id": { "type": "string" },
+          "status": { "type": "string", "enum": ["recording", "complete", "partial", "failed", "deleted"] },
+          "content_type": { "const": "audio/wav" },
+          "duration_ms": { "type": "integer", "minimum": 0 },
+          "byte_count": { "type": "integer", "minimum": 0 },
+          "download_path": { "type": "string", "description": "Authenticated REST path, not a public URL." }
+        }
+      }
     },
     {
       "name": "hangup_call",
       "status": "planned",
-      "description": "Planned. Not registered. Calling it returns an unknown-tool error and never ends a call."
+      "scope": "mcp:call",
+      "description": "Planned. Not registered. Calling it returns an unknown-tool error and never ends a call.",
+      "inputSchema": {
+        "type": "object",
+        "required": ["call_id"],
+        "additionalProperties": false,
+        "properties": {
+          "call_id": { "type": "string", "minLength": 1, "maxLength": 64 }
+        }
+      },
+      "outputSchema": {
+        "type": "object",
+        "required": ["call_id", "technical_status", "task_outcome"],
+        "additionalProperties": false,
+        "properties": {
+          "call_id": { "type": "string" },
+          "technical_status": { "type": "string", "enum": ["queued", "initiating", "ringing", "active", "ending", "ended", "failed"] },
+          "task_outcome": { "type": ["string", "null"], "enum": ["success", "partial", "failed", "unknown", null] }
+        }
+      }
     }
   ]
 }

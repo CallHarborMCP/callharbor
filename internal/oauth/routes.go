@@ -2,9 +2,6 @@ package oauth
 
 import "net/http"
 
-// MCPBodyLimit bounds one request body on /mcp.
-const MCPBodyLimit = 1 << 20
-
 // Register mounts the protocol endpoints on mux. OAuth endpoints that browsers
 // or remote clients call are CORS-enabled only where listed in cors.go. The
 // /api consent endpoints are mounted by RegisterConsentAPI.
@@ -27,11 +24,13 @@ func (s *Server) Register(mux *http.ServeMux) {
 // keeps this package free of an mcp import.
 type MCPWrapper func(bearer func(http.Handler) http.Handler, resourceMetadataURL string) http.Handler
 
-// RegisterMCP mounts the protected MCP endpoint. The transport is built by
-// wrap, which must apply the bearer middleware this package supplies, so the
-// transport only ever sees an authenticated request. Method and path matching
-// is limited to /mcp, so every other path keeps its existing 404 behavior.
+// RegisterMCP mounts the protected MCP endpoint. Only POST and the CORS
+// preflight are routed. Any other method on /mcp, including GET and DELETE,
+// gets 405 from the mux, because the server is stateless and has no SSE stream
+// or session to open or close.
 //
+// The transport is built by wrap, which must apply the bearer middleware this
+// package supplies, so the transport only ever sees an authenticated request.
 // Preflight OPTIONS is answered without credentials, as browsers send none.
 // The CORS origin is "*" but credentials are never allowed, so the wildcard
 // grants no ambient authority.
@@ -39,12 +38,16 @@ func (s *Server) RegisterMCP(mux *http.ServeMux, wrap MCPWrapper) {
 	protected := limitBody(MCPBodyLimit, wrap(s.RequireBearer(ScopeRead), s.protectedResourceMetadataURL()))
 	mux.Handle("OPTIONS /mcp", corsMCP(nil))
 	mux.Handle("POST /mcp", corsMCP(protected))
-	mux.Handle("GET /mcp", corsMCP(protected))
-	mux.Handle("DELETE /mcp", corsMCP(protected))
 }
 
-// limitBody caps the request body. Reads past the limit fail, and the
-// transport reports an error instead of processing a truncated request.
+// MCPBodyLimit bounds one request body on /mcp. This is the only body limit on
+// the route: the SDK receives the same value in mcp.StreamableHTTPOptions, so
+// the transport cannot apply a different limit to a request this layer admits.
+const MCPBodyLimit = 1 << 20
+
+// limitBody caps the request body. A read past the limit fails, so an oversized
+// request is never decoded or processed. The response is 413 when the body
+// is read before the handler writes anything.
 func limitBody(n int64, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Body != nil {

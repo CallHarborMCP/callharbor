@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"database/sql"
+	"encoding/base64"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -57,7 +58,7 @@ func newFixture(t *testing.T) *fixture {
 	f.bobCk = f.login(t, idSvc, "bob")
 
 	f.mux = http.NewServeMux()
-	NewHandler(idHandler, service.New(store)).Register(f.mux)
+	NewHandler(idHandler, service.New(store), nil).Register(f.mux)
 	return f
 }
 
@@ -257,7 +258,39 @@ func TestV1MethodsOutsideContractAreNotFound(t *testing.T) {
 	req.AddCookie(f.aliceCk)
 	rec := httptest.NewRecorder()
 	f.mux.ServeHTTP(rec, req)
-	if rec.Code != http.StatusMethodNotAllowed && rec.Code != http.StatusNotFound {
-		t.Fatalf("POST /api/v1/calls = %d, want 404/405", rec.Code)
+	// /api/v1/calls is mounted for GET only. The mux answers 405 for POST on
+	// that mounted path; the planned POST operation is covered by
+	// TestPlannedOperationsAreNotMounted, which requires 404.
+	if rec.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("POST /api/v1/calls = %d %s, want 405", rec.Code, rec.Body.String())
 	}
+}
+
+// TestV1CallsCursorBoundaries covers the REST edge of the cursor rules. A
+// tampered or over-length cursor is invalid_input and never reaches the store.
+// A missing cursor is the first page.
+func TestV1CallsCursorBoundaries(t *testing.T) {
+	f := newFixture(t)
+
+	first := get(t, f.mux, "/api/v1/calls", f.aliceCk)
+	if first.Code != http.StatusOK {
+		t.Fatalf("missing cursor = %d %s", first.Code, first.Body.String())
+	}
+
+	over := strings.Repeat("A", service.MaxCursorLength+1)
+	rec := get(t, f.mux, "/api/v1/calls?cursor="+over, f.aliceCk)
+	if rec.Code != http.StatusBadRequest || errCode(t, rec) != "invalid_input" {
+		t.Fatalf("over-length cursor = %d %s", rec.Code, rec.Body.String())
+	}
+
+	tampered := base64url(`{"v":9,"c":"2026-11-23T10:00:00.000Z","i":"alice-call-2"}`)
+	rec = get(t, f.mux, "/api/v1/calls?cursor="+tampered, f.aliceCk)
+	if rec.Code != http.StatusBadRequest || errCode(t, rec) != "invalid_input" {
+		t.Fatalf("tampered cursor = %d %s", rec.Code, rec.Body.String())
+	}
+}
+
+// base64url encodes s as an unpadded base64url token, the cursor wire form.
+func base64url(s string) string {
+	return base64.RawURLEncoding.EncodeToString([]byte(s))
 }
