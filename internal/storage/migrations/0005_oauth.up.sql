@@ -89,7 +89,7 @@ CREATE TABLE oauth_refresh_tokens (
     audience TEXT NOT NULL CHECK (length(audience) BETWEEN 1 AND 2048),
     scopes TEXT NOT NULL CHECK (length(scopes) BETWEEN 1 AND 512),
     created_at TEXT NOT NULL,
-    absolute_expires_at TEXT NOT NULL,
+    expires_at TEXT NOT NULL,
     rotated_at TEXT,
     revoked_at TEXT
 );

@@ -64,9 +64,10 @@ type OAuthCode struct {
 	ConsumedAt    string
 }
 
-// OAuthToken is an access or refresh token row, stored as a hash. For access
-// tokens ExpiresAt is the access expiry; for refresh tokens it is the absolute
-// lifetime end. GrantRevokedAt is set by lookups that join the grant.
+// OAuthToken is an access or refresh token row, stored as a hash. ExpiresAt is
+// the token's expiry. A refresh token's expiry is reset to 30 days from each
+// rotation, so the refresh lifetime slides; there is no absolute grant cap.
+// GrantRevokedAt is set by lookups that join the grant.
 type OAuthToken struct {
 	TokenHash      string
 	GrantID        string
@@ -308,7 +309,7 @@ func insertOAuthAccess(ctx context.Context, q execer, t OAuthToken) error {
 
 func insertOAuthRefresh(ctx context.Context, q execer, t OAuthToken) error {
 	_, err := q.ExecContext(ctx, `INSERT INTO oauth_refresh_tokens
-		(token_hash, grant_id, user_id, client_id, audience, scopes, created_at, absolute_expires_at)
+		(token_hash, grant_id, user_id, client_id, audience, scopes, created_at, expires_at)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
 		t.TokenHash, t.GrantID, t.UserID, t.ClientID, t.Audience, t.Scopes, t.CreatedAt, t.ExpiresAt)
 	return err
@@ -334,10 +335,9 @@ func (s *Store) scanOAuthToken(ctx context.Context, query string, args ...any) (
 }
 
 // RotateOAuthRefreshToken atomically marks the presented refresh token as
-// rotated and inserts its successor and the new access token. It returns
-// ErrOAuthTokenReuse-style semantics via the caller: a token that was already
-// rotated or revoked is reported as (false, nil) so the caller can revoke the
-// family.
+// rotated and inserts its successor and the new access token. A token that was
+// already rotated or revoked is reported as (false, nil), with nothing written,
+// so the caller can revoke the family.
 func (s *Store) RotateOAuthRefreshToken(ctx context.Context, oldHash string, next OAuthToken, nextRefresh OAuthToken, now string) (bool, error) {
 	var ok bool
 	err := s.inTx(ctx, func(tx *sql.Tx) error {
@@ -367,7 +367,7 @@ func (s *Store) GetOAuthRefreshToken(ctx context.Context, tokenHash string) (OAu
 	var t OAuthToken
 	var rotated, revoked, grantRevoked sql.NullString
 	err := s.db.QueryRowContext(ctx, `SELECT r.token_hash, r.grant_id, r.user_id, r.client_id, r.audience, r.scopes,
-		r.absolute_expires_at, r.rotated_at, r.revoked_at, g.revoked_at
+		r.expires_at, r.rotated_at, r.revoked_at, g.revoked_at
 		FROM oauth_refresh_tokens r JOIN oauth_grants g ON g.id = r.grant_id WHERE r.token_hash = ?`, tokenHash).Scan(
 		&t.TokenHash, &t.GrantID, &t.UserID, &t.ClientID, &t.Audience, &t.Scopes, &t.ExpiresAt, &rotated, &revoked, &grantRevoked)
 	if err != nil {
