@@ -162,7 +162,7 @@ func (r *cimdResolver) resolve(ctx context.Context, clientID string) (Client, bo
 
 	// The flight runs on its own context, so a caller that gives up does not
 	// cancel the fetch that other waiters depend on.
-	go r.run(clientID, f, now)
+	go r.run(clientID, f, now) // #nosec G118 -- the flight is shared, so it must outlive any one caller; fetch is bounded by cimdTimeout
 	return r.wait(ctx, f, true)
 }
 
