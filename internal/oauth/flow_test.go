@@ -785,3 +785,48 @@ func TestRevokeStoreFailureIsLoggedWithoutToken(t *testing.T) {
 		t.Fatal("log carries the presented token")
 	}
 }
+
+// TestTokenMissingOrEmptyVerifierIsRefused: a code exchange with no code_verifier,
+// or an empty one, is refused with invalid_grant or invalid_request, the library's
+// answer for a missing PKCE verifier. The refusal must not burn the code: the
+// legitimate verifier still redeems it afterwards.
+func TestTokenMissingOrEmptyVerifierIsRefused(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		verifier url.Values
+	}{
+		{"missing", url.Values{}},
+		{"empty", url.Values{"code_verifier": {""}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newFixture(t)
+			code := codeFrom(t, f.approveAuthorize(nil))
+			form := url.Values{
+				"grant_type":   {"authorization_code"},
+				"code":         {code},
+				"client_id":    {testClientID},
+				"redirect_uri": {testRedirectURI},
+			}
+			for k, v := range tc.verifier {
+				form[k] = v
+			}
+			status, body := f.exchange(form)
+			if status != http.StatusBadRequest {
+				t.Fatalf("status = %d body = %v, want 400", status, body)
+			}
+			if e, _ := body["error"].(string); e != "invalid_grant" && e != "invalid_request" {
+				t.Fatalf("error = %v, want invalid_grant or invalid_request", body["error"])
+			}
+			status, body = f.exchange(url.Values{
+				"grant_type":    {"authorization_code"},
+				"code":          {code},
+				"client_id":     {testClientID},
+				"redirect_uri":  {testRedirectURI},
+				"code_verifier": {testVerifier},
+			})
+			if status != http.StatusOK {
+				t.Fatalf("legitimate exchange after refusal = %d %v; the refusal burned the code", status, body)
+			}
+		})
+	}
+}
