@@ -294,8 +294,57 @@ func TestCIMDNon200IsRejectedAndNotCached(t *testing.T) {
 	assertRejectedWithoutRedirect(t, f, cid, nil)
 
 	meta.update(func(m *metadataServer) { m.status = http.StatusOK })
+	// The failure is remembered only briefly, so recovery is seen after the
+	// negative TTL.
+	f.clock.Advance(cimdFailTTL + time.Second)
 	if _, err := f.srv.clients.ResolveClient(f.ctx, cid); err != nil {
 		t.Fatalf("after recovery: %v", err)
+	}
+}
+
+// TestCIMDFailedFetchIsNegativelyCached: within the negative TTL a bad URL is
+// refused from memory, so repeated requests make one outbound fetch, not one
+// each.
+func TestCIMDFailedFetchIsNegativelyCached(t *testing.T) {
+	meta := newMetadataServer()
+	f, cid := newCIMDFixture(t, meta, true)
+	meta.update(func(m *metadataServer) { m.status = http.StatusNotFound })
+	for i := 0; i < 5; i++ {
+		if _, err := f.srv.clients.ResolveClient(f.ctx, cid); err == nil {
+			t.Fatal("failing document resolved")
+		}
+	}
+	if n := meta.hits(); n != 1 {
+		t.Fatalf("fetches within negative TTL = %d, want 1", n)
+	}
+}
+
+// TestCIMDConcurrentMissesShareOneFetch: simultaneous misses for one URL share a
+// single outbound fetch and all receive the same client.
+func TestCIMDConcurrentMissesShareOneFetch(t *testing.T) {
+	meta := newMetadataServer()
+	f, cid := newCIMDFixture(t, meta, true)
+	setDoc(meta, cimdDoc(cid, nil))
+	const callers = 16
+	var wg sync.WaitGroup
+	errs := make(chan error, callers)
+	for i := 0; i < callers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_, err := f.srv.clients.ResolveClient(f.ctx, cid)
+			errs <- err
+		}()
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Fatalf("concurrent resolve: %v", err)
+		}
+	}
+	if n := meta.hits(); n != 1 {
+		t.Fatalf("concurrent fetches = %d, want 1", n)
 	}
 }
 

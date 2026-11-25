@@ -25,11 +25,14 @@ import (
 )
 
 const (
-	cimdTimeout      = 5 * time.Second
-	cimdMaxBody      = 64 << 10
-	cimdCacheSize    = 256
-	cimdDefaultTTL   = 5 * time.Minute
-	cimdMaxTTL       = time.Hour
+	cimdTimeout    = 5 * time.Second
+	cimdMaxBody    = 64 << 10
+	cimdCacheSize  = 256
+	cimdDefaultTTL = 5 * time.Minute
+	cimdMaxTTL     = time.Hour
+	// cimdFailTTL bounds how long a failed fetch is remembered. A client that
+	// keeps sending a bad URL must not make every request a fresh outbound fetch.
+	cimdFailTTL      = 30 * time.Second
 	cimdMaxNameRunes = 200
 	cimdMaxURIChars  = 2000
 )
@@ -72,11 +75,25 @@ type cimdResolver struct {
 	mu    sync.Mutex
 	cache map[string]cimdEntry
 	order []string // insertion order, oldest first, for eviction
+	// failed holds recent fetch failures, so a bad URL is not refetched on
+	// every request.
+	failed map[string]time.Time
+	// flights holds the fetch in progress for each URL. Concurrent misses for
+	// one URL wait on the same fetch instead of starting their own.
+	flights map[string]*cimdFlight
 }
 
 type cimdEntry struct {
 	client  Client
 	expires time.Time
+}
+
+// cimdFlight is one in-progress fetch. done closes once client and err are set.
+type cimdFlight struct {
+	done   chan struct{}
+	client Client
+	ttl    time.Duration
+	err    error
 }
 
 // newCIMDResolver builds the resolver. Production passes the zero cimdOptions.
@@ -98,8 +115,10 @@ func newCIMDResolver(clock Clock, opts cimdOptions) *cimdResolver {
 				return errors.New("oauth: metadata document redirects are not followed")
 			},
 		},
-		clock: clock,
-		cache: make(map[string]cimdEntry),
+		clock:   clock,
+		cache:   make(map[string]cimdEntry),
+		failed:  make(map[string]time.Time),
+		flights: make(map[string]*cimdFlight),
 	}
 }
 
@@ -129,14 +148,53 @@ func (r *cimdResolver) resolve(ctx context.Context, clientID string) (Client, bo
 		r.mu.Unlock()
 		return e.client, false, nil
 	}
+	if until, ok := r.failed[clientID]; ok && now.Before(until) {
+		r.mu.Unlock()
+		return Client{}, false, errCIMDRecentlyFailed
+	}
+	if f, ok := r.flights[clientID]; ok {
+		r.mu.Unlock()
+		return r.wait(ctx, f, false)
+	}
+	f := &cimdFlight{done: make(chan struct{})}
+	r.flights[clientID] = f
 	r.mu.Unlock()
 
-	c, ttl, err := r.fetch(ctx, clientID)
+	// The flight runs on its own context, so a caller that gives up does not
+	// cancel the fetch that other waiters depend on.
+	go r.run(clientID, f, now)
+	return r.wait(ctx, f, true)
+}
+
+// errCIMDRecentlyFailed reports a URL whose last fetch failed recently.
+var errCIMDRecentlyFailed = errors.New("oauth: metadata document recently failed")
+
+// run performs one fetch, publishes the result to the cache or the negative
+// cache, and releases the waiters.
+func (r *cimdResolver) run(clientID string, f *cimdFlight, now time.Time) {
+	c, ttl, err := r.fetch(context.Background(), clientID)
+	r.mu.Lock()
+	delete(r.flights, clientID)
 	if err != nil {
-		return Client{}, false, err
+		r.failed[clientID] = now.Add(cimdFailTTL)
 	}
-	r.store(clientID, c, now.Add(ttl))
-	return c, true, nil
+	r.mu.Unlock()
+	if err == nil {
+		r.store(clientID, c, now.Add(ttl))
+	}
+	f.client, f.ttl, f.err = c, ttl, err
+	close(f.done)
+}
+
+// wait blocks until the flight finishes or ctx ends. fetched is true only for
+// the caller that started the flight, so the mirror runs once per fetch.
+func (r *cimdResolver) wait(ctx context.Context, f *cimdFlight, fetched bool) (Client, bool, error) {
+	select {
+	case <-f.done:
+		return f.client, fetched && f.err == nil, f.err
+	case <-ctx.Done():
+		return Client{}, false, ctx.Err()
+	}
 }
 
 func (r *cimdResolver) store(clientID string, c Client, expires time.Time) {
