@@ -10,10 +10,6 @@ import (
 	"github.com/CallHarborMCP/callharbor/internal/storage"
 )
 
-// ConnectivityUnknown is the only connectivity status reported until live
-// provider checks ship in issue #81. It is never reported as healthy.
-const ConnectivityUnknown = "unknown"
-
 // callStates is the complete call status vocabulary from the calls table.
 var callStates = map[string]struct{}{
 	"queued": {}, "initiating": {}, "ringing": {}, "active": {},
@@ -33,7 +29,7 @@ func CallStates() []string {
 
 // Store is the owner-scoped read repository the service needs.
 type Store interface {
-	ListTelephonyProfiles(ctx context.Context, ownerUserID string) ([]storage.TelephonyProfile, error)
+	ListUsableTelephonyProfiles(ctx context.Context, userID string) ([]storage.UsableTelephonyProfile, error)
 	ListAIProfiles(ctx context.Context, ownerUserID string) ([]storage.AIProfile, error)
 	ListCalls(ctx context.Context, ownerUserID, status string, after *storage.CallCursor, limit int) ([]storage.Call, error)
 	GetCall(ctx context.Context, ownerUserID, id string) (storage.Call, error)
@@ -53,11 +49,16 @@ func New(store Store) *Service {
 // TelephonyProfileView is one telephony profile as the API exposes it. Secret
 // references never appear here.
 type TelephonyProfileView struct {
-	ID                 string `json:"id"`
-	Name               string `json:"name"`
-	Provider           string `json:"provider"`
-	CallerNumber       string `json:"caller_number"`
+	ID           string `json:"id"`
+	Name         string `json:"name"`
+	Provider     string `json:"provider"`
+	CallerNumber string `json:"caller_number"`
+	// ConnectionID is set for the owner only. A granted view leaves it empty,
+	// and omitempty drops the key.
+	ConnectionID       string `json:"connection_id,omitempty"`
 	ConnectivityStatus string `json:"connectivity_status"`
+	ConnectivityReason string `json:"connectivity_reason"`
+	Access             string `json:"access"`
 }
 
 // AIProfileView is one AI voice profile as the API exposes it. Endpoint URLs,
@@ -118,13 +119,14 @@ type CallsResult struct {
 	NextCursor string     `json:"next_cursor"`
 }
 
-// GetProfiles returns the caller's AI and telephony profiles, oldest first.
-// Only non-secret fields are returned.
+// GetProfiles returns the telephony profiles the caller owns or was granted,
+// and the caller's AI profiles, oldest first. Only non-secret fields are
+// returned.
 func (s *Service) GetProfiles(ctx context.Context, actor Actor) (ProfilesResult, error) {
 	if err := actor.Require(ScopeRead); err != nil {
 		return ProfilesResult{}, err
 	}
-	telRows, err := s.store.ListTelephonyProfiles(ctx, actor.UserID)
+	telRows, err := s.store.ListUsableTelephonyProfiles(ctx, actor.UserID)
 	if err != nil {
 		return ProfilesResult{}, internal(fmt.Errorf("list telephony profiles: %w", err))
 	}
@@ -137,10 +139,16 @@ func (s *Service) GetProfiles(ctx context.Context, actor Actor) (ProfilesResult,
 		TelephonyProfiles: make([]TelephonyProfileView, 0, len(telRows)),
 	}
 	for _, p := range telRows {
-		out.TelephonyProfiles = append(out.TelephonyProfiles, TelephonyProfileView{
+		v := TelephonyProfileView{
 			ID: p.ID, Name: p.Name, Provider: p.Provider, CallerNumber: p.CallerNumber,
-			ConnectivityStatus: ConnectivityUnknown,
-		})
+			ConnectivityStatus: p.ConnectivityStatus, ConnectivityReason: p.ConnectivityReason,
+			Access: p.Access,
+		}
+		// connection_id is the owner's configuration. A grantee never sees it.
+		if p.Access == storage.TelephonyAccessOwner {
+			v.ConnectionID = p.ConnectionID
+		}
+		out.TelephonyProfiles = append(out.TelephonyProfiles, v)
 	}
 	for _, p := range aiRows {
 		out.AIProfiles = append(out.AIProfiles, AIProfileView{

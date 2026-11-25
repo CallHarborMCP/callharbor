@@ -30,7 +30,7 @@
       "name": "get_profiles",
       "status": "implemented",
       "scope": "mcp:read",
-      "description": "Return the caller's AI and telephony profiles with non-secret fields only.",
+      "description": "Return the caller's AI profiles and the telephony profiles the caller owns or was granted, with non-secret fields only. Each telephony profile reports access (owner or granted) and its last connectivity result.",
       "inputSchema": {
         "type": "object",
         "additionalProperties": false
@@ -60,14 +60,17 @@
             "type": "array",
             "items": {
               "type": "object",
-              "required": ["id", "name", "provider", "caller_number", "connectivity_status"],
+              "required": ["id", "name", "provider", "caller_number", "connectivity_status", "connectivity_reason", "access"],
               "additionalProperties": false,
               "properties": {
                 "id": { "type": "string" },
                 "name": { "type": "string" },
                 "provider": { "type": "string", "enum": ["telnyx"] },
                 "caller_number": { "type": "string" },
-                "connectivity_status": { "type": "string", "enum": ["unknown"] }
+                "connection_id": { "type": "string", "maxLength": 128 },
+                "connectivity_status": { "type": "string", "enum": ["unknown", "verified", "failed"] },
+                "connectivity_reason": { "type": "string", "enum": ["", "secrets_unavailable", "invalid_credentials", "application_not_found", "application_inactive", "number_not_found", "number_inactive", "number_not_on_application", "provider_unreachable"] },
+                "access": { "type": "string", "enum": ["owner", "granted"] }
               }
             }
           }

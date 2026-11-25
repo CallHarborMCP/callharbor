@@ -76,7 +76,7 @@ func registerTools(srv *mcp.Server, svc *service.Service, logger *slog.Logger) {
 
 	addTool(srv, &mcp.Tool{
 		Name:         ToolGetProfiles,
-		Description:  "Return the caller's AI and telephony profiles with non-secret fields only.",
+		Description:  "Return the caller's AI profiles and the telephony profiles the caller owns or was granted, with non-secret fields only. Each telephony profile reports access (owner or granted) and its last connectivity result.",
 		Annotations:  &mcp.ToolAnnotations{ReadOnlyHint: true},
 		InputSchema:  inputOf(ToolGetProfiles),
 		OutputSchema: outputOf(ToolGetProfiles),

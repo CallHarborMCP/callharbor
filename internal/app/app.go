@@ -24,6 +24,8 @@ import (
 	"github.com/CallHarborMCP/callharbor/internal/server"
 	"github.com/CallHarborMCP/callharbor/internal/service"
 	"github.com/CallHarborMCP/callharbor/internal/storage"
+	"github.com/CallHarborMCP/callharbor/internal/telephony/telnyx"
+	"github.com/CallHarborMCP/callharbor/internal/telephonyprofile"
 	"github.com/CallHarborMCP/callharbor/web"
 )
 
@@ -97,6 +99,24 @@ func newSecretID() string {
 	return "sec_" + base64.RawURLEncoding.EncodeToString(b[:])
 }
 
+func newTelephonyProfileID() string {
+	var b [16]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		panic(err)
+	}
+	return "tp_" + base64.RawURLEncoding.EncodeToString(b[:])
+}
+
+// telnyxProvider builds the read-only Telnyx client for one plaintext key. It
+// uses the production REST root. Validation issues GET requests only.
+func telnyxProvider(apiKey string) (telephonyprofile.Provider, error) {
+	c, err := telnyx.NewClient(telnyx.DefaultBaseURL, apiKey, nil)
+	if err != nil {
+		return nil, err
+	}
+	return c, nil
+}
+
 func Run(ctx context.Context, cfg config.Config, logger *slog.Logger, ln net.Listener) error {
 	info, err := os.Stat(cfg.DataDir)
 	if err != nil {
@@ -141,7 +161,11 @@ func Run(ctx context.Context, cfg config.Config, logger *slog.Logger, ln net.Lis
 	profiles := aiprofile.NewHandler(identityHandler, store, time.Now)
 	secretsAPI := secrets.NewHandler(identityHandler, secretSvc, store)
 	svc := service.New(store)
-	restV1 := api.NewHandler(identityHandler, svc, logger)
+	telSvc, err := telephonyprofile.New(store, secretSvc, telnyxProvider, time.Now, newTelephonyProfileID, logger)
+	if err != nil {
+		return fmt.Errorf("telephony profile service: %w", err)
+	}
+	restV1 := api.NewHandler(identityHandler, svc, telSvc, logger)
 	routes := []func(*http.ServeMux){identityHandler.Register, profiles.Register, secretsAPI.Register, restV1.Register}
 	if cfg.PublicURL != "" {
 		authz := oauth.NewServer(oauth.Config{PublicURL: cfg.PublicURL, TrustedProxies: cfg.TrustedProxies}, store,

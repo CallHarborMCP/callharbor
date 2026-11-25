@@ -19,6 +19,8 @@ type fakeStore struct {
 	aiErr     error
 	listErr   error
 	getErr    error
+	// grantedTo maps a profile id to the user it is granted to.
+	grantedTo map[string]string
 
 	lastOwner  string
 	lastStatus string
@@ -26,15 +28,21 @@ type fakeStore struct {
 	lastAfter  *storage.CallCursor
 }
 
-func (f *fakeStore) ListTelephonyProfiles(_ context.Context, owner string) ([]storage.TelephonyProfile, error) {
+func (f *fakeStore) ListUsableTelephonyProfiles(_ context.Context, owner string) ([]storage.UsableTelephonyProfile, error) {
 	f.lastOwner = owner
 	if f.telErr != nil {
 		return nil, f.telErr
 	}
-	var out []storage.TelephonyProfile
+	var out []storage.UsableTelephonyProfile
 	for _, p := range f.telephony {
-		if p.OwnerUserID == owner {
-			out = append(out, p)
+		if p.ConnectivityStatus == "" {
+			p.ConnectivityStatus = "unknown" // the stored default
+		}
+		switch {
+		case p.OwnerUserID == owner:
+			out = append(out, storage.UsableTelephonyProfile{TelephonyProfile: p, Access: storage.TelephonyAccessOwner})
+		case f.grantedTo[p.ID] == owner:
+			out = append(out, storage.UsableTelephonyProfile{TelephonyProfile: p, Access: storage.TelephonyAccessGranted})
 		}
 	}
 	return out, nil
@@ -189,6 +197,33 @@ func TestValidateIdempotencyKey(t *testing.T) {
 	}
 }
 
+// TestGetProfilesOmitsConnectionIDForGrantee checks that a granted profile is
+// listed with access granted and without connection_id, in both the typed value
+// and the serialized JSON. The owner's copy keeps connection_id.
+func TestGetProfilesOmitsConnectionIDForGrantee(t *testing.T) {
+	bob := Actor{UserID: "bob", Scopes: []string{ScopeRead}}
+	store := &fakeStore{
+		telephony: []storage.TelephonyProfile{
+			{ID: "tel-g", OwnerUserID: "alice", Name: "shared", Provider: "telnyx", CallerNumber: "+14155550100",
+				ConnectionID: "app-alice", CreatedAt: ts, UpdatedAt: ts},
+		},
+		grantedTo: map[string]string{"tel-g": "bob"},
+	}
+	res, err := New(store).GetProfiles(context.Background(), bob)
+	if err != nil {
+		t.Fatalf("GetProfiles: %v", err)
+	}
+	if len(res.TelephonyProfiles) != 1 || res.TelephonyProfiles[0].Access != storage.TelephonyAccessGranted {
+		t.Fatalf("grantee telephony = %+v, want one granted profile", res.TelephonyProfiles)
+	}
+	if res.TelephonyProfiles[0].ConnectionID != "" {
+		t.Fatalf("grantee connection_id = %q, want empty", res.TelephonyProfiles[0].ConnectionID)
+	}
+	if strings.Contains(fmtJSON(t, res), "connection_id") || strings.Contains(fmtJSON(t, res), "app-alice") {
+		t.Fatalf("grantee JSON exposes connection_id: %s", fmtJSON(t, res))
+	}
+}
+
 func TestGetProfilesReturnsOnlyNonSecretFieldsForOwner(t *testing.T) {
 	store := &fakeStore{
 		telephony: []storage.TelephonyProfile{
@@ -212,8 +247,21 @@ func TestGetProfilesReturnsOnlyNonSecretFieldsForOwner(t *testing.T) {
 		t.Fatalf("store queried owner %q, want alice", store.lastOwner)
 	}
 	if len(res.TelephonyProfiles) != 1 || res.TelephonyProfiles[0].ID != "tel-a" ||
-		res.TelephonyProfiles[0].ConnectivityStatus != ConnectivityUnknown {
+		res.TelephonyProfiles[0].ConnectivityStatus != storage.ConnectivityUnknown ||
+		res.TelephonyProfiles[0].Access != "owner" {
 		t.Fatalf("telephony = %+v", res.TelephonyProfiles)
+	}
+	// The owner sees the Call Control application id; the fixture sets none.
+	store.telephony[0].ConnectionID = "app-alice"
+	res, err = New(store).GetProfiles(context.Background(), alice)
+	if err != nil {
+		t.Fatalf("GetProfiles: %v", err)
+	}
+	if res.TelephonyProfiles[0].ConnectionID != "app-alice" {
+		t.Fatalf("owner connection_id = %q, want app-alice", res.TelephonyProfiles[0].ConnectionID)
+	}
+	if !strings.Contains(fmtJSON(t, res), `"connection_id":"app-alice"`) {
+		t.Fatalf("owner JSON lacks connection_id: %s", fmtJSON(t, res))
 	}
 	if len(res.AIProfiles) != 1 {
 		t.Fatalf("ai = %+v", res.AIProfiles)

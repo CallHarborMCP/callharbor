@@ -15,6 +15,15 @@ MCP and OAuth tokens are not accepted on `/api/v1`. The MCP endpoint has its own
 | `GET` | `/api/v1/profiles` | The caller's AI and telephony profiles, without secrets |
 | `GET` | `/api/v1/calls` | The caller's calls, newest first, one page at a time |
 | `GET` | `/api/v1/calls/{call_id}` | One call owned by the caller |
+| `GET` | `/api/v1/telephony-profiles` | Telephony profiles the caller owns or was granted |
+| `POST` | `/api/v1/telephony-profiles` | Create a telephony profile (owner) |
+| `GET` | `/api/v1/telephony-profiles/{profile_id}` | One usable telephony profile |
+| `PUT` | `/api/v1/telephony-profiles/{profile_id}` | Replace a profile's fields and secrets (owner) |
+| `DELETE` | `/api/v1/telephony-profiles/{profile_id}` | Delete a profile not referenced by calls (owner) |
+| `POST` | `/api/v1/telephony-profiles/{profile_id}/validate` | Read-only connectivity check (owner) |
+| `GET` | `/api/v1/telephony-profiles/{profile_id}/grants` | List grants on a profile (admin owner) |
+| `PUT` | `/api/v1/telephony-profiles/{profile_id}/grants/{user_id}` | Grant a user use of a profile (admin owner) |
+| `DELETE` | `/api/v1/telephony-profiles/{profile_id}/grants/{user_id}` | Revoke a grant (admin owner) |
 
 Only these operations are implemented. Other methods on these paths are not routed. Planned operations such as creating a call are not exposed by this API.
 
@@ -24,6 +33,21 @@ Planned operations are listed in `api/openapi.json` with `x-callharbor-availabil
 - A planned `POST` path returns `405 Method Not Allowed` from the router, plain text and not the JSON envelope. Because the web UI's `GET /` pattern matches every path, the router reports a wrong method as 405 rather than 404. For example, `POST /api/v1/calls` returns `405` because `GET /api/v1/calls` is mounted, and `POST /api/v1/calls/{call_id}/transcript` returns `405` as well.
 
 The planned `GET` list is derived from `PlannedRoutes` in `internal/api/v1.go`, and the app tests probe every planned route with a session.
+
+## Telephony profiles
+
+Every telephony route needs a valid session. Each write also needs the session's CSRF token in the `X-CSRF-Token` header; a missing or wrong token returns `403 forbidden`.
+
+- **Secrets are write-only.** `api_key` and the optional `webhook_public_key` are accepted on create and replace. No response, log line or error contains them. On replace, an omitted `api_key` keeps the stored key. On replace, an omitted or empty `webhook_public_key` keeps the stored key, and JSON `null` removes it. `null` is refused on create.
+- **Connection application.** `connection_id` is required on create and replace, at most 128 bytes. Calls dial through this Call Control application, so a profile without one cannot place a call. A profile saved before this field became required has no `connection_id`, and its validation fails with `application_not_found` until it is replaced. The owner sees `connection_id`. A granted user does not.
+- **Request bodies are one JSON value.** Anything after the value, including a second value or a stray bracket, returns `400 invalid_input`.
+- **Access.** A profile is visible to its owner and to users it was granted to. Anyone else gets `404`, so the existence of another user's profile is not revealed.
+- **Grants are admin-only.** Only an admin who owns the profile may list, grant or revoke. A non-admin gets `403` on every grant route, including the owner's.
+- **Validation** checks the stored key, the Call Control application named by `connection_id` (always checked, since `connection_id` is required) and the caller number. It sends GET requests only and never places a call. The result is stored as `connectivity_status` (`verified` or `failed`) with a fixed `connectivity_reason` code. The reason codes are `invalid_credentials`, `application_not_found`, `application_inactive`, `number_not_found`, `number_inactive`, `number_not_on_application`, `provider_unreachable` and `secrets_unavailable`. Provider text is never returned.
+- **Changes reset validation.** Updating any field sets `connectivity_status` back to `unknown`. A validation that finishes after the profile was changed is refused with `409 conflict` (`telephony profile changed during validation`) and does not overwrite the stored result. The audit log records the attempt as `failed` with the detail `changed_during_validation`. Validate again.
+- **Deletes** are refused with `409 conflict` while calls reference the profile.
+- **Secrets unavailable.** When the master key is not configured, a create or replace that needs to store a secret returns `503` with the envelope code `internal`, because the shared code set has no unavailable code. The OpenAPI document lists this `503` response on both operations. Nothing is persisted on that path.
+- **Update schema.** `PUT` uses `TelephonyProfileUpdate`, in which `api_key` is optional. `POST` uses `TelephonyProfileWrite`, in which `api_key` is required.
 
 ## Listing calls
 
@@ -70,7 +94,8 @@ Commands that create work take an `Idempotency-Key` header. This convention is p
 ## Response conventions
 
 - Timestamps are UTC RFC 3339 with a `Z` suffix, for example `2026-11-25T10:00:00.000Z`.
-- `connectivity_status` on telephony profiles is always `"unknown"` until live provider checks ship (issue #81). It is not a health result.
+- `get_profiles` (REST `GET /api/v1/profiles` and the MCP tool of the same name) lists telephony profiles the caller owns **or was granted**. A granted profile appears with `access: "granted"`, and it is listed only while its owner is an active admin and the caller is active. Demoting or deactivating the owner hides it from the grantee until the owner is restored.
+- `connectivity_status` on telephony profiles is the last read-only validation result: `"unknown"` until a validation runs (and again after any change to the profile), then `"verified"` or `"failed"`. `connectivity_reason` gives the fixed reason code for a failure. `access` is `"owner"` or `"granted"`. Validation checks the key, application and number with GET requests only; it never places a call.
 - A call's `transcript_available` is true only when a final transcript turn exists. `recording_available` is true only when the recording is complete.
 - Every `/api/v1` response carries `Cache-Control: no-store`.
 

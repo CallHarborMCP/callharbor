@@ -32,7 +32,9 @@ jq -S --arg sha "$TELNYX_OPENAPI_SHA" --arg sum "$TELNYX_OPENAPI_SHA256" --arg u
         "/calls/{call_control_id}": {get: .paths["/calls/{call_control_id}"].get},
         "/calls/{call_control_id}/actions/hangup": .paths["/calls/{call_control_id}/actions/hangup"],
         "/calls/{call_control_id}/actions/streaming_start": .paths["/calls/{call_control_id}/actions/streaming_start"],
-        "/calls/{call_control_id}/actions/streaming_stop": .paths["/calls/{call_control_id}/actions/streaming_stop"]
+        "/calls/{call_control_id}/actions/streaming_stop": .paths["/calls/{call_control_id}/actions/streaming_stop"],
+        "/call_control_applications/{id}": {get: .paths["/call_control_applications/{id}"].get},
+        "/phone_numbers": {get: .paths["/phone_numbers"].get}
       },
       webhooks: (.webhooks | with_entries(select(.key | IN(
         "callInitiated", "callAnswered", "callHangup", "callMachineDetectionEnded",

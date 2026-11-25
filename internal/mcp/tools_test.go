@@ -163,7 +163,9 @@ const toolsListBody = `{"jsonrpc":"2.0","id":1,"method":"tools/list"}`
 
 // TestToolSuccessReturnsOwnedDataOnly covers the success path of all three
 // tools with the real SDK and service. Alice must see only her own rows, and
-// get_profiles must omit secret and endpoint fields.
+// get_profiles must omit secret and endpoint fields. The owner's connection_id
+// is allowed here: the owner reads their own configuration. Grantee views omit
+// it (see the service and REST tests).
 func TestToolSuccessReturnsOwnedDataOnly(t *testing.T) {
 	logger, _ := captureLogger()
 	ts := testServer(t, fixtureStore(), logger, testTokens{"tok-alice": tokenFor("alice", service.ScopeRead)})
@@ -174,7 +176,10 @@ func TestToolSuccessReturnsOwnedDataOnly(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, banned := range []string{"conn-secret-a", "alice secret instructions", "wss://alice", "X-Hidden", "sec-a", "Bob line", "+14155550200"} {
+	if !strings.Contains(string(raw), `"connection_id":"conn-secret-a"`) {
+		t.Fatalf("owner get_profiles lacks connection_id: %s", raw)
+	}
+	for _, banned := range []string{"alice secret instructions", "wss://alice", "X-Hidden", "sec-a", "Bob line", "+14155550200"} {
 		if strings.Contains(string(raw), banned) {
 			t.Fatalf("get_profiles leaked %q: %s", banned, raw)
 		}
