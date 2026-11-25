@@ -25,12 +25,13 @@ type fakeTelnyx struct {
 type recorded struct {
 	method, path, auth string
 	body               []byte
+	query              string
 }
 
 func (f *fakeTelnyx) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	body, _ := io.ReadAll(r.Body)
 	f.mu.Lock()
-	f.calls = append(f.calls, recorded{r.Method, r.URL.EscapedPath(), r.Header.Get("Authorization"), body})
+	f.calls = append(f.calls, recorded{method: r.Method, path: r.URL.EscapedPath(), auth: r.Header.Get("Authorization"), body: body, query: r.URL.RawQuery})
 	status, resp := f.status, f.response
 	f.mu.Unlock()
 	w.Header().Set("Content-Type", "application/json")

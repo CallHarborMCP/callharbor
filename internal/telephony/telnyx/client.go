@@ -24,7 +24,25 @@ var (
 	ErrInvalidClient = errors.New("telnyx: invalid client configuration")
 	ErrAPI           = errors.New("telnyx: API request rejected")
 	ErrBadResponse   = errors.New("telnyx: unexpected API response")
+	// ErrNotFound reports a lookup that Telnyx answered with no matching record.
+	ErrNotFound = errors.New("telnyx: not found")
 )
+
+// APIError is a non-2xx Telnyx response. It carries the method, the path
+// without its query string, and the HTTP status. It never carries the response
+// body or the API key, and it matches ErrAPI.
+type APIError struct {
+	Method string
+	Path   string
+	Status int
+}
+
+func (e *APIError) Error() string {
+	return fmt.Sprintf("%v: %s %s returned HTTP %d", ErrAPI, e.Method, e.Path, e.Status)
+}
+
+// Unwrap makes errors.Is(err, ErrAPI) hold for every APIError.
+func (e *APIError) Unwrap() error { return ErrAPI }
 
 // Client is a minimal Telnyx Call Control REST client. It performs at most one
 // HTTP attempt per call: an automatic retry could create a second dial, so
@@ -148,7 +166,96 @@ func (c *Client) do(ctx context.Context, method, path string, body []byte) ([]by
 		return nil, fmt.Errorf("%w: body too large", ErrBadResponse)
 	}
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
-		return nil, fmt.Errorf("%w: %s %s returned HTTP %d", ErrAPI, method, path, resp.StatusCode)
+		p, _, _ := strings.Cut(path, "?")
+		return nil, &APIError{Method: method, Path: p, Status: resp.StatusCode}
 	}
 	return raw, nil
+}
+
+// CallControlApplication is the subset of a Telnyx Call Control application
+// that validation reads.
+type CallControlApplication struct {
+	ID     string
+	Active bool
+}
+
+// PhoneNumber is the subset of a Telnyx phone number record that validation
+// reads.
+type PhoneNumber struct {
+	ID           string
+	PhoneNumber  string
+	Status       string
+	ConnectionID string
+}
+
+type applicationResponse struct {
+	Data *struct {
+		ID     string `json:"id"`
+		Active *bool  `json:"active"`
+	} `json:"data"`
+}
+
+// GetCallControlApplication reads one application (GET
+// /v2/call_control_applications/{id}). It is read-only and never dials. A 404
+// is reported as ErrNotFound.
+func (c *Client) GetCallControlApplication(ctx context.Context, id string) (CallControlApplication, error) {
+	if id == "" {
+		return CallControlApplication{}, fmt.Errorf("%w: application id required", ErrInvalidClient)
+	}
+	raw, err := c.do(ctx, http.MethodGet, "/call_control_applications/"+url.PathEscape(id), nil)
+	if err != nil {
+		return CallControlApplication{}, mapNotFound(err)
+	}
+	var resp applicationResponse
+	if err := json.Unmarshal(raw, &resp); err != nil || resp.Data == nil || resp.Data.ID == "" {
+		return CallControlApplication{}, fmt.Errorf("%w: application response", ErrBadResponse)
+	}
+	active := true
+	if resp.Data.Active != nil {
+		active = *resp.Data.Active
+	}
+	return CallControlApplication{ID: resp.Data.ID, Active: active}, nil
+}
+
+type phoneNumbersResponse struct {
+	Data []struct {
+		ID           string `json:"id"`
+		PhoneNumber  string `json:"phone_number"`
+		Status       string `json:"status"`
+		ConnectionID string `json:"connection_id"`
+	} `json:"data"`
+}
+
+// FindPhoneNumber looks up one owned number by its E.164 value (GET
+// /v2/phone_numbers?filter[phone_number]=...). It is read-only. Only an exact
+// match is returned; no match is ErrNotFound.
+func (c *Client) FindPhoneNumber(ctx context.Context, e164 string) (PhoneNumber, error) {
+	if e164 == "" {
+		return PhoneNumber{}, fmt.Errorf("%w: phone number required", ErrInvalidClient)
+	}
+	q := url.Values{"filter[phone_number]": {e164}}
+	raw, err := c.do(ctx, http.MethodGet, "/phone_numbers?"+q.Encode(), nil)
+	if err != nil {
+		return PhoneNumber{}, mapNotFound(err)
+	}
+	var resp phoneNumbersResponse
+	if err := json.Unmarshal(raw, &resp); err != nil || resp.Data == nil {
+		return PhoneNumber{}, fmt.Errorf("%w: phone number response", ErrBadResponse)
+	}
+	for _, n := range resp.Data {
+		if n.PhoneNumber == e164 {
+			return PhoneNumber{ID: n.ID, PhoneNumber: n.PhoneNumber, Status: n.Status, ConnectionID: n.ConnectionID}, nil
+		}
+	}
+	return PhoneNumber{}, ErrNotFound
+}
+
+// mapNotFound turns an HTTP 404 into ErrNotFound. Every other error is
+// returned unchanged.
+func mapNotFound(err error) error {
+	var ae *APIError
+	if errors.As(err, &ae) && ae.Status == http.StatusNotFound {
+		return ErrNotFound
+	}
+	return err
 }

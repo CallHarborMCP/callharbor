@@ -306,6 +306,13 @@ func (h *Handler) authenticateMutating(w http.ResponseWriter, r *http.Request) (
 	return p, true
 }
 
+// CSRFValid reports whether r carries the CSRF token bound to p. Sibling
+// owner-scoped mutations call it after Authenticate, so every write checks the
+// same token the session issued.
+func (h *Handler) CSRFValid(r *http.Request, p *Principal) bool {
+	return p != nil && csrfMatches(r.Header.Get(CSRFHeader), p.CSRFToken)
+}
+
 func csrfMatches(got, want string) bool {
 	if got == "" || want == "" || len(got) != len(want) {
 		return false

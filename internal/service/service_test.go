@@ -26,15 +26,18 @@ type fakeStore struct {
 	lastAfter  *storage.CallCursor
 }
 
-func (f *fakeStore) ListTelephonyProfiles(_ context.Context, owner string) ([]storage.TelephonyProfile, error) {
+func (f *fakeStore) ListUsableTelephonyProfiles(_ context.Context, owner string) ([]storage.UsableTelephonyProfile, error) {
 	f.lastOwner = owner
 	if f.telErr != nil {
 		return nil, f.telErr
 	}
-	var out []storage.TelephonyProfile
+	var out []storage.UsableTelephonyProfile
 	for _, p := range f.telephony {
 		if p.OwnerUserID == owner {
-			out = append(out, p)
+			if p.ConnectivityStatus == "" {
+				p.ConnectivityStatus = "unknown" // the stored default
+			}
+			out = append(out, storage.UsableTelephonyProfile{TelephonyProfile: p, Access: "owner"})
 		}
 	}
 	return out, nil
@@ -212,7 +215,8 @@ func TestGetProfilesReturnsOnlyNonSecretFieldsForOwner(t *testing.T) {
 		t.Fatalf("store queried owner %q, want alice", store.lastOwner)
 	}
 	if len(res.TelephonyProfiles) != 1 || res.TelephonyProfiles[0].ID != "tel-a" ||
-		res.TelephonyProfiles[0].ConnectivityStatus != ConnectivityUnknown {
+		res.TelephonyProfiles[0].ConnectivityStatus != ConnectivityUnknown ||
+		res.TelephonyProfiles[0].Access != "owner" {
 		t.Fatalf("telephony = %+v", res.TelephonyProfiles)
 	}
 	if len(res.AIProfiles) != 1 {

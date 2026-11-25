@@ -173,10 +173,36 @@
               "caller_number": {
                 "type": "string"
               },
+              "access": {
+                "enum": [
+                  "owner",
+                  "granted"
+                ],
+                "type": "string"
+              },
+              "connectivity_reason": {
+                "enum": [
+                  "",
+                  "secrets_unavailable",
+                  "invalid_credentials",
+                  "application_not_found",
+                  "application_inactive",
+                  "number_not_found",
+                  "number_inactive",
+                  "number_not_on_application",
+                  "provider_unreachable"
+                ],
+                "type": "string"
+              },
               "connectivity_status": {
                 "enum": [
-                  "unknown"
+                  "unknown",
+                  "verified",
+                  "failed"
                 ],
+                "type": "string"
+              },
+              "caller_number": {
                 "type": "string"
               },
               "id": {
@@ -197,7 +223,9 @@
               "name",
               "provider",
               "caller_number",
-              "connectivity_status"
+              "connectivity_status",
+              "connectivity_reason",
+              "access"
             ],
             "type": "object"
           },

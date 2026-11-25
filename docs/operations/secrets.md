@@ -89,6 +89,7 @@ A self-hosted gateway on a private network needs an explicit, admin-approved dep
 - Secrets are created with `POST /api/secrets` and require the session CSRF token.
 - AI profile headers are not encrypted and are returned on read. Keep credentials out of them.
 - Users can only see and use their own secrets. Another user's secret id returns not-found.
+- Telephony profile keys are stored as secrets with the purposes `telnyx_api_key` and `telnyx_webhook_public_key`. They are sealed like any other secret, and they are never returned by the telephony API.
 
 ## Verifying the setup
 

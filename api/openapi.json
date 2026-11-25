@@ -20,7 +20,7 @@
       "get": {
         "operationId": "getProfiles",
         "summary": "List the caller's AI and telephony profiles",
-        "description": "Returns non-secret profile fields only. Endpoint URLs, headers, instructions and secret references are never returned. connectivity_status is always \"unknown\" until live provider checks ship (issue #81).",
+        "description": "Returns non-secret profile fields only. Endpoint URLs, headers, instructions and secret references are never returned. Telephony connectivity_status is the last read-only validation result (unknown until a validation runs). access is owner or granted.",
         "responses": {
           "200": {
             "description": "Profiles owned by the caller",
@@ -434,6 +434,449 @@
           }
         }
       }
+    },
+    "/api/v1/telephony-profiles": {
+      "get": {
+        "operationId": "listTelephonyProfiles",
+        "summary": "List telephony profiles the caller owns or was granted",
+        "description": "Owner or granted access only. Secret references are never returned.",
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TelephonyProfileList"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Error"
+          },
+          "500": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      },
+      "post": {
+        "operationId": "createTelephonyProfile",
+        "summary": "Create a Telnyx telephony profile",
+        "description": "Plaintext credentials are accepted once and stored encrypted. They are never returned. Creating a profile does not validate it.",
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TelephonyProfileWrite"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Created",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TelephonyProfile"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Error"
+          },
+          "503": {
+            "$ref": "#/components/responses/Error"
+          },
+          "401": {
+            "$ref": "#/components/responses/Error"
+          },
+          "403": {
+            "$ref": "#/components/responses/Error"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error"
+          },
+          "409": {
+            "$ref": "#/components/responses/Error"
+          },
+          "500": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
+    "/api/v1/telephony-profiles/{profile_id}": {
+      "get": {
+        "operationId": "getTelephonyProfile",
+        "summary": "Read one telephony profile",
+        "description": "Owner or granted access only.",
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "profile_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TelephonyProfile"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Error"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error"
+          },
+          "500": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      },
+      "put": {
+        "operationId": "updateTelephonyProfile",
+        "summary": "Replace a telephony profile's settings",
+        "description": "Owner only. A change resets connectivity_status to unknown. Omitted secret values keep the stored secret.",
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "profile_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TelephonyProfileUpdate"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TelephonyProfile"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Error"
+          },
+          "503": {
+            "$ref": "#/components/responses/Error"
+          },
+          "401": {
+            "$ref": "#/components/responses/Error"
+          },
+          "403": {
+            "$ref": "#/components/responses/Error"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error"
+          },
+          "409": {
+            "$ref": "#/components/responses/Error"
+          },
+          "500": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      },
+      "delete": {
+        "operationId": "deleteTelephonyProfile",
+        "summary": "Delete a telephony profile",
+        "description": "Owner only. Removes the profile, its grants and its secrets. Refused with 409 when calls reference it.",
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "profile_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Deleted"
+          },
+          "401": {
+            "$ref": "#/components/responses/Error"
+          },
+          "403": {
+            "$ref": "#/components/responses/Error"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error"
+          },
+          "409": {
+            "$ref": "#/components/responses/Error"
+          },
+          "500": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
+    "/api/v1/telephony-profiles/{profile_id}/validate": {
+      "post": {
+        "operationId": "validateTelephonyProfile",
+        "summary": "Validate a telephony profile (read-only)",
+        "description": "Checks the key, the application and the number with GET requests only. Never places a call. Stores the result as connectivity_status.",
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "profile_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TelephonyValidation"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Error"
+          },
+          "403": {
+            "$ref": "#/components/responses/Error"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error"
+          },
+          "409": {
+            "$ref": "#/components/responses/Error"
+          },
+          "500": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
+    "/api/v1/telephony-profiles/{profile_id}/grants": {
+      "get": {
+        "operationId": "listTelephonyGrants",
+        "summary": "List grants on a telephony profile",
+        "description": "Admin owner only.",
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "profile_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TelephonyGrantList"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Error"
+          },
+          "403": {
+            "$ref": "#/components/responses/Error"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error"
+          },
+          "409": {
+            "$ref": "#/components/responses/Error"
+          },
+          "500": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
+    "/api/v1/telephony-profiles/{profile_id}/grants/{user_id}": {
+      "put": {
+        "operationId": "grantTelephonyProfile",
+        "summary": "Grant a user use of a telephony profile",
+        "description": "Admin owner only. Idempotent.",
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "profile_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64
+            }
+          },
+          {
+            "name": "user_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Granted"
+          },
+          "401": {
+            "$ref": "#/components/responses/Error"
+          },
+          "403": {
+            "$ref": "#/components/responses/Error"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error"
+          },
+          "409": {
+            "$ref": "#/components/responses/Error"
+          },
+          "500": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      },
+      "delete": {
+        "operationId": "revokeTelephonyProfile",
+        "summary": "Revoke a grant",
+        "description": "Admin owner only.",
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "profile_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64
+            }
+          },
+          {
+            "name": "user_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Revoked"
+          },
+          "401": {
+            "$ref": "#/components/responses/Error"
+          },
+          "403": {
+            "$ref": "#/components/responses/Error"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error"
+          },
+          "409": {
+            "$ref": "#/components/responses/Error"
+          },
+          "500": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
     }
   },
   "components": {
@@ -557,7 +1000,9 @@
           "name",
           "provider",
           "caller_number",
-          "connectivity_status"
+          "connectivity_status",
+          "connectivity_reason",
+          "access"
         ],
         "additionalProperties": false,
         "properties": {
@@ -579,7 +1024,20 @@
           "connectivity_status": {
             "type": "string",
             "enum": [
-              "unknown"
+              "unknown",
+              "verified",
+              "failed"
+            ]
+          },
+          "connectivity_reason": {
+            "type": "string",
+            "description": "Fixed reason code from the last validation; empty when verified or unknown."
+          },
+          "access": {
+            "type": "string",
+            "enum": [
+              "owner",
+              "granted"
             ]
           }
         }
@@ -977,6 +1435,172 @@
               "unknown",
               null
             ]
+          }
+        }
+      },
+      "TelephonyProfileWrite": {
+        "type": "object",
+        "required": [
+          "name",
+          "caller_number",
+          "api_key"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "caller_number": {
+            "type": "string",
+            "pattern": "^\\+[1-9][0-9]{6,14}$"
+          },
+          "connection_id": {
+            "type": "string",
+            "maxLength": 128,
+            "description": "Telnyx Call Control application id. Optional."
+          },
+          "api_key": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4096,
+            "writeOnly": true,
+            "description": "Write-only Telnyx API key."
+          },
+          "webhook_public_key": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4096,
+            "writeOnly": true,
+            "description": "Write-only base64 Ed25519 webhook public key. Optional."
+          }
+        }
+      },
+      "TelephonyProfileUpdate": {
+        "type": "object",
+        "required": [
+          "name",
+          "caller_number"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "caller_number": {
+            "type": "string",
+            "pattern": "^\\+[1-9][0-9]{6,14}$"
+          },
+          "connection_id": {
+            "type": "string",
+            "maxLength": 128,
+            "description": "Telnyx Call Control application id. Optional."
+          },
+          "api_key": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4096,
+            "writeOnly": true,
+            "description": "Write-only Telnyx API key. Optional on update: when omitted, the stored key is kept."
+          },
+          "webhook_public_key": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4096,
+            "writeOnly": true,
+            "description": "Write-only base64 Ed25519 webhook public key. Optional."
+          }
+        }
+      },
+      "TelephonyProfileList": {
+        "type": "object",
+        "required": [
+          "telephony_profiles"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "telephony_profiles": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/TelephonyProfile"
+            }
+          }
+        }
+      },
+      "TelephonyValidation": {
+        "type": "object",
+        "required": [
+          "profile_id",
+          "connectivity_status",
+          "connectivity_reason",
+          "checked_at"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "profile_id": {
+            "type": "string"
+          },
+          "connectivity_status": {
+            "type": "string",
+            "enum": [
+              "verified",
+              "failed"
+            ]
+          },
+          "connectivity_reason": {
+            "type": "string",
+            "enum": [
+              "",
+              "secrets_unavailable",
+              "invalid_credentials",
+              "application_not_found",
+              "application_inactive",
+              "number_not_found",
+              "number_inactive",
+              "number_not_on_application",
+              "provider_unreachable"
+            ]
+          },
+          "checked_at": {
+            "$ref": "#/components/schemas/Timestamp"
+          }
+        }
+      },
+      "TelephonyGrant": {
+        "type": "object",
+        "required": [
+          "user_id",
+          "granted_by",
+          "created_at"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "user_id": {
+            "type": "string"
+          },
+          "granted_by": {
+            "type": "string"
+          },
+          "created_at": {
+            "$ref": "#/components/schemas/Timestamp"
+          }
+        }
+      },
+      "TelephonyGrantList": {
+        "type": "object",
+        "required": [
+          "grants"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "grants": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/TelephonyGrant"
+            }
           }
         }
       }

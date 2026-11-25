@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -13,8 +14,10 @@ import (
 	"time"
 
 	"github.com/CallHarborMCP/callharbor/internal/identity"
+	"github.com/CallHarborMCP/callharbor/internal/secrets"
 	"github.com/CallHarborMCP/callharbor/internal/service"
 	"github.com/CallHarborMCP/callharbor/internal/storage"
+	"github.com/CallHarborMCP/callharbor/internal/telephonyprofile"
 	_ "modernc.org/sqlite"
 )
 
@@ -57,8 +60,29 @@ func newFixture(t *testing.T) *fixture {
 	f.aliceCk = f.login(t, idSvc, "alice")
 	f.bobCk = f.login(t, idSvc, "bob")
 
+	ring, err := secrets.NewKeyring(1, map[int][]byte{1: make([]byte, 32)})
+	if err != nil {
+		t.Fatalf("keyring: %v", err)
+	}
+	box, err := secrets.NewBox(ring)
+	if err != nil {
+		t.Fatalf("box: %v", err)
+	}
+	secSvc, err := secrets.NewService(box, store, func() time.Time { return now }, func() string { return "sec_test" })
+	if err != nil {
+		t.Fatalf("secrets service: %v", err)
+	}
+	// The route fixture never reaches validation: its probes are unauthenticated
+	// or lack CSRF. The factory refuses rather than dial, so a regression fails.
+	telSvc, err := telephonyprofile.New(store, secSvc, func(string) (telephonyprofile.Provider, error) {
+		return nil, errors.New("route fixture must not validate against a provider")
+	}, func() time.Time { return now }, func() string { return "tp_test" }, nil)
+	if err != nil {
+		t.Fatalf("telephony service: %v", err)
+	}
+
 	f.mux = http.NewServeMux()
-	NewHandler(idHandler, service.New(store), nil).Register(f.mux)
+	NewHandler(idHandler, service.New(store), telSvc, nil).Register(f.mux)
 	return f
 }
 

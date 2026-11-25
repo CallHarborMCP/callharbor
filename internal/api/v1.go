@@ -11,6 +11,7 @@ import (
 
 	"github.com/CallHarborMCP/callharbor/internal/identity"
 	"github.com/CallHarborMCP/callharbor/internal/service"
+	"github.com/CallHarborMCP/callharbor/internal/telephonyprofile"
 )
 
 // sessionScopes are granted to a browser session on REST. A session is the
@@ -30,6 +31,15 @@ var Routes = []Route{
 	{Method: http.MethodGet, Path: "/api/v1/profiles"},
 	{Method: http.MethodGet, Path: "/api/v1/calls"},
 	{Method: http.MethodGet, Path: "/api/v1/calls/{call_id}"},
+	{Method: http.MethodGet, Path: "/api/v1/telephony-profiles"},
+	{Method: http.MethodPost, Path: "/api/v1/telephony-profiles"},
+	{Method: http.MethodGet, Path: "/api/v1/telephony-profiles/{profile_id}"},
+	{Method: http.MethodPut, Path: "/api/v1/telephony-profiles/{profile_id}"},
+	{Method: http.MethodDelete, Path: "/api/v1/telephony-profiles/{profile_id}"},
+	{Method: http.MethodPost, Path: "/api/v1/telephony-profiles/{profile_id}/validate"},
+	{Method: http.MethodGet, Path: "/api/v1/telephony-profiles/{profile_id}/grants"},
+	{Method: http.MethodPut, Path: "/api/v1/telephony-profiles/{profile_id}/grants/{user_id}"},
+	{Method: http.MethodDelete, Path: "/api/v1/telephony-profiles/{profile_id}/grants/{user_id}"},
 }
 
 // PlannedRoutes lists REST operations documented in api/openapi.json with
@@ -48,13 +58,15 @@ var PlannedRoutes = []Route{
 type Handler struct {
 	auth   *identity.Handler
 	svc    *service.Service
+	tel    *telephonyprofile.Service
 	logger *slog.Logger
 }
 
-// NewHandler returns the REST v1 handler. logger receives server-side causes
-// of internal errors; it may be nil.
-func NewHandler(auth *identity.Handler, svc *service.Service, logger *slog.Logger) *Handler {
-	return &Handler{auth: auth, svc: svc, logger: logger}
+// NewHandler returns the REST v1 handler. tel serves the telephony profile
+// routes; logger receives server-side causes of internal errors and may be
+// nil.
+func NewHandler(auth *identity.Handler, svc *service.Service, tel *telephonyprofile.Service, logger *slog.Logger) *Handler {
+	return &Handler{auth: auth, svc: svc, tel: tel, logger: logger}
 }
 
 // Register mounts the implemented v1 routes on mux, and a planned-route answer
@@ -71,6 +83,16 @@ func (h *Handler) Register(mux *http.ServeMux) {
 		"GET /api/v1/profiles":        h.getProfiles,
 		"GET /api/v1/calls":           h.listCalls,
 		"GET /api/v1/calls/{call_id}": h.getCall,
+
+		"GET /api/v1/telephony-profiles":                                  h.listTelephonyProfiles,
+		"POST /api/v1/telephony-profiles":                                 h.createTelephonyProfile,
+		"GET /api/v1/telephony-profiles/{profile_id}":                     h.getTelephonyProfile,
+		"PUT /api/v1/telephony-profiles/{profile_id}":                     h.updateTelephonyProfile,
+		"DELETE /api/v1/telephony-profiles/{profile_id}":                  h.deleteTelephonyProfile,
+		"POST /api/v1/telephony-profiles/{profile_id}/validate":           h.validateTelephonyProfile,
+		"GET /api/v1/telephony-profiles/{profile_id}/grants":              h.listTelephonyGrants,
+		"PUT /api/v1/telephony-profiles/{profile_id}/grants/{user_id}":    h.grantTelephonyProfile,
+		"DELETE /api/v1/telephony-profiles/{profile_id}/grants/{user_id}": h.revokeTelephonyProfile,
 	}
 	for _, r := range Routes {
 		pattern := r.Method + " " + r.Path

@@ -10,8 +10,10 @@ import (
 	"github.com/CallHarborMCP/callharbor/internal/storage"
 )
 
-// ConnectivityUnknown is the only connectivity status reported until live
-// provider checks ship in issue #81. It is never reported as healthy.
+// ConnectivityUnknown is the connectivity status of a telephony profile that
+// has not been validated since its last change. It is never reported as
+// healthy. The other statuses are verified and failed, stored by the
+// read-only validation in the telephonyprofile package.
 const ConnectivityUnknown = "unknown"
 
 // callStates is the complete call status vocabulary from the calls table.
@@ -33,7 +35,7 @@ func CallStates() []string {
 
 // Store is the owner-scoped read repository the service needs.
 type Store interface {
-	ListTelephonyProfiles(ctx context.Context, ownerUserID string) ([]storage.TelephonyProfile, error)
+	ListUsableTelephonyProfiles(ctx context.Context, userID string) ([]storage.UsableTelephonyProfile, error)
 	ListAIProfiles(ctx context.Context, ownerUserID string) ([]storage.AIProfile, error)
 	ListCalls(ctx context.Context, ownerUserID, status string, after *storage.CallCursor, limit int) ([]storage.Call, error)
 	GetCall(ctx context.Context, ownerUserID, id string) (storage.Call, error)
@@ -58,6 +60,8 @@ type TelephonyProfileView struct {
 	Provider           string `json:"provider"`
 	CallerNumber       string `json:"caller_number"`
 	ConnectivityStatus string `json:"connectivity_status"`
+	ConnectivityReason string `json:"connectivity_reason"`
+	Access             string `json:"access"`
 }
 
 // AIProfileView is one AI voice profile as the API exposes it. Endpoint URLs,
@@ -118,13 +122,14 @@ type CallsResult struct {
 	NextCursor string     `json:"next_cursor"`
 }
 
-// GetProfiles returns the caller's AI and telephony profiles, oldest first.
-// Only non-secret fields are returned.
+// GetProfiles returns the telephony profiles the caller owns or was granted,
+// and the caller's AI profiles, oldest first. Only non-secret fields are
+// returned.
 func (s *Service) GetProfiles(ctx context.Context, actor Actor) (ProfilesResult, error) {
 	if err := actor.Require(ScopeRead); err != nil {
 		return ProfilesResult{}, err
 	}
-	telRows, err := s.store.ListTelephonyProfiles(ctx, actor.UserID)
+	telRows, err := s.store.ListUsableTelephonyProfiles(ctx, actor.UserID)
 	if err != nil {
 		return ProfilesResult{}, internal(fmt.Errorf("list telephony profiles: %w", err))
 	}
@@ -139,7 +144,8 @@ func (s *Service) GetProfiles(ctx context.Context, actor Actor) (ProfilesResult,
 	for _, p := range telRows {
 		out.TelephonyProfiles = append(out.TelephonyProfiles, TelephonyProfileView{
 			ID: p.ID, Name: p.Name, Provider: p.Provider, CallerNumber: p.CallerNumber,
-			ConnectivityStatus: ConnectivityUnknown,
+			ConnectivityStatus: p.ConnectivityStatus, ConnectivityReason: p.ConnectivityReason,
+			Access: p.Access,
 		})
 	}
 	for _, p := range aiRows {
