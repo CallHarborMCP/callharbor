@@ -10,7 +10,7 @@ Set the public origin that clients and browsers use to reach CallHarbor:
 
 | Variable | Example | Rules |
 | --- | --- | --- |
-| `CALLHARBOR_PUBLIC_URL` | `https://callharbor.example.com` | Absolute origin. `https` is required, except `http` on a loopback host (`127.0.0.1`, `[::1]`, `localhost`) for local testing. No path, query, fragment or userinfo. A trailing `/` is removed. |
+| `CALLHARBOR_PUBLIC_URL` | `https://callharbor.example.com` | Absolute origin. `https` is required, except `http` on a loopback host (`127.0.0.1`, `[::1]`, `localhost`) for local testing. No path, query, fragment or userinfo. The value is normalized: a trailing `/` is removed, the host is lowercased, and a default port (`:443` for `https`, `:80` for `http`) is removed. |
 
 - The issuer is exactly this origin. The protected MCP resource is `<origin>/mcp`.
 - The issuer is never derived from `Host` or `X-Forwarded-*` headers. Behind a reverse proxy, set the variable to the external `https` origin.
