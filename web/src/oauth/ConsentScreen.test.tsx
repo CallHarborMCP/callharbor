@@ -64,7 +64,8 @@ describe("ConsentScreen", () => {
     expect(await screen.findByText("Claude Desktop")).toBeInTheDocument();
     expect(screen.getByText("The app supplied this name. CallHarbor has not verified it.")).toBeInTheDocument();
     const identity = screen.getByText("Registered as").parentElement as HTMLElement;
-    expect(within(identity).getByText("claude.example.com")).toBeInTheDocument();
+    expect(within(identity).getByText("cho_client_123")).toBeInTheDocument();
+    expect(within(identity).getByText("(unverified)")).toBeInTheDocument();
     expect(screen.getByText(/anyone can/)).toBeInTheDocument();
     expect(screen.getByText(/send you back to/).textContent).toContain("claude.example.com");
     expect(screen.getByText("View your calls, transcripts, recordings and profiles")).toBeInTheDocument();
@@ -72,16 +73,69 @@ describe("ConsentScreen", () => {
     expect(screen.getByText("Signed in as alice.")).toBeInTheDocument();
   });
 
-  it("names the domain as the identity for metadata-document clients", async () => {
+  it("names the client_id host as the domain for metadata-document clients", async () => {
     vi.stubGlobal(
       "fetch",
-      vi.fn().mockResolvedValue(jsonResponse(200, { ...registeredRequest, metadata_document: true, scopes: ["mcp:read"] })),
+      vi.fn().mockResolvedValue(
+        jsonResponse(200, {
+          ...registeredRequest,
+          client_id: "https://ids.example.org/app",
+          metadata_document: true,
+          scopes: ["mcp:read"],
+        }),
+      ),
     );
     renderConsent();
 
-    expect(await screen.findByText("Domain")).toBeInTheDocument();
+    const identity = (await screen.findByText("Domain")).parentElement as HTMLElement;
+    expect(within(identity).getByText("ids.example.org")).toBeInTheDocument();
     expect(screen.getByText(/identified by the domain shown above/)).toBeInTheDocument();
     expect(screen.queryByText("Registered as")).not.toBeInTheDocument();
+  });
+
+  it("never shows a client_uri host as the domain of a metadata-document client", async () => {
+    // A metadata document fetched from evil.example may claim any client_uri.
+    // The server also sends a spoofed client_host. Neither may become the domain.
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        jsonResponse(200, {
+          ...registeredRequest,
+          client_id: "https://evil.example/c.json",
+          client_uri: "https://chatgpt.com",
+          client_host: "chatgpt.com",
+          metadata_document: true,
+          scopes: ["mcp:read"],
+        }),
+      ),
+    );
+    renderConsent();
+
+    const identity = (await screen.findByText("Domain")).parentElement as HTMLElement;
+    expect(within(identity).getByText("evil.example")).toBeInTheDocument();
+    expect(identity).not.toHaveTextContent("chatgpt.com");
+  });
+
+  it("never shows a registered client's client_uri or client_host as a verified domain", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        jsonResponse(200, {
+          ...registeredRequest,
+          client_id: "cho_client_999",
+          client_uri: "https://chatgpt.com",
+          client_host: "chatgpt.com",
+          metadata_document: false,
+        }),
+      ),
+    );
+    renderConsent();
+
+    const identity = (await screen.findByText("Registered as")).parentElement as HTMLElement;
+    expect(within(identity).getByText("cho_client_999")).toBeInTheDocument();
+    expect(within(identity).getByText("(unverified)")).toBeInTheDocument();
+    expect(screen.queryByText("Domain")).not.toBeInTheDocument();
+    expect(identity).not.toHaveTextContent("chatgpt.com");
   });
 
   it("renders client-supplied text as text, never as markup", async () => {
@@ -122,16 +176,6 @@ describe("ConsentScreen", () => {
 
     await screen.findByText("Claude Desktop");
     expect(container.querySelector("a")).toBeNull();
-  });
-
-  it("falls back to the client ID host when the server sends no host", async () => {
-    vi.stubGlobal(
-      "fetch",
-      vi.fn().mockResolvedValue(jsonResponse(200, { ...registeredRequest, client_host: "", client_id: "https://ids.example.org/app" })),
-    );
-    renderConsent();
-
-    expect(await screen.findByText("ids.example.org")).toBeInTheDocument();
   });
 
   it("names the client as unnamed when it sends no name", async () => {

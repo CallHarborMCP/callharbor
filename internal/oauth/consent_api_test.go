@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 )
@@ -13,6 +14,70 @@ func (f *fixture) consentMux(read, mutating Authenticator) *http.ServeMux {
 	mux := http.NewServeMux()
 	f.srv.RegisterConsentAPI(mux, read, mutating)
 	return mux
+}
+
+// consentView fetches the consent view of request id and decodes it.
+func consentView(t *testing.T, f *fixture, id string) map[string]any {
+	t.Helper()
+	mux := f.consentMux(testAuth(f.userID), testAuth(f.userID))
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/oauth/requests/"+id, nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", rec.Code, rec.Body)
+	}
+	var out map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+		t.Fatal(err)
+	}
+	return out
+}
+
+// TestConsentViewDomainComesOnlyFromMetadataClientID: a metadata document may
+// claim any client_uri. The verified domain is the host the server fetched the
+// document from, never the self-declared client_uri host.
+func TestConsentViewDomainComesOnlyFromMetadataClientID(t *testing.T) {
+	meta := newMetadataServer()
+	f, cid := newCIMDFixture(t, meta, true)
+	setDoc(meta, cimdDoc(cid, map[string]any{"client_uri": "https://chatgpt.com"}))
+	id := location(t, get(t, f.authorizeURL(map[string]string{"client_id": cid}))).Query().Get("request")
+
+	view := consentView(t, f, id)
+	wantHost := mustParseHost(t, cid)
+	if view["client_host"] != wantHost {
+		t.Fatalf("client_host = %v, want the client_id host %q", view["client_host"], wantHost)
+	}
+	if view["client_uri"] != "https://chatgpt.com" || view["metadata_document"] != true {
+		t.Fatalf("view = %v", view)
+	}
+}
+
+// TestConsentViewHasNoVerifiedDomainForDynamicClient: a dynamically registered
+// client has no verified domain, so its client_uri host must not be shown as
+// one.
+func TestConsentViewHasNoVerifiedDomainForDynamicClient(t *testing.T) {
+	f := newFixture(t)
+	clientID := f.registerOK(t, `{"redirect_uris":["https://claude.example/cb"],"client_uri":"https://chatgpt.com"}`)
+	id := location(t, get(t, f.authorizeURL(map[string]string{
+		"client_id":    clientID,
+		"redirect_uri": "https://claude.example/cb",
+	}))).Query().Get("request")
+
+	view := consentView(t, f, id)
+	if view["client_host"] != "" {
+		t.Fatalf("client_host = %v, want empty for an unverified client", view["client_host"])
+	}
+	if view["metadata_document"] != false {
+		t.Fatalf("metadata_document = %v, want false", view["metadata_document"])
+	}
+}
+
+func mustParseHost(t *testing.T, raw string) string {
+	t.Helper()
+	u, err := url.Parse(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return u.Host
 }
 
 func TestConsentRequestViewIsReturnedForPendingRequest(t *testing.T) {

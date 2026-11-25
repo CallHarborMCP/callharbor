@@ -166,7 +166,9 @@ interface ConsentDecisionProps {
 }
 
 function ConsentDecision({ request, session, deciding, actionError, signingOut, onDecide, onSwitchAccount }: ConsentDecisionProps) {
-  const identity = request.client_host || hostOf(request.client_id) || request.client_id;
+  // Only a metadata-document client_id names a verified domain. client_uri is
+  // self-declared by the app, so it is never shown as identity.
+  const verifiedDomain = request.metadata_document ? hostOf(request.client_id) : null;
   const returnHost = hostOf(request.redirect_uri) ?? "the app";
   const busy = deciding !== null || signingOut;
 
@@ -177,23 +179,32 @@ function ConsentDecision({ request, session, deciding, actionError, signingOut, 
         <p className="ch-app-name">{request.client_name || "Unnamed app"}</p>
         <p className="ch-muted">The app supplied this name. CallHarbor has not verified it.</p>
 
-        <p className="ch-identity">
-          <span className="ch-muted">{request.metadata_document ? "Domain" : "Registered as"}</span>
-          <code className="ch-identity-value">{identity}</code>
-        </p>
-        {request.metadata_document ? (
-          <p>
-            This app is identified by the domain shown above. Allow only if you trust that domain.
-          </p>
+        {verifiedDomain !== null ? (
+          <>
+            <p className="ch-identity">
+              <span className="ch-muted">Domain</span>
+              <code className="ch-identity-value">{verifiedDomain}</code>
+            </p>
+            <p>
+              This app is identified by the domain shown above. Allow only if you trust that domain.
+            </p>
+          </>
         ) : (
-          <p>
-            This app registered itself with CallHarbor. Its name and address were not checked, and anyone can
-            register under any name. Allow only if you started this connection yourself.
-          </p>
+          <>
+            <p className="ch-identity">
+              <span className="ch-muted">Registered as</span>
+              <code className="ch-identity-value">{request.client_id}</code>
+              <span className="ch-muted">(unverified)</span>
+            </p>
+            <p>
+              This app registered itself with CallHarbor. Its name and address were not checked, and anyone can
+              register under any name. Allow only if you started this connection yourself.
+            </p>
+          </>
         )}
         {request.client_uri && isHttpsURL(request.client_uri) ? (
           <p>
-            Website:{" "}
+            Website (self-declared, unverified):{" "}
             <a href={request.client_uri} target="_blank" rel="noopener noreferrer">
               {hostOf(request.client_uri)}
               <span className="sr-only"> (opens in a new tab)</span>

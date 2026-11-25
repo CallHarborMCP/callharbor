@@ -39,9 +39,16 @@ func apiError(w http.ResponseWriter, status int, code string) {
 	writeNoStore(w, status, map[string]any{"error": map[string]string{"code": code}})
 }
 
-// clientHost returns the host of a client URI for display, or "" if none.
-func clientHost(raw string) string {
-	u, err := url.Parse(raw)
+// verifiedHost returns the domain that identifies a client on the consent
+// screen. Only the host of a metadata-document client_id counts: the server
+// fetched the document from that host. client_uri is self-declared, so it is
+// never used as identity. A dynamically registered client has no verified
+// domain.
+func verifiedHost(c Client) string {
+	if !c.MetadataDocument {
+		return ""
+	}
+	u, err := url.Parse(c.ID)
 	if err != nil {
 		return ""
 	}
@@ -79,7 +86,7 @@ func (a *consentAPI) getRequest(w http.ResponseWriter, r *http.Request) {
 		"client_id":         req.ClientID,
 		"client_name":       client.Name,
 		"client_uri":        client.URI,
-		"client_host":       clientHost(client.URI),
+		"client_host":       verifiedHost(client),
 		"metadata_document": client.MetadataDocument,
 		"redirect_uri":      redirect,
 		"scopes":            req.Scopes,
