@@ -147,6 +147,47 @@ func TestTouchOAuthGrantOnlyMovesForward(t *testing.T) {
 
 // TestTouchOAuthGrantUnknownIsNoOp: touching a missing grant updates nothing
 // and reports no error, because the resource path treats the write as best effort.
+// TestPurgeExpiredOAuthAuthRemovesOnlyExpiredRows: expired codes and requests
+// are removed, code first so the FK holds. A live request and a live code are
+// untouched, and so is an expired request that a live code still references.
+func TestPurgeExpiredOAuthAuthRemovesOnlyExpiredRows(t *testing.T) {
+	ctx := context.Background()
+	s := openOAuthFixture(t)
+	// Requests and codes expire at oauthLater; the purge runs after it.
+	const afterExpiry = "2026-11-25T10:30:00.000Z"
+	cid := "https://client.example/meta.json"
+	insertReq := func(id, expiresAt string) {
+		t.Helper()
+		if err := s.InsertOAuthAuthRequest(ctx, OAuthAuthRequest{
+			ID: id, ClientID: cid, RedirectURI: "https://client.example/cb", Scopes: "mcp:read",
+			Resource: "https://cb.example/mcp", CodeChallenge: testChallenge, CreatedAt: oauthNow, ExpiresAt: expiresAt,
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	insertReq("req-bare", oauthLater)
+	insertReq("req-live", "2026-11-25T23:00:00.000Z")
+	// An approved request whose code expires with it, so both are expired at
+	// purge time. seedApprovedGrant uses oauthLater for the code and request.
+	seedApprovedGrant(t, s, "req-coded", "grant1", hex64('c'))
+
+	if err := s.PurgeExpiredOAuthAuth(ctx, afterExpiry, 100); err != nil {
+		t.Fatalf("purge: %v", err)
+	}
+
+	for _, id := range []string{"req-bare", "req-coded"} {
+		if _, err := s.GetOAuthAuthRequest(ctx, id); !errors.Is(err, ErrNotFound) {
+			t.Fatalf("expired request %s survived: err = %v", id, err)
+		}
+	}
+	if _, err := s.GetOAuthAuthRequest(ctx, "req-live"); err != nil {
+		t.Fatalf("live request deleted: %v", err)
+	}
+	if _, err := s.GetOAuthCode(ctx, hex64('c')); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("expired code survived: err = %v", err)
+	}
+}
+
 func TestTouchOAuthGrantUnknownIsNoOp(t *testing.T) {
 	s := openOAuthFixture(t)
 	if err := s.TouchOAuthGrant(context.Background(), "missing", oauthNow, oauthNow); err != nil {

@@ -12,6 +12,9 @@ import (
 	"github.com/zitadel/oidc/v3/pkg/op"
 )
 
+// authPurgeBatch bounds the expired authorization rows removed per request.
+const authPurgeBatch = 100
+
 // handleAuthorize serves GET /oauth/authorize. Validation runs in the order
 // that keeps the redirect safe: the client and redirect_uri are checked
 // first. Only after the redirect_uri is registered may an OAuth error be sent
@@ -102,6 +105,12 @@ func (s *Server) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 		s.logger.Error("oauth: store authorization request", "error", err)
 		fail(oidc.ErrServerError())
 		return
+	}
+	// Expired requests and codes are dropped a bounded batch at a time, so
+	// abandoned requests cannot accumulate. A cleanup failure must not fail
+	// this request, so it is only logged.
+	if err := s.store.PurgeExpiredOAuthAuth(ctx, formatTime(now), authPurgeBatch); err != nil {
+		s.logger.Error("oauth: purge expired authorization state", "error", err)
 	}
 	http.Redirect(w, r, "/oauth/consent?request="+url.QueryEscape(id), http.StatusFound)
 }

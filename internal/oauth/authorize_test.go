@@ -1,12 +1,15 @@
 package oauth
 
 import (
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/CallHarborMCP/callharbor/internal/storage"
 )
 
 // location returns the redirect target of resp, failing if it is not a
@@ -46,6 +49,21 @@ func authorizeFrom(t *testing.T, f *fixture, remoteAddr string) *http.Response {
 	rec := httptest.NewRecorder()
 	f.srv.handleAuthorize(rec, req)
 	return rec.Result()
+}
+
+// TestAuthorizeDropsExpiredRequestOnNextRequest: an abandoned request that has
+// expired is removed by the next authorization, so it cannot accumulate.
+func TestAuthorizeDropsExpiredRequestOnNextRequest(t *testing.T) {
+	f := newFixture(t)
+	abandoned := location(t, get(t, f.authorizeURL(nil))).Query().Get("request")
+	f.clock.Advance(authRequestTTL + time.Second)
+	if _, err := f.store.GetOAuthAuthRequest(f.ctx, abandoned); err != nil {
+		t.Fatalf("abandoned request missing before purge: %v", err)
+	}
+	location(t, get(t, f.authorizeURL(nil)))
+	if _, err := f.store.GetOAuthAuthRequest(f.ctx, abandoned); !errors.Is(err, storage.ErrNotFound) {
+		t.Fatalf("expired request survived the next authorize: err = %v", err)
+	}
 }
 
 // TestAuthorizeRateLimitReturns429WithoutRedirect: past the per-IP budget an

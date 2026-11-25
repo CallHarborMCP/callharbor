@@ -139,6 +139,24 @@ func (s *Store) CountMetadataOAuthClients(ctx context.Context) (int, error) {
 	return n, err
 }
 
+// PurgeExpiredOAuthAuth deletes up to limit expired codes, then up to limit
+// expired authorization requests that no remaining code references. Codes go
+// first because oauth_codes references oauth_auth_requests with ON DELETE
+// RESTRICT. Tokens and grants are not touched.
+func (s *Store) PurgeExpiredOAuthAuth(ctx context.Context, now string, limit int) error {
+	return s.inTx(ctx, func(tx *sql.Tx) error {
+		if _, err := tx.ExecContext(ctx, `DELETE FROM oauth_codes WHERE code_hash IN (
+			SELECT code_hash FROM oauth_codes WHERE expires_at < ? LIMIT ?)`, now, limit); err != nil {
+			return err
+		}
+		_, err := tx.ExecContext(ctx, `DELETE FROM oauth_auth_requests WHERE id IN (
+			SELECT r.id FROM oauth_auth_requests r
+			WHERE r.expires_at < ? AND NOT EXISTS (SELECT 1 FROM oauth_codes c WHERE c.auth_request_id = r.id)
+			LIMIT ?)`, now, limit)
+		return err
+	})
+}
+
 func (s *Store) InsertOAuthAuthRequest(ctx context.Context, r OAuthAuthRequest) error {
 	_, err := s.db.ExecContext(ctx, `INSERT INTO oauth_auth_requests
 		(id, client_id, redirect_uri, state, scopes, resource, code_challenge, nonce, created_at, expires_at)
