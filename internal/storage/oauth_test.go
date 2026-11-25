@@ -43,12 +43,18 @@ func seedApprovedGrant(t *testing.T, s *Store, reqID, grantID, codeHash string) 
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.DecideOAuthAuthRequest(ctx, reqID, "alice", oauthNow); err != nil {
-		t.Fatal(err)
-	}
 	grant := OAuthGrant{ID: grantID, UserID: "alice", ClientID: "https://client.example/meta.json", Resource: "https://cb.example/mcp", Scopes: "mcp:read mcp:call", CreatedAt: oauthNow}
 	code := OAuthCode{CodeHash: codeHash, GrantID: grantID, AuthRequestID: reqID, ClientID: grant.ClientID, RedirectURI: "https://client.example/cb", CodeChallenge: testChallenge, CreatedAt: oauthNow, ExpiresAt: oauthLater}
-	if err := s.ApproveOAuthRequest(ctx, reqID, "alice", grant, code, oauthNow, AuditEvent{OccurredAt: oauthNow, Action: "oauth.consent", ResourceType: "oauth_grant", Outcome: "success", DetailJSON: "{}"}); err != nil {
+	if err := s.DecideAndApproveOAuthRequest(ctx, reqID, "alice", grant, code, oauthNow, AuditEvent{OccurredAt: oauthNow, Action: "oauth.consent", ResourceType: "oauth_grant", Outcome: "success", DetailJSON: "{}"}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// issueAccessToken redeems a seeded code for an access token, the production
+// path for issuing tokens, so the tests do not depend on a second write path.
+func issueAccessToken(t *testing.T, s *Store, codeHash string, access OAuthToken) {
+	t.Helper()
+	if err := s.RedeemOAuthCode(context.Background(), codeHash, oauthNow, access, nil); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -60,8 +66,9 @@ func TestOAuthCodeConsumedExactlyOnce(t *testing.T) {
 
 	const racers = 8
 	results := make(chan error, racers)
+	access := OAuthToken{TokenHash: hex64('d'), GrantID: "grant1", UserID: "alice", ClientID: "https://client.example/meta.json", Audience: "https://cb.example/mcp", Scopes: "mcp:read", CreatedAt: oauthNow, ExpiresAt: oauthLater}
 	for i := 0; i < racers; i++ {
-		go func() { results <- s.ConsumeOAuthCode(ctx, hex64('a'), oauthNow) }()
+		go func() { results <- s.RedeemOAuthCode(ctx, hex64('a'), oauthNow, access, nil) }()
 	}
 	wins := 0
 	for i := 0; i < racers; i++ {
@@ -83,9 +90,7 @@ func TestDeactivationRevokesOAuthGrantsAtomically(t *testing.T) {
 	ctx := context.Background()
 	s := openOAuthFixture(t)
 	seedApprovedGrant(t, s, "req2", "grant2", hex64('b'))
-	if err := s.IssueOAuthTokens(ctx, OAuthToken{TokenHash: hex64('c'), GrantID: "grant2", UserID: "alice", ClientID: "https://client.example/meta.json", Audience: "https://cb.example/mcp", Scopes: "mcp:read", CreatedAt: oauthNow, ExpiresAt: oauthLater}, nil, oauthNow); err != nil {
-		t.Fatal(err)
-	}
+	issueAccessToken(t, s, hex64('b'), OAuthToken{TokenHash: hex64('c'), GrantID: "grant2", UserID: "alice", ClientID: "https://client.example/meta.json", Audience: "https://cb.example/mcp", Scopes: "mcp:read", CreatedAt: oauthNow, ExpiresAt: oauthLater})
 
 	inactive := false
 	if err := s.UpdateUser(ctx, "alice", nil, &inactive, oauthNow, AuditEvent{OccurredAt: oauthNow, Action: "user.update", ResourceType: "user", Outcome: "success", DetailJSON: "{}"}); err != nil {
@@ -194,9 +199,7 @@ func TestPasswordResetRevokesOAuthGrants(t *testing.T) {
 	ctx := context.Background()
 	s := openOAuthFixture(t)
 	seedApprovedGrant(t, s, "req-pw", "grant-pw", hex64('f'))
-	if err := s.IssueOAuthTokens(ctx, OAuthToken{TokenHash: hex64('a'), GrantID: "grant-pw", UserID: "alice", ClientID: "https://client.example/meta.json", Audience: "https://cb.example/mcp", Scopes: "mcp:read", CreatedAt: oauthNow, ExpiresAt: oauthLater}, nil, oauthNow); err != nil {
-		t.Fatal(err)
-	}
+	issueAccessToken(t, s, hex64('f'), OAuthToken{TokenHash: hex64('a'), GrantID: "grant-pw", UserID: "alice", ClientID: "https://client.example/meta.json", Audience: "https://cb.example/mcp", Scopes: "mcp:read", CreatedAt: oauthNow, ExpiresAt: oauthLater})
 
 	if err := s.SetPasswordHash(ctx, "alice", "new-hash", oauthLater, AuditEvent{OccurredAt: oauthLater, Action: "user.password_reset", ResourceType: "user", Outcome: "success", DetailJSON: "{}"}); err != nil {
 		t.Fatal(err)

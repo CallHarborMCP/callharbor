@@ -36,6 +36,8 @@ func (s *Server) handleRevoke(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := s.revokeToken(r.Context(), req, clientID); err != nil {
+		// Log the failure without the token or client-supplied values.
+		s.logger.Error("oauth revoke: internal failure", "error", err)
 		writeNoStore(w, http.StatusInternalServerError, oidc.ErrServerError())
 		return
 	}

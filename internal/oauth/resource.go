@@ -111,6 +111,8 @@ func (s *Server) authenticateAccessToken(ctx context.Context, raw string) (Princ
 		if errors.Is(err, storage.ErrNotFound) {
 			return Principal{}, invalid, "invalid_token"
 		}
+		// The token is a credential: log the failure, never the presented value.
+		s.logger.Error("oauth resource: load access token failed", "error", err)
 		return Principal{}, http.StatusInternalServerError, "server_error"
 	}
 	now := s.clock()

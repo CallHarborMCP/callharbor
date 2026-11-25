@@ -219,8 +219,7 @@ func TestDecisionIsSingleUse(t *testing.T) {
 	id := location(t, get(t, f.authorizeURL(nil))).Query().Get("request")
 	f.consentFor(id, true)
 	// The second decision must not produce a second code.
-	err := f.store.DecideOAuthAuthRequest(f.ctx, id, f.userID, formatTime(f.clock.Now()))
-	if err == nil {
+	if _, err := f.srv.Decide(f.ctx, id, f.userID, true); err == nil {
 		t.Fatal("request was decided twice")
 	}
 }
@@ -683,5 +682,67 @@ func TestReplayRevocationFailureIsLoggedWithoutTokens(t *testing.T) {
 	}
 	if strings.Contains(logs.String(), original) {
 		t.Fatalf("log leaked a refresh token: %q", logs.String())
+	}
+}
+
+// tokenLookupFailer fails access-token lookups, to exercise the resource 500
+// path. Every other call goes to the real store.
+type tokenLookupFailer struct {
+	*storage.Store
+}
+
+func (r tokenLookupFailer) GetOAuthAccessToken(context.Context, string) (storage.OAuthToken, error) {
+	return storage.OAuthToken{}, errors.New("disk on fire")
+}
+
+// TestResourceStoreFailureIsLoggedWithoutToken: a storage failure while
+// checking a bearer token answers 500 and is logged, and the log never carries
+// the presented token.
+func TestResourceStoreFailureIsLoggedWithoutToken(t *testing.T) {
+	f := newFixture(t)
+	token, _ := f.bearerFixture(t)
+	var logs bytes.Buffer
+	f.srv = newServer(f.cfg, tokenLookupFailer{f.store}, registeredResolver{f.store}, f.clock.Now, slog.New(slog.NewTextHandler(&logs, nil)), registerGlobalCap)
+	rec, _, _ := f.guarded(t, bearerReq(token), ScopeRead)
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500", rec.Code)
+	}
+	if !strings.Contains(logs.String(), "load access token failed") {
+		t.Fatalf("storage failure not logged: %q", logs.String())
+	}
+	if strings.Contains(logs.String(), token) {
+		t.Fatal("log carries the presented bearer token")
+	}
+}
+
+// revokeLookupFailer fails token revocation, to exercise the revoke 500 path.
+type revokeLookupFailer struct {
+	*storage.Store
+}
+
+func (r revokeLookupFailer) RevokeOAuthTokenByHash(context.Context, string, string) (bool, error) {
+	return false, errors.New("disk on fire")
+}
+
+// TestRevokeStoreFailureIsLoggedWithoutToken: a storage failure during
+// revocation answers 500 and is logged, and the log never carries the token.
+func TestRevokeStoreFailureIsLoggedWithoutToken(t *testing.T) {
+	f := newFixture(t)
+	token, _ := f.bearerFixture(t)
+	var logs bytes.Buffer
+	f.serve(newServer(f.cfg, revokeLookupFailer{f.store}, registeredResolver{f.store}, f.clock.Now, slog.New(slog.NewTextHandler(&logs, nil)), registerGlobalCap))
+	resp, err := http.PostForm(f.http.URL+"/oauth/revoke", url.Values{"token": {token}, "client_id": {testClientID}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500", resp.StatusCode)
+	}
+	if !strings.Contains(logs.String(), "revoke: internal failure") {
+		t.Fatalf("revoke failure not logged: %q", logs.String())
+	}
+	if strings.Contains(logs.String(), token) {
+		t.Fatal("log carries the presented token")
 	}
 }

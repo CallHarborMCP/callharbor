@@ -204,44 +204,6 @@ func (s *Store) GetOAuthAuthRequest(ctx context.Context, id string) (OAuthAuthRe
 	return r, nil
 }
 
-// DecideOAuthAuthRequest atomically binds a pending, unexpired request to a
-// user and records the decision. Only one decision can succeed.
-func (s *Store) DecideOAuthAuthRequest(ctx context.Context, id, userID, now string) error {
-	res, err := s.db.ExecContext(ctx, `UPDATE oauth_auth_requests SET user_id = ?, decided_at = ?
-		WHERE id = ? AND decided_at IS NULL AND consumed_at IS NULL AND expires_at > ?`, userID, now, id, now)
-	if err != nil {
-		return err
-	}
-	if n, _ := res.RowsAffected(); n == 0 {
-		return ErrOAuthRequestNotDecidable
-	}
-	return nil
-}
-
-// ApproveOAuthRequest issues the grant, the code and the audit event in one
-// transaction. The request must be decided and unexpired; it is marked
-// consumed so it can only ever produce one code.
-func (s *Store) ApproveOAuthRequest(ctx context.Context, requestID, userID string, grant OAuthGrant, code OAuthCode, now string, audit AuditEvent) error {
-	return s.inTx(ctx, func(tx *sql.Tx) error {
-		res, err := tx.ExecContext(ctx, `UPDATE oauth_auth_requests SET consumed_at = ?
-			WHERE id = ? AND user_id = ? AND decided_at IS NOT NULL AND consumed_at IS NULL AND expires_at > ?`,
-			now, requestID, userID, now)
-		if err != nil {
-			return err
-		}
-		if n, _ := res.RowsAffected(); n == 0 {
-			return ErrOAuthRequestNotDecidable
-		}
-		if err := insertOAuthGrant(ctx, tx, grant); err != nil {
-			return err
-		}
-		if err := insertOAuthCode(ctx, tx, code); err != nil {
-			return err
-		}
-		return insertAudit(ctx, tx, audit)
-	})
-}
-
 // DecideAndApproveOAuthRequest records an approval in one transaction: the
 // request is decided and consumed, the grant, code and audit event are
 // inserted. The user must be active at the same moment. A failure at any step
@@ -307,37 +269,6 @@ func (s *Store) GetOAuthCode(ctx context.Context, codeHash string) (OAuthCode, e
 		&c.CodeHash, &c.GrantID, &c.AuthRequestID, &c.ClientID, &c.RedirectURI, &c.CodeChallenge, &c.ExpiresAt, &consumed)
 	c.ConsumedAt = consumed.String
 	return c, notFound(err)
-}
-
-// ConsumeOAuthCode marks a code consumed exactly once. A second caller gets
-// ErrOAuthCodeConsumed, so concurrent exchanges have a single winner.
-func (s *Store) ConsumeOAuthCode(ctx context.Context, codeHash, now string) error {
-	res, err := s.db.ExecContext(ctx, `UPDATE oauth_codes SET consumed_at = ?
-		WHERE code_hash = ? AND consumed_at IS NULL AND expires_at > ?`, now, codeHash, now)
-	if err != nil {
-		return err
-	}
-	if n, _ := res.RowsAffected(); n == 0 {
-		return ErrOAuthCodeConsumed
-	}
-	return nil
-}
-
-// IssueOAuthTokens writes an access token and, when refresh is non-empty, a
-// refresh token in one transaction, updating the grant's last-used time.
-func (s *Store) IssueOAuthTokens(ctx context.Context, access OAuthToken, refresh *OAuthToken, now string) error {
-	return s.inTx(ctx, func(tx *sql.Tx) error {
-		if err := insertOAuthAccess(ctx, tx, access); err != nil {
-			return err
-		}
-		if refresh != nil {
-			if err := insertOAuthRefresh(ctx, tx, *refresh); err != nil {
-				return err
-			}
-		}
-		_, err := tx.ExecContext(ctx, "UPDATE oauth_grants SET last_used_at = ? WHERE id = ?", now, access.GrantID)
-		return err
-	})
 }
 
 // RedeemOAuthCode consumes a code and writes its tokens in one transaction. A

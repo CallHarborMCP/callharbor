@@ -95,8 +95,6 @@ type Store interface {
 	InsertOAuthAuthRequest(ctx context.Context, r storage.OAuthAuthRequest) error
 	PurgeExpiredOAuthAuth(ctx context.Context, now string, limit int) error
 	GetOAuthAuthRequest(ctx context.Context, id string) (storage.OAuthAuthRequest, error)
-	DecideOAuthAuthRequest(ctx context.Context, id, userID, now string) error
-	ApproveOAuthRequest(ctx context.Context, requestID, userID string, grant storage.OAuthGrant, code storage.OAuthCode, now string, audit storage.AuditEvent) error
 	DecideAndApproveOAuthRequest(ctx context.Context, requestID, userID string, grant storage.OAuthGrant, code storage.OAuthCode, now string, audit storage.AuditEvent) error
 	DenyOAuthRequest(ctx context.Context, requestID, userID, now string, audit storage.AuditEvent) error
 	GetOAuthCode(ctx context.Context, codeHash string) (storage.OAuthCode, error)
