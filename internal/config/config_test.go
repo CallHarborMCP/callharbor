@@ -168,3 +168,71 @@ func TestLoadPublicURLNormalizesHostAndDefaultPort(t *testing.T) {
 		}
 	}
 }
+
+func TestLoadTrustedProxiesDefaultsToNone(t *testing.T) {
+	cfg, err := Load(env(nil))
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if len(cfg.TrustedProxies) != 0 {
+		t.Fatalf("TrustedProxies = %v, want none", cfg.TrustedProxies)
+	}
+}
+
+func TestLoadTrustedProxiesParsesPrefixesAndAddresses(t *testing.T) {
+	cfg, err := Load(env(map[string]string{
+		EnvTrustedProxies: " 10.0.0.0/8 , 192.0.2.7,2001:db8::/32,  ::1 ",
+	}))
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	want := []string{"10.0.0.0/8", "192.0.2.7/32", "2001:db8::/32", "::1/128"}
+	if len(cfg.TrustedProxies) != len(want) {
+		t.Fatalf("TrustedProxies = %v, want %v", cfg.TrustedProxies, want)
+	}
+	for i, p := range cfg.TrustedProxies {
+		if p.String() != want[i] {
+			t.Errorf("TrustedProxies[%d] = %s, want %s", i, p, want[i])
+		}
+	}
+}
+
+// TestLoadTrustedProxiesUnmapsIPv4MappedEntries: peers are compared in their
+// IPv4 form, so a mapped entry must be stored in that form too.
+func TestLoadTrustedProxiesUnmapsIPv4MappedEntries(t *testing.T) {
+	cfg, err := Load(env(map[string]string{EnvTrustedProxies: "::ffff:10.1.2.3, ::ffff:172.16.0.0/108"}))
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if cfg.TrustedProxies[0].String() != "10.1.2.3/32" {
+		t.Errorf("single mapped address = %s, want 10.1.2.3/32", cfg.TrustedProxies[0])
+	}
+	if cfg.TrustedProxies[1].String() != "172.16.0.0/12" {
+		t.Errorf("mapped prefix = %s, want 172.16.0.0/12", cfg.TrustedProxies[1])
+	}
+}
+
+func TestLoadRejectsInvalidTrustedProxies(t *testing.T) {
+	invalid := []string{
+		"10.0.0.0/33",
+		"10.0.0.1/",
+		"not-an-ip",
+		"10.0.0.256",
+		"fe80::1%eth0",
+		"fe80::/64%eth0",
+		"10.0.0.0/8,",
+		",10.0.0.0/8",
+		"10.0.0.0/8,,192.0.2.1",
+		"10.0.0.0/8 192.0.2.1",
+	}
+	for _, in := range invalid {
+		_, err := Load(env(map[string]string{EnvTrustedProxies: in}))
+		if err == nil {
+			t.Errorf("Load(%q) error = nil, want rejection", in)
+			continue
+		}
+		if !strings.Contains(err.Error(), EnvTrustedProxies) {
+			t.Errorf("Load(%q) error %q does not name %s", in, err, EnvTrustedProxies)
+		}
+	}
+}

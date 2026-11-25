@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
+	"net/netip"
 	"net/url"
 	"path/filepath"
 	"strconv"
@@ -21,6 +22,10 @@ const (
 	// example https://callharbor.example.com. It is the OAuth issuer and the
 	// MCP resource base. When unset, OAuth and MCP routes are not mounted.
 	EnvPublicURL = "CALLHARBOR_PUBLIC_URL"
+	// EnvTrustedProxies lists the peers whose X-Forwarded-For header is
+	// believed when rate limits pick a client address. Entries are IP addresses
+	// or CIDR prefixes separated by commas. Unset trusts no proxy.
+	EnvTrustedProxies = "CALLHARBOR_TRUSTED_PROXIES"
 
 	defaultListenAddr      = ":8080"
 	defaultDataDir         = "/data"
@@ -36,6 +41,9 @@ type Config struct {
 	// PublicURL is the normalized origin (scheme://host[:port], no trailing
 	// slash). Empty means OAuth/MCP routes are disabled.
 	PublicURL string
+	// TrustedProxies are the peer prefixes whose X-Forwarded-For entries are
+	// used to find the client for rate limiting. Empty trusts no peer.
+	TrustedProxies []netip.Prefix
 }
 
 func Load(getenv func(string) string) (Config, error) {
@@ -85,10 +93,67 @@ func Load(getenv func(string) string) (Config, error) {
 		}
 	}
 
+	if raw := strings.TrimSpace(getenv(EnvTrustedProxies)); raw != "" {
+		prefixes, err := parseTrustedProxies(raw)
+		if err != nil {
+			errs = append(errs, fmt.Errorf("%s: %w", EnvTrustedProxies, err))
+		} else {
+			cfg.TrustedProxies = prefixes
+		}
+	}
+
 	if err := errors.Join(errs...); err != nil {
 		return Config{}, fmt.Errorf("invalid configuration: %w", err)
 	}
 	return cfg, nil
+}
+
+// parseTrustedProxies parses comma-separated IP addresses and CIDR prefixes.
+// Whitespace around each entry is ignored, but an empty entry is an error so a
+// stray comma cannot pass silently. A zoned address is refused, because a zone
+// names an interface on one host and cannot identify a peer.
+func parseTrustedProxies(raw string) ([]netip.Prefix, error) {
+	var out []netip.Prefix
+	for _, entry := range strings.Split(raw, ",") {
+		entry = strings.TrimSpace(entry)
+		if entry == "" {
+			return nil, errors.New("entries must be IP addresses or CIDR prefixes separated by commas, with no empty entry")
+		}
+		if strings.Contains(entry, "%") {
+			return nil, fmt.Errorf("zoned address %q is not allowed", entry)
+		}
+		p, err := parseTrustedEntry(entry)
+		if err != nil {
+			return nil, fmt.Errorf("%q must be an IP address or CIDR prefix", entry)
+		}
+		out = append(out, p)
+	}
+	return out, nil
+}
+
+func parseTrustedEntry(entry string) (netip.Prefix, error) {
+	if strings.Contains(entry, "/") {
+		p, err := netip.ParsePrefix(entry)
+		if err != nil {
+			return netip.Prefix{}, err
+		}
+		return normalizePrefix(p), nil
+	}
+	addr, err := netip.ParseAddr(entry)
+	if err != nil {
+		return netip.Prefix{}, err
+	}
+	return normalizePrefix(netip.PrefixFrom(addr, addr.BitLen())), nil
+}
+
+// normalizePrefix rewrites an IPv4-mapped IPv6 prefix in IPv4 form. Peers are
+// compared unmapped, so ::ffff:10.0.0.0/104 must become 10.0.0.0/8 to match.
+func normalizePrefix(p netip.Prefix) netip.Prefix {
+	p = p.Masked()
+	if a := p.Addr(); a.Is4In6() && p.Bits() >= 96 {
+		return netip.PrefixFrom(a.Unmap(), p.Bits()-96).Masked()
+	}
+	return p
 }
 
 // parsePublicURL accepts an absolute origin. https is required except for
