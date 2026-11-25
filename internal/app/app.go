@@ -11,14 +11,18 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"runtime/debug"
 	"time"
 
 	"github.com/CallHarborMCP/callharbor/internal/aiprofile"
+	"github.com/CallHarborMCP/callharbor/internal/api"
 	"github.com/CallHarborMCP/callharbor/internal/config"
 	"github.com/CallHarborMCP/callharbor/internal/identity"
+	"github.com/CallHarborMCP/callharbor/internal/mcp"
 	"github.com/CallHarborMCP/callharbor/internal/oauth"
 	"github.com/CallHarborMCP/callharbor/internal/secrets"
 	"github.com/CallHarborMCP/callharbor/internal/server"
+	"github.com/CallHarborMCP/callharbor/internal/service"
 	"github.com/CallHarborMCP/callharbor/internal/storage"
 	"github.com/CallHarborMCP/callharbor/web"
 )
@@ -75,6 +79,16 @@ func sessionUser(check func(http.ResponseWriter, *http.Request) (*identity.Princ
 	}
 }
 
+// buildVersion reports the module version from build info, or "dev" when the
+// binary was built without version metadata.
+func buildVersion() string {
+	info, ok := debug.ReadBuildInfo()
+	if !ok || info.Main.Version == "" || info.Main.Version == "(devel)" {
+		return "dev"
+	}
+	return info.Main.Version
+}
+
 func newSecretID() string {
 	var b [16]byte
 	if _, err := rand.Read(b[:]); err != nil {
@@ -126,12 +140,16 @@ func Run(ctx context.Context, cfg config.Config, logger *slog.Logger, ln net.Lis
 	identityHandler := identity.NewHandler(identitySvc)
 	profiles := aiprofile.NewHandler(identityHandler, store, time.Now)
 	secretsAPI := secrets.NewHandler(identityHandler, secretSvc, store)
-	routes := []func(*http.ServeMux){identityHandler.Register, profiles.Register, secretsAPI.Register}
+	svc := service.New(store)
+	restV1 := api.NewHandler(identityHandler, svc, logger)
+	routes := []func(*http.ServeMux){identityHandler.Register, profiles.Register, secretsAPI.Register, restV1.Register}
 	if cfg.PublicURL != "" {
 		authz := oauth.NewServer(oauth.Config{PublicURL: cfg.PublicURL, TrustedProxies: cfg.TrustedProxies}, store,
 			oauth.NewClientResolver(store, time.Now), time.Now, logger)
+		mcpHandler := mcp.New(svc, buildVersion(), logger)
 		routes = append(routes, authz.Register, func(mux *http.ServeMux) {
 			authz.RegisterConsentAPI(mux, sessionUser(identityHandler.Authenticate), sessionUser(identityHandler.AuthenticateMutating))
+			authz.RegisterMCP(mux, mcpHandler.Wrap)
 		})
 	} else {
 		logger.Info("OAuth and MCP are disabled until CALLHARBOR_PUBLIC_URL is set")

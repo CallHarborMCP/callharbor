@@ -271,14 +271,23 @@ func (h *Handler) AuthenticateMutating(w http.ResponseWriter, r *http.Request) (
 	return h.authenticateMutating(w, r)
 }
 
-func (h *Handler) authenticate(w http.ResponseWriter, r *http.Request) (*Principal, bool) {
+// ResolveSession returns the signed-in principal for r without writing a
+// response. ok is false when the session cookie is missing or not valid.
+func (h *Handler) ResolveSession(r *http.Request) (*Principal, bool) {
 	c, err := r.Cookie(SessionCookieName)
 	if err != nil {
-		writeError(w, http.StatusUnauthorized, "unauthenticated")
 		return nil, false
 	}
 	p, err := h.svc.Authenticate(r.Context(), c.Value)
 	if err != nil {
+		return nil, false
+	}
+	return p, true
+}
+
+func (h *Handler) authenticate(w http.ResponseWriter, r *http.Request) (*Principal, bool) {
+	p, ok := h.ResolveSession(r)
+	if !ok {
 		writeError(w, http.StatusUnauthorized, "unauthenticated")
 		return nil, false
 	}

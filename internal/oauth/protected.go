@@ -27,18 +27,3 @@ func (s *Server) handleProtectedResourceMetadata(w http.ResponseWriter, _ *http.
 		ResourceName:           "CallHarbor",
 	})
 }
-
-// handleMCPPlaceholder answers POST and GET /mcp. Authorization runs before
-// this handler, so a valid token reaches it and receives this honest answer.
-// Issue #67 replaces this handler with the MCP transport. Never make it return
-// success before that transport exists.
-func (s *Server) handleMCPPlaceholder(w http.ResponseWriter, _ *http.Request) {
-	writeNoStore(w, http.StatusNotImplemented, map[string]any{
-		"jsonrpc": "2.0",
-		"id":      nil,
-		"error": map[string]any{
-			"code":    -32601,
-			"message": "MCP transport is not available yet",
-		},
-	})
-}

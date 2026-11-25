@@ -191,12 +191,16 @@ func (e *e2eEnv) postForm(target string, form url.Values) (int, http.Header, map
 	return status, hdr, decodeObject(e.t, body)
 }
 
-// mcpWith sends one request to /mcp with a bearer token.
+// mcpWith sends one tools/list request to /mcp with a bearer token. It sends
+// the Accept header the Streamable HTTP spec requires, so the SDK processes
+// the request and authorization decides the outcome.
 func (e *e2eEnv) mcpWith(token string) (int, http.Header, []byte) {
 	h := http.Header{}
 	h.Set("Authorization", "Bearer "+token)
+	h.Set("Accept", "application/json, text/event-stream")
+	h.Set("Mcp-Protocol-Version", "2025-11-25")
 	return sendJSON(e.t, e.client, http.MethodPost, e.base+e2eMCPPath,
-		map[string]string{"jsonrpc": "2.0", "id": "1", "method": "ping"}, h)
+		map[string]any{"jsonrpc": "2.0", "id": 1, "method": "tools/list"}, h)
 }
 
 // grantFor returns the caller's live grant ID for clientID, or "".

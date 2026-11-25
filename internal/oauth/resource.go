@@ -19,10 +19,11 @@ const requiredScopesHeader = "mcp:read mcp:call"
 
 // Principal is the authenticated caller of a protected resource.
 type Principal struct {
-	UserID   string
-	ClientID string
-	Scopes   []string
-	GrantID  string
+	UserID    string
+	ClientID  string
+	Scopes    []string
+	GrantID   string
+	ExpiresAt time.Time
 }
 
 type principalKey struct{}
@@ -131,10 +132,11 @@ func (s *Server) authenticateAccessToken(ctx context.Context, raw string) (Princ
 	}
 	s.touchGrant(ctx, row.GrantID, now)
 	return Principal{
-		UserID:   row.UserID,
-		ClientID: row.ClientID,
-		Scopes:   splitScopes(row.Scopes),
-		GrantID:  row.GrantID,
+		UserID:    row.UserID,
+		ClientID:  row.ClientID,
+		Scopes:    splitScopes(row.Scopes),
+		GrantID:   row.GrantID,
+		ExpiresAt: expires,
 	}, 0, ""
 }
 

@@ -22,8 +22,8 @@ func TestOAuthE2EInactiveUserWithLiveGrantIsRefusedAtMCP(t *testing.T) {
 	redirect := callbackURL(t)
 	cid := e.register(redirect)
 	tok := e.grant(alice, cid, redirect, "mcp:read", "mcp:call")
-	if status, _, _ := e.mcpWith(tok.AccessToken); status != http.StatusNotImplemented {
-		t.Fatalf("/mcp before deactivation = %d, want 501", status)
+	if status, _, _ := e.mcpWith(tok.AccessToken); status != http.StatusOK {
+		t.Fatalf("/mcp before deactivation = %d, want 200", status)
 	}
 
 	uid := e.userID(alice)

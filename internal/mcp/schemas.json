@@ -1,0 +1,374 @@
+{
+  "get_call": {
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "call_id": {
+          "maxLength": 64,
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "call_id"
+      ],
+      "type": "object"
+    },
+    "outputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "ai_profile_id": {
+          "type": "string"
+        },
+        "call_id": {
+          "type": "string"
+        },
+        "created_at": {
+          "format": "date-time",
+          "type": "string"
+        },
+        "details": {
+          "additionalProperties": false,
+          "properties": {
+            "max_duration_seconds": {
+              "type": "integer"
+            },
+            "outcome_reason_code": {
+              "type": "string"
+            },
+            "record_effective": {
+              "type": "boolean"
+            },
+            "record_requested": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "max_duration_seconds",
+            "record_requested",
+            "record_effective"
+          ],
+          "type": "object"
+        },
+        "ended_at": {
+          "format": "date-time",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "recording_available": {
+          "type": "boolean"
+        },
+        "task_outcome": {
+          "enum": [
+            "success",
+            "partial",
+            "failed",
+            "unknown",
+            null
+          ],
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "technical_status": {
+          "enum": [
+            "queued",
+            "initiating",
+            "ringing",
+            "active",
+            "ending",
+            "ended",
+            "failed"
+          ],
+          "type": "string"
+        },
+        "telephony_profile_id": {
+          "type": "string"
+        },
+        "to_number": {
+          "type": "string"
+        },
+        "transcript_available": {
+          "type": "boolean"
+        },
+        "updated_at": {
+          "format": "date-time",
+          "type": "string"
+        }
+      },
+      "required": [
+        "call_id",
+        "telephony_profile_id",
+        "ai_profile_id",
+        "to_number",
+        "technical_status",
+        "task_outcome",
+        "details",
+        "transcript_available",
+        "recording_available",
+        "created_at",
+        "updated_at",
+        "ended_at"
+      ],
+      "type": "object"
+    }
+  },
+  "get_profiles": {
+    "inputSchema": {
+      "additionalProperties": false,
+      "type": "object"
+    },
+    "outputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "ai_profiles": {
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "model": {
+                "type": "string"
+              },
+              "name": {
+                "type": "string"
+              },
+              "primary_transport": {
+                "enum": [
+                  "websocket"
+                ],
+                "type": "string"
+              },
+              "protocol": {
+                "enum": [
+                  "realtime_ws",
+                  "live_ws"
+                ],
+                "type": "string"
+              },
+              "voice": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "id",
+              "name",
+              "protocol",
+              "primary_transport",
+              "model",
+              "voice"
+            ],
+            "type": "object"
+          },
+          "type": "array"
+        },
+        "telephony_profiles": {
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "caller_number": {
+                "type": "string"
+              },
+              "connectivity_status": {
+                "enum": [
+                  "unknown"
+                ],
+                "type": "string"
+              },
+              "id": {
+                "type": "string"
+              },
+              "name": {
+                "type": "string"
+              },
+              "provider": {
+                "enum": [
+                  "telnyx"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "id",
+              "name",
+              "provider",
+              "caller_number",
+              "connectivity_status"
+            ],
+            "type": "object"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "ai_profiles",
+        "telephony_profiles"
+      ],
+      "type": "object"
+    }
+  },
+  "list_calls": {
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "cursor": {
+          "maxLength": 512,
+          "type": "string"
+        },
+        "filters": {
+          "additionalProperties": false,
+          "properties": {
+            "status": {
+              "enum": [
+                "queued",
+                "initiating",
+                "ringing",
+                "active",
+                "ending",
+                "ended",
+                "failed"
+              ],
+              "type": "string"
+            }
+          },
+          "type": "object"
+        },
+        "limit": {
+          "maximum": 100,
+          "minimum": 1,
+          "type": "integer"
+        }
+      },
+      "type": "object"
+    },
+    "outputSchema": {
+      "$defs": {
+        "call": {
+          "additionalProperties": false,
+          "properties": {
+            "ai_profile_id": {
+              "type": "string"
+            },
+            "call_id": {
+              "type": "string"
+            },
+            "created_at": {
+              "format": "date-time",
+              "type": "string"
+            },
+            "details": {
+              "$ref": "#/$defs/callDetails"
+            },
+            "ended_at": {
+              "format": "date-time",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "recording_available": {
+              "type": "boolean"
+            },
+            "task_outcome": {
+              "enum": [
+                "success",
+                "partial",
+                "failed",
+                "unknown",
+                null
+              ],
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "technical_status": {
+              "enum": [
+                "queued",
+                "initiating",
+                "ringing",
+                "active",
+                "ending",
+                "ended",
+                "failed"
+              ],
+              "type": "string"
+            },
+            "telephony_profile_id": {
+              "type": "string"
+            },
+            "to_number": {
+              "type": "string"
+            },
+            "transcript_available": {
+              "type": "boolean"
+            },
+            "updated_at": {
+              "format": "date-time",
+              "type": "string"
+            }
+          },
+          "required": [
+            "call_id",
+            "telephony_profile_id",
+            "ai_profile_id",
+            "to_number",
+            "technical_status",
+            "task_outcome",
+            "details",
+            "transcript_available",
+            "recording_available",
+            "created_at",
+            "updated_at",
+            "ended_at"
+          ],
+          "type": "object"
+        },
+        "callDetails": {
+          "additionalProperties": false,
+          "properties": {
+            "max_duration_seconds": {
+              "type": "integer"
+            },
+            "outcome_reason_code": {
+              "type": "string"
+            },
+            "record_effective": {
+              "type": "boolean"
+            },
+            "record_requested": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "max_duration_seconds",
+            "record_requested",
+            "record_effective"
+          ],
+          "type": "object"
+        }
+      },
+      "additionalProperties": false,
+      "properties": {
+        "calls": {
+          "items": {
+            "$ref": "#/$defs/call"
+          },
+          "type": "array"
+        },
+        "next_cursor": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "calls",
+        "next_cursor"
+      ],
+      "type": "object"
+    }
+  }
+}
