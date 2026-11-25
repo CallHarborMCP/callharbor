@@ -2,10 +2,14 @@ package oauth
 
 import (
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"testing/fstest"
+
+	"github.com/CallHarborMCP/callharbor/internal/server"
 )
 
 // mcpProbe is a stand-in transport. It records each request it receives and
@@ -42,6 +46,34 @@ func (f *fixture) mcpMux(p *mcpProbe) *http.ServeMux {
 	return mux
 }
 
+// TestMCPNonPOSTMethodsNeverReachTheUICatchAll mounts the real /mcp routes
+// beside the real server, with no built UI, and checks that GET, HEAD, DELETE,
+// PUT and PATCH get 405 with Allow, never the SPA's 404 or 503. Without the
+// explicit routes, "GET /" would serve them.
+func TestMCPNonPOSTMethodsNeverReachTheUICatchAll(t *testing.T) {
+	f := newFixture(t)
+	p := &mcpProbe{}
+	srv := server.New(slog.New(slog.DiscardHandler), fstest.MapFS{}, func(mux *http.ServeMux) {
+		f.srv.RegisterMCP(mux, p.wrap)
+	})
+	for _, method := range []string{http.MethodGet, http.MethodHead, http.MethodDelete, http.MethodPut, http.MethodPatch} {
+		rec := httptest.NewRecorder()
+		srv.Handler().ServeHTTP(rec, httptest.NewRequest(method, "/mcp", nil))
+		if rec.Code != http.StatusMethodNotAllowed {
+			t.Fatalf("%s /mcp with no UI built = %d, want 405", method, rec.Code)
+		}
+		if rec.Header().Get("Allow") != "POST, OPTIONS" {
+			t.Fatalf("%s /mcp Allow = %q, want POST, OPTIONS", method, rec.Header().Get("Allow"))
+		}
+		if rec.Header().Get("WWW-Authenticate") != "" {
+			t.Fatalf("%s /mcp got an auth challenge before the method check", method)
+		}
+	}
+	if p.calls != 0 {
+		t.Fatalf("a refused method reached the transport %d times", p.calls)
+	}
+}
+
 // TestMCPPreflightNeedsNoAuthAndNeverCarriesCredentials checks CORS on /mcp:
 // the preflight answers 204 without a token, the wildcard origin is set, and
 // credentials are never allowed.
@@ -53,7 +85,7 @@ func TestMCPPreflightNeedsNoAuthAndNeverCarriesCredentials(t *testing.T) {
 	req := httptest.NewRequest(http.MethodOptions, "/mcp", nil)
 	req.Header.Set("Origin", "https://client.example")
 	req.Header.Set("Access-Control-Request-Method", "POST")
-	req.Header.Set("Access-Control-Request-Headers", "authorization, content-type, mcp-protocol-version")
+	req.Header.Set("Access-Control-Request-Headers", "authorization, content-type, mcp-protocol-version, mcp-method, mcp-name")
 	rec := httptest.NewRecorder()
 	mux.ServeHTTP(rec, req)
 
@@ -68,6 +100,15 @@ func TestMCPPreflightNeedsNoAuthAndNeverCarriesCredentials(t *testing.T) {
 	}
 	if methods := rec.Header().Get("Access-Control-Allow-Methods"); methods != "POST, OPTIONS" {
 		t.Fatalf("Allow-Methods = %q, want POST, OPTIONS", methods)
+	}
+	// The request headers are listed explicitly. A wildcard would not cover
+	// Authorization, and the MCP routing headers must be named.
+	allow := rec.Header().Get("Access-Control-Allow-Headers")
+	if allow != "Authorization, Content-Type, Mcp-Protocol-Version, Mcp-Method, Mcp-Name" {
+		t.Fatalf("Allow-Headers = %q", allow)
+	}
+	if strings.Contains(allow, "*") || strings.Contains(strings.ToLower(allow), "mcp-param") {
+		t.Fatalf("Allow-Headers must not wildcard or allow Mcp-Param-*: %q", allow)
 	}
 	if p.calls != 0 {
 		t.Fatal("preflight reached the transport")

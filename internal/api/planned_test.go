@@ -74,9 +74,10 @@ func TestRoutesAndPlannedRoutesAreDisjoint(t *testing.T) {
 	}
 }
 
-// TestRegisterMountsExactlyTheRoutesTable proves Register mounts every entry
-// in Routes and nothing else, by probing each planned and available method.
-func TestRegisterMountsExactlyTheRoutesTable(t *testing.T) {
+// TestEveryAvailableRouteIsMounted probes each entry in Routes and checks it
+// is reached, not answered by the mux's own 404. It does not check that
+// nothing else is mounted; the planned-route tests cover unmounted paths.
+func TestEveryAvailableRouteIsMounted(t *testing.T) {
 	f := newFixture(t)
 	for _, r := range Routes {
 		req := httptest.NewRequest(r.Method, plannedProbe(r.Path), nil)

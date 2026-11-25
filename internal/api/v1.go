@@ -57,10 +57,15 @@ func NewHandler(auth *identity.Handler, svc *service.Service, logger *slog.Logge
 	return &Handler{auth: auth, svc: svc, logger: logger}
 }
 
-// Register mounts the implemented v1 routes on mux. Planned paths are not
-// mounted, so they answer 404. A wrong method on a mounted path answers 405 from
-// the mux itself; a catch-all cannot replace that without conflicting with the
-// application's "GET /" pattern.
+// Register mounts the implemented v1 routes on mux, and a planned-route answer
+// for each planned GET path. A planned GET is not implemented, so it gets a
+// JSON 404 not_found in the shared envelope, never the mux's plain-text 404 and
+// never the web UI. Other planned methods on paths that are not mounted fall
+// to the mux's own 404 or 405 as before; a wrong method on a mounted path is
+// 405 from the mux.
+//
+// The planned answers are derived from PlannedRoutes, so the list has one
+// source. They grant nothing: each one is the same 404 an unknown call gets.
 func (h *Handler) Register(mux *http.ServeMux) {
 	handlers := map[string]http.HandlerFunc{
 		"GET /api/v1/profiles":        h.getProfiles,
@@ -76,6 +81,28 @@ func (h *Handler) Register(mux *http.ServeMux) {
 		}
 		mux.HandleFunc(pattern, fn)
 	}
+	for _, r := range PlannedRoutes {
+		if r.Method != http.MethodGet {
+			continue
+		}
+		pattern := r.Method + " " + r.Path
+		if _, mounted := handlers[pattern]; mounted {
+			// The two lists are disjoint; this guards a future edit.
+			panic("api: planned route is also mounted: " + pattern)
+		}
+		mux.HandleFunc(pattern, h.planned)
+	}
+}
+
+// planned answers a documented but unimplemented operation. It applies the same
+// session check as the implemented routes, so an anonymous request gets 401 as
+// everywhere else on /api/v1. A signed-in request gets 404 not_found, the same
+// answer as an unknown call, with no data and no side effect.
+func (h *Handler) planned(w http.ResponseWriter, r *http.Request) {
+	if _, ok := h.actor(w, r); !ok {
+		return
+	}
+	h.fail(w, service.AsErrorWith(service.CodeNotFound, "not found"))
 }
 
 // actor resolves the session and returns the REST actor. On failure it has

@@ -135,7 +135,7 @@ func TestOpenAPIStatusEnumMatchesServiceStates(t *testing.T) {
 	for _, v := range raw {
 		got = append(got, v.(string))
 	}
-	want := []string{"active", "ending", "ended", "failed", "initiating", "queued", "ringing"}
+	want := service.CallStates()
 	sort.Strings(got)
 	sort.Strings(want)
 	if strings.Join(got, ",") != strings.Join(want, ",") {

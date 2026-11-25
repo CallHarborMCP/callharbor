@@ -3,6 +3,7 @@ package mcp
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"net"
 	"net/http"
@@ -14,6 +15,7 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/auth"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
+	"github.com/CallHarborMCP/callharbor/internal/oauth"
 	"github.com/CallHarborMCP/callharbor/internal/service"
 	"github.com/CallHarborMCP/callharbor/internal/storage"
 )
@@ -316,6 +318,39 @@ func TestToolInternalFailureLogsCauseAndNeverRendersIt(t *testing.T) {
 // TestMissingPrincipalIsServerErrorNeverOK is the N12 guard. Bearer middleware
 // that accepts a request without attaching a principal is a wiring bug. The
 // request must fail as a server error, never 200, and must be logged.
+// TestIncompletePrincipalIsLoggedWiringFault checks the verifier mapping for a
+// principal that is attached but has no user or no expiry. Both are wiring
+// faults: the result must be a logged, non-ErrInvalidToken error, which the SDK
+// turns into 500 rather than 401 or 200.
+func TestIncompletePrincipalIsLoggedWiringFault(t *testing.T) {
+	logger, buf := captureLogger()
+	good := oauth.Principal{UserID: "u-alice", Scopes: []string{"mcp:read"}, ExpiresAt: time.Now().Add(time.Hour)}
+	cases := map[string]oauth.Principal{
+		"empty user":   {UserID: "", Scopes: good.Scopes, ExpiresAt: good.ExpiresAt},
+		"zero expiry":  {UserID: good.UserID, Scopes: good.Scopes},
+		"both missing": {},
+	}
+	for name, p := range cases {
+		info, err := principalTokenInfo(logger, p, true)
+		if err == nil || info != nil {
+			t.Fatalf("%s: got info=%v err=%v, want an error and no info", name, info, err)
+		}
+		if errors.Is(err, auth.ErrInvalidToken) {
+			t.Fatalf("%s: returned ErrInvalidToken, which the SDK maps to 401", name)
+		}
+		if !errors.Is(err, errIncompletePrincipal) {
+			t.Fatalf("%s: err = %v, want errIncompletePrincipal", name, err)
+		}
+	}
+	if !strings.Contains(buf.String(), "principal is incomplete") {
+		t.Fatalf("incomplete principal was not logged: %s", buf.String())
+	}
+	info, err := principalTokenInfo(logger, good, true)
+	if err != nil || info == nil || info.UserID != good.UserID {
+		t.Fatalf("complete principal: info=%v err=%v", info, err)
+	}
+}
+
 func TestMissingPrincipalIsServerErrorNeverOK(t *testing.T) {
 	logger, buf := captureLogger()
 	h := New(service.New(fixtureStore()), "test", logger)

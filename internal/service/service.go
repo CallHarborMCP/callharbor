@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sort"
 	"time"
 
 	"github.com/CallHarborMCP/callharbor/internal/storage"
@@ -17,6 +18,17 @@ const ConnectivityUnknown = "unknown"
 var callStates = map[string]struct{}{
 	"queued": {}, "initiating": {}, "ringing": {}, "active": {},
 	"ending": {}, "ended": {}, "failed": {},
+}
+
+// CallStates returns the complete call status vocabulary, sorted, so tests and
+// schema drift checks compare against the service's own list.
+func CallStates() []string {
+	out := make([]string, 0, len(callStates))
+	for s := range callStates {
+		out = append(out, s)
+	}
+	sort.Strings(out)
+	return out
 }
 
 // Store is the owner-scoped read repository the service needs.

@@ -812,10 +812,7 @@
             }
           },
           "next_cursor": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": "string"
           }
         }
       },
@@ -835,10 +832,12 @@
           },
           "to": {
             "type": "string",
+            "minLength": 1,
             "pattern": "^\\+[1-9][0-9]{6,14}$"
           },
           "recipient": {
-            "type": "string"
+            "type": "string",
+            "minLength": 1
           },
           "language": {
             "type": "string",
@@ -846,7 +845,8 @@
             "description": "BCP 47 language tag."
           },
           "objective": {
-            "type": "string"
+            "type": "string",
+            "minLength": 1
           },
           "context": {
             "type": "string",

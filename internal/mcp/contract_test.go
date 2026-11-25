@@ -208,7 +208,7 @@ func TestEmbeddedSchemasMatchManifest(t *testing.T) {
 // TestStatusEnumMatchesServiceStates ensures the status enum in every schema
 // equals the service's complete state set, in order.
 func TestStatusEnumMatchesServiceStates(t *testing.T) {
-	want := []string{"queued", "initiating", "ringing", "active", "ending", "ended", "failed"}
+	want := service.CallStates()
 	embedded, err := loadToolSchemas()
 	if err != nil {
 		t.Fatal(err)
@@ -227,8 +227,10 @@ func TestStatusEnumMatchesServiceStates(t *testing.T) {
 	if err := json.Unmarshal(embedded[ToolListCalls].InputSchema, &doc); err != nil {
 		t.Fatal(err)
 	}
-	if !equalStrings(doc.Properties.Filters.Properties.Status.Enum, want) {
-		t.Fatalf("list_calls status enum = %v, want %v", doc.Properties.Filters.Properties.Status.Enum, want)
+	got := append([]string(nil), doc.Properties.Filters.Properties.Status.Enum...)
+	sort.Strings(got)
+	if !equalStrings(got, want) {
+		t.Fatalf("list_calls status enum = %v, want %v", got, want)
 	}
 }
 

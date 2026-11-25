@@ -25,6 +25,10 @@ const ServerName = "callharbor"
 // surfaces as a server error and is logged.
 var errMissingPrincipal = errors.New("mcp: bearer middleware did not attach a principal")
 
+// errIncompletePrincipal means a principal was attached but has no user or no
+// expiry. It is a wiring bug like errMissingPrincipal, and is never a 401.
+var errIncompletePrincipal = errors.New("mcp: bearer middleware attached an incomplete principal")
+
 // Handler is the protected MCP endpoint. Its *mcp.Server is built once in New,
 // so a bad tool schema panics at startup rather than on the first request.
 type Handler struct {
@@ -89,26 +93,37 @@ func (h *Handler) Wrap(bearer func(http.Handler) http.Handler, resourceMetadataU
 // verifyPrincipal reads the principal the OAuth middleware already validated
 // and maps it to TokenInfo. It never accepts a token itself. The expiry comes
 // from the stored grant row, which RequireBearer checked on this request.
-//
-// A request with no principal is a wiring bug: the bearer middleware must have
-// run first. It is reported as a server error and logged, not as a 401,
-// because a 401 would tell the client to re-authenticate for a server fault.
 func verifyPrincipal(ctx context.Context, logger *slog.Logger, _ string, _ *http.Request) (*auth.TokenInfo, error) {
 	p, ok := oauth.PrincipalFromContext(ctx)
+	return principalTokenInfo(logger, p, ok)
+}
+
+// principalTokenInfo maps a principal to TokenInfo. A missing principal, or one
+// without a user or an expiry, is a wiring bug: the bearer middleware must have
+// stored a complete principal before the transport runs. It is logged and
+// returned as a non-ErrInvalidToken error, so the SDK answers 500. A 401 would
+// tell the client to re-authenticate for a server fault, and a 200 would serve
+// a request with no identity.
+func principalTokenInfo(logger *slog.Logger, p oauth.Principal, ok bool) (*auth.TokenInfo, error) {
 	if !ok {
-		if logger != nil {
-			logger.Error("mcp request reached the verifier without a principal", "cause", errMissingPrincipal.Error())
-		}
+		logWiringFault(logger, "mcp request reached the verifier without a principal", errMissingPrincipal)
 		return nil, errMissingPrincipal
 	}
 	if p.UserID == "" || p.ExpiresAt.IsZero() {
-		return nil, auth.ErrInvalidToken
+		logWiringFault(logger, "mcp request principal is incomplete", errIncompletePrincipal)
+		return nil, errIncompletePrincipal
 	}
 	return &auth.TokenInfo{
 		UserID:     p.UserID,
 		Scopes:     p.Scopes,
 		Expiration: p.ExpiresAt,
 	}, nil
+}
+
+func logWiringFault(logger *slog.Logger, msg string, cause error) {
+	if logger != nil {
+		logger.Error(msg, "cause", cause.Error())
+	}
 }
 
 // actorFromRequest converts the SDK's TokenInfo into a service Actor. It is

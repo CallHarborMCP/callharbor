@@ -53,12 +53,15 @@ Each user can see and revoke connected clients under **Connected apps** in the w
 | `POST /oauth/register` | RFC 7591 dynamic client registration |
 | `POST /mcp` | Protected MCP Streamable HTTP endpoint (stateless, JSON responses, 1 MiB body limit) |
 | `OPTIONS /mcp` | CORS preflight, answered without credentials |
+| `GET /mcp`, `HEAD /mcp`, `DELETE /mcp`, `PUT /mcp`, `PATCH /mcp` | `405 Method Not Allowed` with `Allow: POST, OPTIONS`, before authentication |
 
-Metadata, token, revocation and registration endpoints send `Access-Control-Allow-Origin: *` without credentials so browser-based clients can use them. `/mcp` does the same and allows only `POST, OPTIONS` with `Authorization` and `Content-Type` request headers, and exposes only `WWW-Authenticate` to the browser. No credentials are ever allowed. No other route sends CORS headers.
+Metadata, token, revocation and registration endpoints send `Access-Control-Allow-Origin: *` without credentials so browser-based clients can use them. `/mcp` does the same and allows only `POST, OPTIONS`. Its allowed request headers are listed by name: `Authorization, Content-Type, Mcp-Protocol-Version, Mcp-Method, Mcp-Name`. It exposes only `WWW-Authenticate` to the browser. No credentials are ever allowed. No other route sends CORS headers.
+
+The request-header list is not `*`. The Fetch standard does not let a wildcard cover `Authorization`, so the bearer header must be named. `Mcp-Param-*` is not allowed because no tool in `api/mcp/tools.json` has an `x-mcp-header` annotation, so the SDK never sends it. If a tool needs it later, the prefix must be added then, with a test.
 
 ### MCP endpoint details
 
-- **Methods:** only `POST` reaches the MCP transport. `GET`, `DELETE`, `PUT` and any other method return `405 Method Not Allowed` from the router, before authentication runs. The server keeps no sessions and opens no server-sent event stream, so `GET` and `DELETE` have nothing to do.
+- **Methods:** only `POST` reaches the MCP transport. `OPTIONS` is the CORS preflight. Every other method, including `GET` and `HEAD`, returns `405 Method Not Allowed` with `Allow: POST, OPTIONS` before authentication runs, so a 405 never carries a `WWW-Authenticate` challenge. The server keeps no sessions and opens no server-sent event stream, so there is no `GET` stream to open and no session to delete. Each refused method has an explicit route. The router does not fall through to the web UI for `/mcp`, so the answer is the same whether or not the UI is built.
 - **Scope:** a token must hold `mcp:read` to use `/mcp`. A token without it gets `403` with `error="insufficient_scope"` before the MCP transport runs. Tool-level scope checks (`mcp:call`) are part of the planned operations. The broader route-level gate is tracked in #79.
 - **Body limit:** a request body over 1 MiB is refused with `413` and is never decoded or processed. The route applies the limit, and the transport enforces the same value.
 - **Tools:** the server registers only `get_profiles`, `list_calls` and `get_call`. Planned tools are not registered: `make_call`, `get_transcript`, `get_recording` and `hangup_call`. A call to one of them fails as an unknown tool. The contract, with input and output schemas, is `api/mcp/tools.json`.

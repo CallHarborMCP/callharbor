@@ -24,20 +24,59 @@ func (s *Server) Register(mux *http.ServeMux) {
 // keeps this package free of an mcp import.
 type MCPWrapper func(bearer func(http.Handler) http.Handler, resourceMetadataURL string) http.Handler
 
-// RegisterMCP mounts the protected MCP endpoint. Only POST and the CORS
-// preflight are routed. Any other method on /mcp, including GET and DELETE,
-// gets 405 from the mux, because the server is stateless and has no SSE stream
-// or session to open or close.
+// RegisterMCP mounts the protected MCP endpoint. POST and the CORS preflight
+// are routed to the transport. GET is routed only to a 405 answer, and Go's
+// mux also serves HEAD through that GET route. DELETE and other methods have
+// no route, so the mux answers 405 for them, and it is not the SPA catch-all.
+//
+// The GET answer exists because "GET /" is the web UI catch-all in
+// internal/server. Without an explicit GET /mcp route, a GET would be served
+// as a page, or as 503 when the UI is not built. The server is stateless and
+// opens no SSE stream, so a GET has nothing to return; the Streamable HTTP
+// spec requires 405 in that case.
 //
 // The transport is built by wrap, which must apply the bearer middleware this
 // package supplies, so the transport only ever sees an authenticated request.
-// Preflight OPTIONS is answered without credentials, as browsers send none.
-// The CORS origin is "*" but credentials are never allowed, so the wildcard
-// grants no ambient authority.
+// The 405 answer runs before authentication, so it needs no token. Preflight
+// OPTIONS is answered without credentials, as browsers send none. The CORS
+// origin is "*" but credentials are never allowed, so the wildcard grants no
+// ambient authority.
 func (s *Server) RegisterMCP(mux *http.ServeMux, wrap MCPWrapper) {
 	protected := limitBody(MCPBodyLimit, wrap(s.RequireBearer(ScopeRead), s.protectedResourceMetadataURL()))
 	mux.Handle("OPTIONS /mcp", corsMCP(nil))
 	mux.Handle("POST /mcp", corsMCP(protected))
+	// GET is routed to the 405 answer. Go's mux also sends HEAD to a GET
+	// pattern, so HEAD is covered by the same route.
+	mux.Handle("GET /mcp", corsMCP(mcpMethodNotAllowed()))
+	// Other methods are listed explicitly. A method-less "/mcp" pattern would
+	// conflict with the "GET /" catch-all in internal/server and panic at
+	// startup, so each method the endpoint must refuse is named here.
+	for _, method := range mcpRefusedMethods {
+		mux.Handle(method+" /mcp", corsMCP(mcpMethodNotAllowed()))
+	}
+}
+
+// mcpRefusedMethods are the methods, besides GET, that /mcp refuses with 405.
+// DELETE is included because the server keeps no session to close.
+var mcpRefusedMethods = []string{
+	http.MethodDelete,
+	http.MethodPut,
+	http.MethodPatch,
+}
+
+// mcpAllowedMethods is the Allow value for /mcp. OPTIONS is listed because it
+// is the CORS preflight the endpoint answers.
+const mcpAllowedMethods = "POST, OPTIONS"
+
+// mcpMethodNotAllowed answers 405 with the Allow header the Streamable HTTP
+// spec expects. It runs before authentication, so a refused method never gets a
+// 401 challenge.
+func mcpMethodNotAllowed() http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Allow", mcpAllowedMethods)
+		w.Header().Set("Cache-Control", "no-store")
+		w.WriteHeader(http.StatusMethodNotAllowed)
+	})
 }
 
 // MCPBodyLimit bounds one request body on /mcp. This is the only body limit on

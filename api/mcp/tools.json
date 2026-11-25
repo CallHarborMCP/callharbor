@@ -207,10 +207,10 @@
         "additionalProperties": false,
         "properties": {
           "profile_id": { "type": "string", "minLength": 1, "maxLength": 64 },
-          "to": { "type": "string", "pattern": "^\\+[1-9][0-9]{6,14}$" },
-          "recipient": { "type": "string" },
+          "to": { "type": "string", "minLength": 1, "pattern": "^\\+[1-9][0-9]{6,14}$" },
+          "recipient": { "type": "string", "minLength": 1 },
           "language": { "type": "string", "maxLength": 35, "description": "BCP 47 language tag." },
-          "objective": { "type": "string" },
+          "objective": { "type": "string", "minLength": 1 },
           "context": { "type": "string", "description": "Configurable server limit; oversized input is rejected, never truncated." },
           "instructions": { "type": "string", "description": "Configurable server limit; oversized input is rejected, never truncated." },
           "constraints": { "type": "array", "items": { "type": "string" } },
@@ -272,7 +272,7 @@
             }
           },
           "quality_flags": { "type": "array", "items": { "type": "string" } },
-          "next_cursor": { "type": ["string", "null"] }
+          "next_cursor": { "type": "string" }
         }
       }
     },

@@ -4,6 +4,21 @@ import "net/http"
 
 const corsPreflightMaxAge = "600"
 
+// corsMCPAllowHeaders is the explicit request-header list for /mcp. It is not
+// "*": the Fetch standard does not let a wildcard cover Authorization, and the
+// bearer token must be allowed. Each header is listed by name:
+//   - Authorization carries the bearer token.
+//   - Content-Type carries the JSON-RPC body.
+//   - Mcp-Protocol-Version is the negotiated protocol version.
+//   - Mcp-Method and Mcp-Name are the standard routing headers the SDK
+//     validates for protocol versions from 2026-07-28 on.
+//
+// Mcp-Param-* headers are not allowed. They are sent only for tools with an
+// x-mcp-header annotation, and no tool in api/mcp/tools.json has one. Allowing
+// the prefix would widen the list for no caller, so it is added only when a
+// tool needs it.
+const corsMCPAllowHeaders = "Authorization, Content-Type, Mcp-Protocol-Version, Mcp-Method, Mcp-Name"
+
 // corsPublic adds a wildcard origin to responses from endpoints that remote,
 // browser-hosted MCP clients call directly: the metadata documents, the token,
 // register and revoke endpoints. It never sends credentials, so the wildcard
@@ -40,7 +55,7 @@ func corsMCP(next http.Handler) http.Handler {
 			return
 		}
 		w.Header().Set("Access-Control-Allow-Methods", "POST, OPTIONS")
-		w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type, Mcp-Protocol-Version")
+		w.Header().Set("Access-Control-Allow-Headers", corsMCPAllowHeaders)
 		w.Header().Set("Access-Control-Max-Age", corsPreflightMaxAge)
 		w.Header().Add("Vary", "Access-Control-Request-Headers")
 		w.WriteHeader(http.StatusNoContent)

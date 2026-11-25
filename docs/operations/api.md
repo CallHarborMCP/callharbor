@@ -18,7 +18,12 @@ MCP and OAuth tokens are not accepted on `/api/v1`. The MCP endpoint has its own
 
 Only these operations are implemented. Other methods on these paths are not routed. Planned operations such as creating a call are not exposed by this API.
 
-Planned operations are listed in `api/openapi.json` with `x-callharbor-availability: planned`. They are never mounted. A request to a planned path returns `404`, or `405` when the same path is mounted for another method. For example, `POST /api/v1/calls` returns `405` because `GET /api/v1/calls` is mounted. These responses are not a success and do not start anything.
+Planned operations are listed in `api/openapi.json` with `x-callharbor-availability: planned`. They are never mounted as operations. Their responses are never a success and never start anything:
+
+- A planned `GET` path (the transcript, recording and recording audio paths) is answered by the API itself. A request needs a valid session, as every `/api/v1` path does. Anonymous requests get `401 unauthenticated`. A signed-in request gets `404` with the `not_found` envelope, `{"error":{"code":"not_found",...}}`. It never reaches the web UI, so the answer is the same whether or not the UI is built.
+- A planned `POST` path returns `405 Method Not Allowed` from the router, plain text and not the JSON envelope. Because the web UI's `GET /` pattern matches every path, the router reports a wrong method as 405 rather than 404. For example, `POST /api/v1/calls` returns `405` because `GET /api/v1/calls` is mounted, and `POST /api/v1/calls/{call_id}/transcript` returns `405` as well.
+
+The planned `GET` list is derived from `PlannedRoutes` in `internal/api/v1.go`, and the app tests probe every planned route with a session.
 
 ## Listing calls
 

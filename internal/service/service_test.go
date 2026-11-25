@@ -312,10 +312,13 @@ func TestListCallsRejectsInvalidInputBeforeStore(t *testing.T) {
 			t.Fatalf("%s: store was reached", name)
 		}
 	}
-	for _, status := range []string{"queued", "initiating", "ringing", "active", "ending", "ended", "failed"} {
+	for _, status := range CallStates() {
 		if _, ok := callStates[status]; !ok {
 			t.Fatalf("status %q missing from the state set", status)
 		}
+	}
+	if got := len(CallStates()); got != len(callStates) {
+		t.Fatalf("CallStates has %d entries, set has %d", got, len(callStates))
 	}
 }
 

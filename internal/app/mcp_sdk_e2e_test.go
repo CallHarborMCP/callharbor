@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/url"
 	"path/filepath"
@@ -12,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/modelcontextprotocol/go-sdk/jsonrpc"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	_ "modernc.org/sqlite"
 )
@@ -352,16 +354,26 @@ func TestMCPSDKGetProfilesOwnNonSecretOnly(t *testing.T) {
 	}
 }
 
-// TestMCPSDKPlannedToolsAreNotRegistered calls each planned operation. None is
-// registered, so each must fail, and none may report success.
+// TestMCPSDKPlannedToolsAreNotRegistered calls each planned operation. The SDK
+// must answer with its unknown-tool JSON-RPC error (code -32602, invalid
+// params, message "unknown tool"). That is the only acceptable outcome: a
+// transport or auth failure would hide a registration bug, and a result would
+// mean the tool exists.
 func TestMCPSDKPlannedToolsAreNotRegistered(t *testing.T) {
 	e, token := setupMCPData(t)
 	sess := e.sdkClient(t, token)
 
 	for _, name := range []string{"make_call", "get_transcript", "get_recording", "hangup_call"} {
 		res, err := sess.CallTool(context.Background(), &mcp.CallToolParams{Name: name, Arguments: map[string]any{"call_id": "alice-c1"}})
-		if err == nil && (res == nil || !res.IsError) {
-			t.Fatalf("planned %s reported success: %+v", name, res)
+		if res != nil {
+			t.Fatalf("planned %s returned a result: %+v", name, res)
+		}
+		var wire *jsonrpc.Error
+		if !errors.As(err, &wire) {
+			t.Fatalf("planned %s error = %v (%T), want a JSON-RPC error", name, err, err)
+		}
+		if wire.Code != jsonrpc.CodeInvalidParams || !strings.Contains(wire.Message, "unknown tool") {
+			t.Fatalf("planned %s error = code %d %q, want code %d \"unknown tool\"", name, wire.Code, wire.Message, jsonrpc.CodeInvalidParams)
 		}
 	}
 }
