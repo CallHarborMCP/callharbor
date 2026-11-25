@@ -94,6 +94,12 @@ func assertChallenge(t *testing.T, rec *httptest.ResponseRecorder, status int, e
 	if !strings.Contains(h, wantPRM) {
 		t.Fatalf("WWW-Authenticate missing resource_metadata: %q", h)
 	}
+	// Every 401 advertises the scopes an MCP client must request. The 403
+	// insufficient_scope challenge names the single missing scope instead, and
+	// its tests check that directly.
+	if status == http.StatusUnauthorized && !strings.Contains(h, `scope="`+requiredScopesHeader+`"`) {
+		t.Fatalf("401 challenge missing scope=%q: %q", requiredScopesHeader, h)
+	}
 	if errCode == "" {
 		if strings.Contains(h, "error=") {
 			t.Fatalf("no-credentials challenge carries an error: %q", h)

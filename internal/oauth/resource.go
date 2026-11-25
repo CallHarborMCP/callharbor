@@ -74,7 +74,9 @@ func (s *Server) RequireBearer(scopes ...string) func(http.Handler) http.Handler
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			tok, ok := bearerToken(r)
 			if !ok {
-				s.challenge(w, http.StatusUnauthorized, "", "")
+				// No credentials carries no error attribute, but it still advertises
+				// the scopes an MCP client must request (RFC 6750 section 3).
+				s.challenge(w, http.StatusUnauthorized, "", requiredScopesHeader)
 				return
 			}
 			p, status, errCode := s.authenticateAccessToken(r.Context(), tok)

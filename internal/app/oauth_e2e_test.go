@@ -25,6 +25,9 @@ func TestOAuthE2EUnauthenticatedChallengeAndDiscovery(t *testing.T) {
 	if strings.Contains(challenge, "error=") {
 		t.Fatalf("no-credentials challenge carries an error: %q", challenge)
 	}
+	if !strings.Contains(challenge, `scope="mcp:read mcp:call"`) {
+		t.Fatalf("no-credentials challenge missing scope: %q", challenge)
+	}
 	m := resourceMetadataRE.FindStringSubmatch(challenge)
 	if m == nil || m[1] != e.base+"/.well-known/oauth-protected-resource/mcp" {
 		t.Fatalf("resource_metadata in %q", challenge)
