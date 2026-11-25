@@ -28,6 +28,8 @@
   --ok: #1f7a4a;
   --warn: #8a5a12;
   --fail: #b42318;
+  --on-accent: #ffffff;
+  --on-fail: #ffffff;
 }
 
 :root[data-accent="teal"] { --accent: #17766b; }
@@ -71,6 +73,8 @@
   --ok: #6fd39a;
   --warn: #e8b86b;
   --fail: #ff8a80;
+  --on-accent: #101418;
+  --on-fail: #101418;
 }
 
 :root[data-theme="dark"][data-preset="harbor"] {

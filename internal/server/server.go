@@ -28,10 +28,29 @@ func New(logger *slog.Logger, assets fs.FS, routes ...func(*http.ServeMux)) *Ser
 	for _, register := range routes {
 		register(mux)
 	}
+	// /oauth/consent is a client-side route. Serve the SPA shell explicitly
+	// instead of a general fallback, so no other unknown path is rewritten.
+	mux.Handle("GET /oauth/consent", spaIndex(assets))
 	mux.Handle("GET /", staticHandler(assets))
 
 	s.handler = observability.AccessLog(logger, securityHeaders(mux))
 	return s
+}
+
+// spaIndex serves index.html for one client-side route. Without a built UI it
+// answers the same way staticHandler does.
+func spaIndex(assets fs.FS) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		body, err := fs.ReadFile(assets, "index.html")
+		if err != nil {
+			writeJSON(w, http.StatusServiceUnavailable, `{"error":"web UI not built"}`)
+			return
+		}
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.Header().Set("Cache-Control", "no-store")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(body)
+	})
 }
 
 func staticHandler(assets fs.FS) http.Handler {

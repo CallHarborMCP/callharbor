@@ -85,6 +85,17 @@ describe("Dashboard", () => {
     expect(await screen.findByText("At least one active administrator must remain.")).toBeInTheDocument();
   });
 
+  it("shows Connected apps to every role", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse(200, { grants: [] }));
+    vi.stubGlobal("fetch", fetchMock);
+    render(<Dashboard session={userSession} onSignedOut={() => {}} />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Connected apps" }));
+
+    expect(await screen.findByRole("heading", { name: "Connected apps" })).toBeInTheDocument();
+    expect(fetchMock).toHaveBeenCalledWith("/api/oauth/grants", expect.objectContaining({ method: "GET" }));
+  });
+
   it("signs out through the logout endpoint", async () => {
     const fetchMock = vi.fn().mockResolvedValue(new Response(null, { status: 204 }));
     vi.stubGlobal("fetch", fetchMock);

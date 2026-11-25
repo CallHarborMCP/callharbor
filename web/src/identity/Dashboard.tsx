@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { AIProfileForm } from "./AIProfileForm";
 import { AppearanceSettings } from "../design/AppearanceSettings";
+import { ConnectedApps } from "../oauth/ConnectedApps";
 import { UserAdmin } from "./UserAdmin";
 import { logout, type Session } from "./session";
 
@@ -9,7 +10,7 @@ export interface DashboardProps {
   readonly onSignedOut: () => void;
 }
 
-type View = "users" | "profiles" | "settings";
+type View = "users" | "profiles" | "apps" | "settings";
 
 export function Dashboard({ session, onSignedOut }: DashboardProps) {
   const isAdmin = session.user.role === "admin";
@@ -33,6 +34,7 @@ export function Dashboard({ session, onSignedOut }: DashboardProps) {
   const items: { id: View; label: string }[] = [
     ...(isAdmin ? [{ id: "users" as const, label: "Users" }] : []),
     { id: "profiles", label: "AI profiles" },
+    { id: "apps", label: "Connected apps" },
     { id: "settings", label: "Settings" },
   ];
 
@@ -81,6 +83,7 @@ export function Dashboard({ session, onSignedOut }: DashboardProps) {
             {saved ? <p role="status">{`Saved AI profile ${saved}.`}</p> : null}
           </section>
         ) : null}
+        {view === "apps" ? <ConnectedApps csrfToken={session.csrf_token} /> : null}
         {view === "settings" ? <AppearanceSettings /> : null}
       </main>
     </div>

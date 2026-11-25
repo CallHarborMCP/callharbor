@@ -47,10 +47,23 @@ var blockedPrefixes = []netip.Prefix{
 	netip.MustParsePrefix("fe80::/10"),
 	netip.MustParsePrefix("ff00::/8"),
 	netip.MustParsePrefix("2001:db8::/32"),
+	// Translation and tunnel prefixes embed an IPv4 address that may be
+	// private, so a public-looking IPv6 address can reach an internal host.
+	// NAT64 (RFC 6052, RFC 8215), 6to4 (RFC 3056), Teredo (RFC 4380).
+	netip.MustParsePrefix("64:ff9b::/96"),
+	netip.MustParsePrefix("64:ff9b:1::/48"),
+	netip.MustParsePrefix("2002::/16"),
+	netip.MustParsePrefix("2001::/32"),
 }
 
-// Allowed reports whether ip may be dialed under the policy.
+// Allowed reports whether ip may be dialed under the policy. A scoped IPv6
+// address (for example fe80::1%eth0) is refused under every policy: its zone
+// makes it unequal to the prefixes below, so it would otherwise bypass them.
+// Zone must be checked before Unmap, which discards it.
 func (p EndpointPolicy) Allowed(ip netip.Addr) bool {
+	if !ip.IsValid() || ip.Zone() != "" {
+		return false
+	}
 	ip = ip.Unmap()
 	if !ip.IsValid() {
 		return false

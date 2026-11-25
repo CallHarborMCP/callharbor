@@ -1,0 +1,63 @@
+package oauth
+
+import (
+	"encoding/json"
+	"net/http"
+
+	"github.com/zitadel/oidc/v3/pkg/oidc"
+)
+
+// Metadata is the RFC 8414 document. It embeds the library's
+// DiscoveryConfiguration and adds the RFC 9207 field that library does not
+// define.
+type Metadata struct {
+	oidc.DiscoveryConfiguration
+	// AuthorizationResponseIssParameterSupported advertises that every
+	// authorization response carries iss (RFC 9207).
+	AuthorizationResponseIssParameterSupported bool `json:"authorization_response_iss_parameter_supported"`
+}
+
+// AuthorizationServerMetadata returns the metadata document. Every field is a
+// value this server actually implements. The document intentionally omits
+// openid, id_token response types and any signing algorithms, because none
+// are supported.
+//
+// client_id_metadata_document_supported is advertised because CIMD resolution
+// is implemented. registration_endpoint is advertised because dynamic client
+// registration is served at /oauth/register.
+func (s *Server) AuthorizationServerMetadata() Metadata {
+	issuer := s.cfg.Issuer()
+	return Metadata{AuthorizationResponseIssParameterSupported: true, DiscoveryConfiguration: oidc.DiscoveryConfiguration{
+		Issuer:                            issuer,
+		AuthorizationEndpoint:             issuer + "/oauth/authorize",
+		TokenEndpoint:                     issuer + "/oauth/token",
+		RevocationEndpoint:                issuer + "/oauth/revoke",
+		RegistrationEndpoint:              issuer + "/oauth/register",
+		ClientIDMetadataDocumentSupported: true,
+		ScopesSupported:                   []string{ScopeRead, ScopeCall},
+		ResponseTypesSupported: []string{
+			string(oidc.ResponseTypeCode),
+		},
+		GrantTypesSupported: []oidc.GrantType{
+			oidc.GrantTypeCode,
+			oidc.GrantTypeRefreshToken,
+		},
+		CodeChallengeMethodsSupported: []oidc.CodeChallengeMethod{
+			oidc.CodeChallengeMethodS256,
+		},
+		TokenEndpointAuthMethodsSupported: []oidc.AuthMethod{
+			oidc.AuthMethodNone,
+		},
+		RevocationEndpointAuthMethodsSupported: []oidc.AuthMethod{
+			oidc.AuthMethodNone,
+		},
+	}}
+}
+
+// handleMetadata serves the RFC 8414 metadata document. This server is not an
+// OpenID Provider, so it does not serve /.well-known/openid-configuration.
+func (s *Server) handleMetadata(w http.ResponseWriter, _ *http.Request) {
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.Header().Set("Cache-Control", "public, max-age=300")
+	_ = json.NewEncoder(w).Encode(s.AuthorizationServerMetadata())
+}

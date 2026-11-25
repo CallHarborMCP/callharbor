@@ -101,3 +101,138 @@ func TestLoadReportsAllErrorsTogether(t *testing.T) {
 		}
 	}
 }
+
+func TestLoadPublicURL(t *testing.T) {
+	valid := map[string]string{
+		"https://callharbor.example.com":  "https://callharbor.example.com",
+		"https://callharbor.example.com/": "https://callharbor.example.com",
+		"https://Example.com:8443/":       "https://example.com:8443",
+		"http://127.0.0.1:8080":           "http://127.0.0.1:8080",
+		"http://localhost:8080/":          "http://localhost:8080",
+		"http://[::1]:8080":               "http://[::1]:8080",
+	}
+	for in, want := range valid {
+		cfg, err := Load(env(map[string]string{EnvPublicURL: in}))
+		if err != nil {
+			t.Errorf("Load(%q) error = %v", in, err)
+			continue
+		}
+		if cfg.PublicURL != want {
+			t.Errorf("Load(%q).PublicURL = %q, want %q", in, cfg.PublicURL, want)
+		}
+	}
+
+	unset, err := Load(env(nil))
+	if err != nil || unset.PublicURL != "" {
+		t.Fatalf("unset PublicURL = %q, err = %v; want empty", unset.PublicURL, err)
+	}
+
+	invalid := []string{
+		"http://callharbor.example.com",
+		"https://callharbor.example.com/mcp",
+		"https://callharbor.example.com?x=1",
+		"https://callharbor.example.com#frag",
+		"https://user:pw@callharbor.example.com",
+		"ftp://callharbor.example.com",
+		"callharbor.example.com",
+		"https://",
+		"https://callharbor.example.com:99999",
+	}
+	for _, in := range invalid {
+		if _, err := Load(env(map[string]string{EnvPublicURL: in})); err == nil {
+			t.Errorf("Load(%q) error = nil, want rejection", in)
+		} else if !strings.Contains(err.Error(), EnvPublicURL) {
+			t.Errorf("Load(%q) error %q does not name %s", in, err, EnvPublicURL)
+		}
+	}
+}
+
+// TestLoadPublicURLNormalizesHostAndDefaultPort: the host is lowercased and a
+// scheme's default port is dropped, so one origin has one spelling. The
+// origin is compared and embedded in metadata, so these must match.
+func TestLoadPublicURLNormalizesHostAndDefaultPort(t *testing.T) {
+	cases := map[string]string{
+		"https://Callharbor.Example.COM:443":  "https://callharbor.example.com",
+		"https://callharbor.example.com:443/": "https://callharbor.example.com",
+		"http://LOCALHOST:80":                 "http://localhost",
+		"https://Example.com:8443":            "https://example.com:8443",
+	}
+	for in, want := range cases {
+		cfg, err := Load(env(map[string]string{EnvPublicURL: in}))
+		if err != nil {
+			t.Errorf("Load(%q) error = %v", in, err)
+			continue
+		}
+		if cfg.PublicURL != want {
+			t.Errorf("Load(%q).PublicURL = %q, want %q", in, cfg.PublicURL, want)
+		}
+	}
+}
+
+func TestLoadTrustedProxiesDefaultsToNone(t *testing.T) {
+	cfg, err := Load(env(nil))
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if len(cfg.TrustedProxies) != 0 {
+		t.Fatalf("TrustedProxies = %v, want none", cfg.TrustedProxies)
+	}
+}
+
+func TestLoadTrustedProxiesParsesPrefixesAndAddresses(t *testing.T) {
+	cfg, err := Load(env(map[string]string{
+		EnvTrustedProxies: " 10.0.0.0/8 , 192.0.2.7,2001:db8::/32,  ::1 ",
+	}))
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	want := []string{"10.0.0.0/8", "192.0.2.7/32", "2001:db8::/32", "::1/128"}
+	if len(cfg.TrustedProxies) != len(want) {
+		t.Fatalf("TrustedProxies = %v, want %v", cfg.TrustedProxies, want)
+	}
+	for i, p := range cfg.TrustedProxies {
+		if p.String() != want[i] {
+			t.Errorf("TrustedProxies[%d] = %s, want %s", i, p, want[i])
+		}
+	}
+}
+
+// TestLoadTrustedProxiesUnmapsIPv4MappedEntries: peers are compared in their
+// IPv4 form, so a mapped entry must be stored in that form too.
+func TestLoadTrustedProxiesUnmapsIPv4MappedEntries(t *testing.T) {
+	cfg, err := Load(env(map[string]string{EnvTrustedProxies: "::ffff:10.1.2.3, ::ffff:172.16.0.0/108"}))
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if cfg.TrustedProxies[0].String() != "10.1.2.3/32" {
+		t.Errorf("single mapped address = %s, want 10.1.2.3/32", cfg.TrustedProxies[0])
+	}
+	if cfg.TrustedProxies[1].String() != "172.16.0.0/12" {
+		t.Errorf("mapped prefix = %s, want 172.16.0.0/12", cfg.TrustedProxies[1])
+	}
+}
+
+func TestLoadRejectsInvalidTrustedProxies(t *testing.T) {
+	invalid := []string{
+		"10.0.0.0/33",
+		"10.0.0.1/",
+		"not-an-ip",
+		"10.0.0.256",
+		"fe80::1%eth0",
+		"fe80::/64%eth0",
+		"10.0.0.0/8,",
+		",10.0.0.0/8",
+		"10.0.0.0/8,,192.0.2.1",
+		"10.0.0.0/8 192.0.2.1",
+	}
+	for _, in := range invalid {
+		_, err := Load(env(map[string]string{EnvTrustedProxies: in}))
+		if err == nil {
+			t.Errorf("Load(%q) error = nil, want rejection", in)
+			continue
+		}
+		if !strings.Contains(err.Error(), EnvTrustedProxies) {
+			t.Errorf("Load(%q) error %q does not name %s", in, err, EnvTrustedProxies)
+		}
+	}
+}

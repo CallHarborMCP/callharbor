@@ -7,6 +7,8 @@ import { Dashboard } from "./identity/Dashboard";
 import { FirstAdminWizard } from "./identity/FirstAdminWizard";
 import { LoginForm } from "./identity/LoginForm";
 import { getSession, type Session } from "./identity/session";
+import { ConsentScreen } from "./oauth/ConsentScreen";
+import { isConsentPath, requestIdFromSearch } from "./oauth/route";
 
 type Gate = "loading" | "error" | "setup" | "login" | "signed-in";
 
@@ -88,6 +90,17 @@ function Screen({ gate, session, onCreated, onSignedIn, onSignedOut }: ScreenPro
     );
   }
   if (gate === "signed-in" && session) {
+    // The consent route keeps its query string through setup and sign-in, so
+    // the same request is shown once the user is signed in.
+    if (isConsentPath(window.location.pathname)) {
+      return (
+        <ConsentScreen
+          session={session}
+          requestId={requestIdFromSearch(window.location.search)}
+          onSignedOut={onSignedOut}
+        />
+      );
+    }
     return <Dashboard session={session} onSignedOut={onSignedOut} />;
   }
   if (gate === "error") {

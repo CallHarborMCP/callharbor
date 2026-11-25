@@ -26,6 +26,10 @@ func TestEndpointPolicyClassifiesAddresses(t *testing.T) {
 		"224.0.0.1", "240.0.0.1",
 		"::1", "::", "fc00::1", "fd12::1", "fe80::1", "ff02::1",
 		"::ffff:10.0.0.1", "::ffff:169.254.169.254", "::ffff:127.0.0.1",
+		// NAT64, 6to4 and Teredo addresses can embed a private IPv4 address.
+		"64:ff9b::a9fe:a9fe", "64:ff9b::7f00:1", "64:ff9b:1::1",
+		"2002:0a00:0001::1", "2002:7f00:0001::1",
+		"2001:0:4136:e378:8000:63bf:f5ff:fffe",
 	}
 	for _, s := range blocked {
 		ip := netip.MustParseAddr(s)
@@ -46,6 +50,28 @@ func TestEndpointPolicyClassifiesAddresses(t *testing.T) {
 
 	if def.Allowed(netip.Addr{}) {
 		t.Error("invalid address must be refused")
+	}
+}
+
+// TestEndpointPolicyRefusesZonedAddresses: a scoped IPv6 address never matches
+// the blocked prefixes (its zone breaks Contains), so it must be refused by
+// an explicit zone check under both policies, and at dial time.
+func TestEndpointPolicyRefusesZonedAddresses(t *testing.T) {
+	zoned := []string{"::1%lo", "fe80::1%eth0", "fd00:ec2::254%eth0", "::%eth0", "2606:4700:4700::1111%eth0"}
+	for _, s := range zoned {
+		ip := netip.MustParseAddr(s)
+		if (EndpointPolicy{}).Allowed(ip) {
+			t.Errorf("default policy must refuse zoned %s", s)
+		}
+		if (EndpointPolicy{AllowPrivate: true}).Allowed(ip) {
+			t.Errorf("AllowPrivate must refuse zoned %s", s)
+		}
+		for _, p := range []EndpointPolicy{{}, {AllowPrivate: true}} {
+			err := p.control("tcp", "["+s+"]:443", nil)
+			if !errors.Is(err, ErrSSRFBlocked) {
+				t.Errorf("dial to [%s]:443 under %+v: want ErrSSRFBlocked, got %v", s, p, err)
+			}
+		}
 	}
 }
 

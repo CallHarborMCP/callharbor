@@ -16,6 +16,7 @@ import (
 	"github.com/CallHarborMCP/callharbor/internal/aiprofile"
 	"github.com/CallHarborMCP/callharbor/internal/config"
 	"github.com/CallHarborMCP/callharbor/internal/identity"
+	"github.com/CallHarborMCP/callharbor/internal/oauth"
 	"github.com/CallHarborMCP/callharbor/internal/secrets"
 	"github.com/CallHarborMCP/callharbor/internal/server"
 	"github.com/CallHarborMCP/callharbor/internal/storage"
@@ -59,6 +60,19 @@ func openSecrets(ctx context.Context, store *storage.Store, getenv func(string) 
 		return nil, err
 	}
 	return secrets.NewService(box, store, time.Now, newSecretID)
+}
+
+// sessionUser adapts an identity session check to the oauth package, which
+// needs only the user ID. The identity handler has already written the 401 or
+// 403 response when it returns false.
+func sessionUser(check func(http.ResponseWriter, *http.Request) (*identity.Principal, bool)) oauth.Authenticator {
+	return func(w http.ResponseWriter, r *http.Request) (string, bool) {
+		p, ok := check(w, r)
+		if !ok {
+			return "", false
+		}
+		return p.User.ID, true
+	}
 }
 
 func newSecretID() string {
@@ -112,7 +126,17 @@ func Run(ctx context.Context, cfg config.Config, logger *slog.Logger, ln net.Lis
 	identityHandler := identity.NewHandler(identitySvc)
 	profiles := aiprofile.NewHandler(identityHandler, store, time.Now)
 	secretsAPI := secrets.NewHandler(identityHandler, secretSvc, store)
-	srv := server.New(logger, assets, identityHandler.Register, profiles.Register, secretsAPI.Register)
+	routes := []func(*http.ServeMux){identityHandler.Register, profiles.Register, secretsAPI.Register}
+	if cfg.PublicURL != "" {
+		authz := oauth.NewServer(oauth.Config{PublicURL: cfg.PublicURL, TrustedProxies: cfg.TrustedProxies}, store,
+			oauth.NewClientResolver(store, time.Now), time.Now, logger)
+		routes = append(routes, authz.Register, func(mux *http.ServeMux) {
+			authz.RegisterConsentAPI(mux, sessionUser(identityHandler.Authenticate), sessionUser(identityHandler.AuthenticateMutating))
+		})
+	} else {
+		logger.Info("OAuth and MCP are disabled until CALLHARBOR_PUBLIC_URL is set")
+	}
+	srv := server.New(logger, assets, routes...)
 	httpServer := &http.Server{
 		Handler:           srv.Handler(),
 		ReadHeaderTimeout: readHeaderTimeout,

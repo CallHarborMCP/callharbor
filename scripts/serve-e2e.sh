@@ -12,4 +12,4 @@ data_dir="$(mktemp -d)"
 trap 'rm -rf "$bin_dir" "$data_dir"' EXIT
 
 CGO_ENABLED=0 go build -o "$bin_dir/callharbor" ./cmd/callharbor
-CALLHARBOR_LISTEN_ADDR=127.0.0.1:4173 CALLHARBOR_DATA_DIR="$data_dir" "$bin_dir/callharbor"
+CALLHARBOR_LISTEN_ADDR=127.0.0.1:4173 CALLHARBOR_PUBLIC_URL=http://127.0.0.1:4173 CALLHARBOR_DATA_DIR="$data_dir" "$bin_dir/callharbor"

@@ -240,6 +240,9 @@ func (s *Store) UpdateUser(ctx context.Context, id string, role *string, active 
 			"UPDATE sessions SET revoked_at = ? WHERE user_id = ? AND revoked_at IS NULL", now, id); err != nil {
 			return err
 		}
+		if err := revokeUserOAuthGrants(ctx, tx, id, now); err != nil {
+			return err
+		}
 	}
 	if err := insertAudit(ctx, tx, audit); err != nil {
 		return err
@@ -262,6 +265,11 @@ func (s *Store) SetPasswordHash(ctx context.Context, id, hash, now string, audit
 	}
 	if _, err := tx.ExecContext(ctx,
 		"UPDATE sessions SET revoked_at = ? WHERE user_id = ? AND revoked_at IS NULL", now, id); err != nil {
+		return err
+	}
+	// A password reset ends the user's remote MCP connections too, the same
+	// as deactivation, so they must re-authorize with the new credentials.
+	if err := revokeUserOAuthGrants(ctx, tx, id, now); err != nil {
 		return err
 	}
 	if err := insertAudit(ctx, tx, audit); err != nil {
