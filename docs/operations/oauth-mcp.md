@@ -34,7 +34,7 @@ Each user can see and revoke connected clients under **Connected apps** in the w
 | Endpoint | Purpose |
 | --- | --- |
 | `GET /.well-known/oauth-protected-resource/mcp` (also the root form) | RFC 9728 protected resource metadata |
-| `GET /.well-known/oauth-authorization-server`, `GET /.well-known/openid-configuration` | RFC 8414 authorization server metadata (same document) |
+| `GET /.well-known/oauth-authorization-server` | RFC 8414 authorization server metadata |
 | `GET /oauth/authorize` | Authorization endpoint; redirects to the consent screen `/oauth/consent` |
 | `POST /oauth/token` | `authorization_code` and `refresh_token` grants |
 | `POST /oauth/revoke` | RFC 7009 token revocation |

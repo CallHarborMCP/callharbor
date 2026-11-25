@@ -23,7 +23,8 @@ type Metadata struct {
 // are supported.
 //
 // client_id_metadata_document_supported is advertised because CIMD resolution
-// is implemented. registration_endpoint is not advertised yet.
+// is implemented. registration_endpoint is advertised because dynamic client
+// registration is served at /oauth/register.
 func (s *Server) AuthorizationServerMetadata() Metadata {
 	issuer := s.cfg.Issuer()
 	return Metadata{AuthorizationResponseIssParameterSupported: true, DiscoveryConfiguration: oidc.DiscoveryConfiguration{
@@ -53,9 +54,8 @@ func (s *Server) AuthorizationServerMetadata() Metadata {
 	}}
 }
 
-// handleMetadata serves RFC 8414 metadata at both well-known paths. The
-// openid-configuration alias is served only because it returns the same
-// honest document; no OIDC-only fields are added to it.
+// handleMetadata serves the RFC 8414 metadata document. This server is not an
+// OpenID Provider, so it does not serve /.well-known/openid-configuration.
 func (s *Server) handleMetadata(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.Header().Set("Cache-Control", "public, max-age=300")

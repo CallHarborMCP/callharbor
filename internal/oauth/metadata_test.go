@@ -11,7 +11,8 @@ import (
 // server actually enforces.
 func TestMetadataAdvertisesOnlyImplementedCapabilities(t *testing.T) {
 	f := newFixture(t)
-	for _, path := range []string{"/.well-known/oauth-authorization-server", "/.well-known/openid-configuration"} {
+	for _, path := range []string{"/.well-known/oauth-authorization-server"} {
+		// Single entry: the OIDC alias is removed (see TestOpenIDConfigurationIsNotServed).
 		resp, err := http.Get(f.http.URL + path)
 		if err != nil {
 			t.Fatal(err)
@@ -57,6 +58,20 @@ func TestMetadataAdvertisesOnlyImplementedCapabilities(t *testing.T) {
 		if _, ok := doc["id_token_signing_alg_values_supported"]; ok {
 			t.Fatalf("%s advertises ID token signing, which this server does not implement", path)
 		}
+	}
+}
+
+// TestOpenIDConfigurationIsNotServed: this server is not an OpenID Provider, so
+// it must not answer the OIDC discovery path with an RFC 8414 document.
+func TestOpenIDConfigurationIsNotServed(t *testing.T) {
+	f := newFixture(t)
+	resp, err := http.Get(f.http.URL + "/.well-known/openid-configuration")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("openid-configuration status = %d, want 404", resp.StatusCode)
 	}
 }
 

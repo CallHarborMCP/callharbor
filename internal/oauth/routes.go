@@ -14,7 +14,6 @@ func (s *Server) Register(mux *http.ServeMux) {
 	mux.Handle("OPTIONS /oauth/revoke", corsPublic(nil))
 	mux.Handle("OPTIONS /oauth/register", corsPublic(nil))
 	mux.Handle("GET /.well-known/oauth-authorization-server", corsPublic(http.HandlerFunc(s.handleMetadata)))
-	mux.Handle("GET /.well-known/openid-configuration", corsPublic(http.HandlerFunc(s.handleMetadata)))
 	mux.Handle("GET /.well-known/oauth-protected-resource/mcp", corsPublic(http.HandlerFunc(s.handleProtectedResourceMetadata)))
 	mux.Handle("GET /.well-known/oauth-protected-resource", corsPublic(http.HandlerFunc(s.handleProtectedResourceMetadata)))
 
