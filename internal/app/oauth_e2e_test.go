@@ -86,12 +86,24 @@ func TestOAuthE2EHappyPath(t *testing.T) {
 	}
 
 	status, _, body := e.mcpWith(tok.AccessToken)
-	if status != http.StatusNotImplemented {
-		t.Fatalf("/mcp with bearer = %d %s, want 501", status, body)
+	if status != http.StatusOK {
+		t.Fatalf("/mcp tools/list with bearer = %d %s, want 200", status, body)
 	}
-	rpcErr, _ := decodeObject(t, body)["error"].(map[string]any)
-	if rpcErr["code"] != float64(-32601) {
-		t.Fatalf("/mcp error = %v", rpcErr)
+	result, _ := decodeObject(t, body)["result"].(map[string]any)
+	tools, _ := result["tools"].([]any)
+	names := map[string]bool{}
+	for _, raw := range tools {
+		if m, ok := raw.(map[string]any); ok {
+			names[m["name"].(string)] = true
+		}
+	}
+	if len(names) != 3 || !names["get_profiles"] || !names["list_calls"] || !names["get_call"] {
+		t.Fatalf("registered tools = %v, want exactly get_profiles, list_calls, get_call", names)
+	}
+	for _, planned := range []string{"make_call", "get_transcript", "get_recording", "hangup_call"} {
+		if names[planned] {
+			t.Fatalf("planned tool %s is registered", planned)
+		}
 	}
 }
 

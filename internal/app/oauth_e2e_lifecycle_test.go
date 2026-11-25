@@ -29,8 +29,8 @@ func TestOAuthE2ERefreshRotationAndReuse(t *testing.T) {
 	if newAccess == "" || newRefresh == "" || newRefresh == oldRefresh {
 		t.Fatalf("refresh did not rotate: %v", body)
 	}
-	if status, _, b := e.mcpWith(newAccess); status != http.StatusNotImplemented {
-		t.Fatalf("/mcp with rotated token = %d %v, want 501", status, b)
+	if status, _, b := e.mcpWith(newAccess); status != http.StatusOK {
+		t.Fatalf("/mcp with rotated token = %d %v, want 200", status, b)
 	}
 
 	status, _, body = e.postForm(e.base+"/oauth/token", url.Values{
@@ -102,8 +102,8 @@ func TestOAuthE2EDeactivationStopsMCP(t *testing.T) {
 	redirect := callbackURL(t)
 	cid := e.register(redirect)
 	tok := e.grant(alice, cid, redirect, "mcp:read", "mcp:call")
-	if status, _, _ := e.mcpWith(tok.AccessToken); status != http.StatusNotImplemented {
-		t.Fatalf("/mcp before deactivation = %d, want 501", status)
+	if status, _, _ := e.mcpWith(tok.AccessToken); status != http.StatusOK {
+		t.Fatalf("/mcp before deactivation = %d, want 200", status)
 	}
 
 	id := e.userID(alice)
@@ -183,7 +183,12 @@ func TestOAuthE2EDisabledWithoutPublicURL(t *testing.T) {
 	}
 
 	status, _, body = send(t, c, http.MethodPost, base+e2eMCPPath, []byte(`{}`), nil)
-	if status == http.StatusUnauthorized || status == http.StatusNotImplemented || strings.Contains(string(body), "MCP transport") {
+	// With MCP unmounted, /mcp is not a route: 404 or 405 from the mux, never a
+	// JSON-RPC reply or an authentication challenge from the OAuth layer.
+	if status != http.StatusNotFound && status != http.StatusMethodNotAllowed {
+		t.Fatalf("/mcp while disabled = %d, want 404 or 405", status)
+	}
+	if strings.Contains(string(body), "jsonrpc") || strings.Contains(string(body), "tools") {
 		t.Fatalf("/mcp served while disabled: %d", status)
 	}
 }

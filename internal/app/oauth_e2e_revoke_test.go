@@ -16,8 +16,8 @@ func TestOAuthE2ERevokeStopsMCP(t *testing.T) {
 	redirect := callbackURL(t)
 	cid := e.register(redirect)
 	tok := e.grant(alice, cid, redirect, "mcp:read", "mcp:call")
-	if status, _, _ := e.mcpWith(tok.AccessToken); status != http.StatusNotImplemented {
-		t.Fatalf("/mcp before revoke = %d, want 501", status)
+	if status, _, _ := e.mcpWith(tok.AccessToken); status != http.StatusOK {
+		t.Fatalf("/mcp before revoke = %d, want 200", status)
 	}
 
 	status, _, body := e.postForm(e.base+"/oauth/revoke", url.Values{

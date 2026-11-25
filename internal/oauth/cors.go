@@ -25,3 +25,24 @@ func corsPublic(next http.Handler) http.Handler {
 		w.WriteHeader(http.StatusNoContent)
 	})
 }
+
+// corsMCP is the CORS policy for /mcp. Browser MCP clients send the
+// Authorization header and the MCP headers, and need to read the session and
+// challenge headers back. Credentials are never allowed.
+func corsMCP(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		w.Header().Set("Access-Control-Expose-Headers", "WWW-Authenticate, Mcp-Session-Id")
+		if r.Method != http.MethodOptions {
+			if next != nil {
+				next.ServeHTTP(w, r)
+			}
+			return
+		}
+		w.Header().Set("Access-Control-Allow-Methods", "POST, GET, DELETE, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type, Mcp-Protocol-Version, Mcp-Session-Id, Last-Event-ID")
+		w.Header().Set("Access-Control-Max-Age", corsPreflightMaxAge)
+		w.Header().Add("Vary", "Access-Control-Request-Headers")
+		w.WriteHeader(http.StatusNoContent)
+	})
+}

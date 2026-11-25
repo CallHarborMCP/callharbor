@@ -2,7 +2,7 @@
 
 CallHarbor includes an OAuth 2.1 authorization server so remote MCP clients can connect on behalf of a signed-in CallHarbor user. This page covers configuration, the endpoints and protocol features that exist today, and what has and has not been verified.
 
-The MCP transport itself (Streamable HTTP and the call tools) is tracked separately in issue #67. Until it ships, an authorized request to `/mcp` returns `501` with a JSON-RPC error `-32601` ("MCP transport is not available yet"). It never reports success for an operation that does not exist.
+`/mcp` is a stateless Streamable HTTP MCP endpoint that answers JSON responses. It registers three read-only tools: `get_profiles`, `list_calls` and `get_call`. Each tool runs as the OAuth principal, so a call owned by another user is reported as `not_found`. The planned operations `make_call`, `get_transcript`, `get_recording` and `hangup_call` are not registered. A call to any of them fails as an unknown tool and never starts, ends or reads anything. Issue #67 delivers this; later issues add the planned operations. See `api/mcp/tools.json` for the contract.
 
 ## Enable it
 
@@ -51,7 +51,8 @@ Each user can see and revoke connected clients under **Connected apps** in the w
 | `POST /oauth/token` | `authorization_code` and `refresh_token` grants |
 | `POST /oauth/revoke` | RFC 7009 token revocation |
 | `POST /oauth/register` | RFC 7591 dynamic client registration |
-| `POST /mcp`, `GET /mcp` | Protected MCP resource (placeholder until #67) |
+| `POST /mcp`, `GET /mcp`, `DELETE /mcp` | Protected MCP Streamable HTTP endpoint (JSON responses, 1 MiB body limit) |
+| `OPTIONS /mcp` | CORS preflight, answered without credentials |
 
 Metadata, token, revocation and registration endpoints send `Access-Control-Allow-Origin: *` without credentials so browser-based clients can use them. No other route sends CORS headers.
 
@@ -96,4 +97,4 @@ Tested automatically in CI (`go test`, Playwright). Most cases run through the r
 - Client ID Metadata Documents served by a local TLS test server. The ChatGPT case uses the exact bytes of the document published at `https://chatgpt.com/oauth/client.json` as of 2026-11-25, with only `client_id` changed to the test server's URL. It is accepted as a public client that uses `none`, although the document names `private_key_jwt`, because `none` is in its `token_endpoint_auth_methods_supported` list. Its unsupported `jwt-bearer` grant is dropped, and refresh tokens still issue. The token endpoint never authenticates a client by assertion. Negative cases cover a singular `private_key_jwt` with no `none` support, a supported list without `none`, and a grant list without `authorization_code`.
 - The consent screen and Connected apps page in a browser against the production build.
 
-**Not verified:** a connection from the ChatGPT or Claude user interfaces, or any other hosted MCP client. The ChatGPT fixture test checks only that the published document is accepted by this server. Connecting from ChatGPT also needs the MCP transport (#67) and a publicly reachable `https` origin.
+**Not verified:** a connection from the ChatGPT or Claude user interfaces, or any other hosted MCP client. The ChatGPT fixture test checks only that the published document is accepted by this server. Connecting from ChatGPT also needs a publicly reachable `https` origin. The MCP transport (#67) is in place; the go-sdk client is verified end to end in this repository.

@@ -1,0 +1,100 @@
+{
+  "server": "callharbor",
+  "transport": "streamable-http",
+  "endpoint": "/mcp",
+  "authorization": "OAuth 2.1 bearer token; resource metadata at /.well-known/oauth-protected-resource/mcp",
+  "tools": [
+    {
+      "name": "get_profiles",
+      "status": "implemented",
+      "scope": "mcp:read",
+      "description": "Return the caller's AI and telephony profiles with non-secret fields only.",
+      "inputSchema": {
+        "type": "object",
+        "additionalProperties": false
+      },
+      "readOnly": true
+    },
+    {
+      "name": "list_calls",
+      "status": "implemented",
+      "scope": "mcp:read",
+      "description": "List the caller's calls, newest first, one keyset page at a time.",
+      "inputSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "cursor": {
+            "type": "string",
+            "maxLength": 512
+          },
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 100
+          },
+          "filters": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "status": {
+                "type": "string",
+                "enum": [
+                  "queued",
+                  "initiating",
+                  "ringing",
+                  "active",
+                  "ending",
+                  "ended",
+                  "failed"
+                ]
+              }
+            }
+          }
+        }
+      },
+      "readOnly": true
+    },
+    {
+      "name": "get_call",
+      "status": "implemented",
+      "scope": "mcp:read",
+      "description": "Return one call owned by the caller. Foreign or missing calls return not_found.",
+      "inputSchema": {
+        "type": "object",
+        "required": [
+          "call_id"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "call_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64
+          }
+        }
+      },
+      "readOnly": true
+    },
+    {
+      "name": "make_call",
+      "status": "planned",
+      "description": "Planned. Not registered. Calling it returns an unknown-tool error and never starts a call."
+    },
+    {
+      "name": "get_transcript",
+      "status": "planned",
+      "description": "Planned. Not registered. Calling it returns an unknown-tool error."
+    },
+    {
+      "name": "get_recording",
+      "status": "planned",
+      "description": "Planned. Not registered. Calling it returns an unknown-tool error."
+    },
+    {
+      "name": "hangup_call",
+      "status": "planned",
+      "description": "Planned. Not registered. Calling it returns an unknown-tool error and never ends a call."
+    }
+  ]
+}

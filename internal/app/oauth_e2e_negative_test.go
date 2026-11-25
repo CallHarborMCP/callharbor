@@ -100,8 +100,8 @@ func TestOAuthE2ECodeReuseRevokesIssuedTokens(t *testing.T) {
 	if access == "" {
 		t.Fatalf("first exchange returned no access token: %v", body)
 	}
-	if status, _, b := e.mcpWith(access); status != http.StatusNotImplemented {
-		t.Fatalf("/mcp with first token = %d %v, want 501", status, b)
+	if status, _, b := e.mcpWith(access); status != http.StatusOK {
+		t.Fatalf("/mcp with first token = %d %v, want 200", status, b)
 	}
 
 	status, body = e.tokenFromCode(cid, redirect, verifier, code)
