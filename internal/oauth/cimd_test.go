@@ -220,20 +220,35 @@ func TestCIMDWithoutRefreshGrantGetsNoRefreshToken(t *testing.T) {
 	}
 }
 
-// TestCIMDChatGPTShapedDocumentIsAcceptedAsRegisteredRedirect is a SHAPE test
-// only. The document mirrors the shape of the public ChatGPT connector
-// metadata at https://chatgpt.com/oauth/client.json, with client_id rewritten
-// to the local test server. It does not verify what ChatGPT publishes or how
-// ChatGPT behaves. It never contacts chatgpt.com: that redirect is only
-// checked as a registered URI and parsed from the consent response.
-func TestCIMDChatGPTShapedDocumentIsAcceptedAsRegisteredRedirect(t *testing.T) {
-	const chatgptRedirect = "https://chatgpt.com/connector_platform_oauth_redirect"
+// chatgptLiveDocument is the Client ID Metadata Document published at
+// https://chatgpt.com/oauth/client.json, fetched byte-for-byte on 2026-11-25.
+// It is a fixture: the test never contacts chatgpt.com.
+const chatgptLiveDocument = `{"client_id":"https://chatgpt.com/oauth/client.json","client_uri":"https://chatgpt.com/","redirect_uris":["https://chatgpt.com/connector_platform_oauth_redirect"],"token_endpoint_auth_method":"private_key_jwt","token_endpoint_auth_methods_supported":["none","private_key_jwt"],"grant_types":["authorization_code","refresh_token","urn:ietf:params:oauth:grant-type:jwt-bearer"],"response_types":["code"],"client_name":"ChatGPT","logo_uri":"https://persistent.oaistatic.com/sonic/misc/openai-logo.png","token_endpoint_auth_signing_alg":"RS256","jwks_uri":"https://chatgpt.com/oauth/jwks.json"}`
+
+// chatgptRedirect is the redirect URI the published document registers.
+const chatgptRedirect = "https://chatgpt.com/connector_platform_oauth_redirect"
+
+// chatgptFixture returns the published document with only client_id changed,
+// to the local test server's document URL. Every other byte is kept.
+func chatgptFixture(t *testing.T, clientID string) []byte {
+	t.Helper()
+	const published = `"client_id":"https://chatgpt.com/oauth/client.json"`
+	if !strings.Contains(chatgptLiveDocument, published) {
+		t.Fatal("published client_id member is missing from the fixture")
+	}
+	return []byte(strings.Replace(chatgptLiveDocument, published, `"client_id":"`+clientID+`"`, 1))
+}
+
+// TestCIMDLiveChatGPTDocumentIsAccepted uses the published ChatGPT document as
+// a public client, served by the local test server. It is accepted despite
+// private_key_jwt in the singular member, because none is in the supported
+// list. Its unsupported jwt-bearer grant is dropped, and refresh still works.
+// This tests the document's shape against this server's rules. It does not
+// show that ChatGPT connects.
+func TestCIMDLiveChatGPTDocumentIsAccepted(t *testing.T) {
 	meta := newMetadataServer()
 	f, cid := newCIMDFixture(t, meta, true)
-	setDoc(meta, cimdDoc(cid, map[string]any{
-		"client_name":   "ChatGPT-shaped fixture",
-		"redirect_uris": []string{chatgptRedirect},
-	}))
+	setDoc(meta, chatgptFixture(t, cid))
 
 	redirect := f.approveAuthorize(map[string]string{"client_id": cid, "redirect_uri": chatgptRedirect})
 	if redirect.Host != "chatgpt.com" {
@@ -248,6 +263,76 @@ func TestCIMDChatGPTShapedDocumentIsAcceptedAsRegisteredRedirect(t *testing.T) {
 	})
 	if status != http.StatusOK {
 		t.Fatalf("exchange status = %d body=%v", status, body)
+	}
+	refresh, _ := body["refresh_token"].(string)
+	if refresh == "" {
+		t.Fatal("published document grants refresh_token but got no refresh token")
+	}
+
+	stored, err := f.store.GetOAuthClient(f.ctx, cid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := `["authorization_code","refresh_token"]`; stored.GrantTypes != want {
+		t.Fatalf("stored grant_types = %s, want %s (jwt-bearer dropped)", stored.GrantTypes, want)
+	}
+	c, err := f.srv.clients.ResolveClient(f.ctx, cid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !contains(c.GrantTypes, "authorization_code") || !contains(c.GrantTypes, "refresh_token") || len(c.GrantTypes) != 2 {
+		t.Fatalf("resolved grant_types = %v", c.GrantTypes)
+	}
+
+	status, body = f.exchange(url.Values{
+		"grant_type":    {"refresh_token"},
+		"refresh_token": {refresh},
+		"client_id":     {cid},
+	})
+	if status != http.StatusOK {
+		t.Fatalf("refresh status = %d body=%v", status, body)
+	}
+}
+
+// TestCIMDSingularPrivateKeyJWTWithoutNoneSupportIsRejected: a document that
+// names only private_key_jwt, with no supported list, asks for client
+// authentication this server does not perform.
+func TestCIMDSingularPrivateKeyJWTWithoutNoneSupportIsRejected(t *testing.T) {
+	meta := newMetadataServer()
+	f, cid := newCIMDFixture(t, meta, true)
+	setDoc(meta, cimdDoc(cid, map[string]any{"token_endpoint_auth_method": "private_key_jwt"}))
+	assertRejectedWithoutRedirect(t, f, cid, nil)
+	if meta.hits() != 1 {
+		t.Fatalf("metadata fetches = %d, want 1: the rejection must come from validation", meta.hits())
+	}
+}
+
+// TestCIMDSupportedMethodsWithoutNoneIsRejected: the server supports only none,
+// so a supported list that omits none leaves no method this server accepts.
+func TestCIMDSupportedMethodsWithoutNoneIsRejected(t *testing.T) {
+	meta := newMetadataServer()
+	f, cid := newCIMDFixture(t, meta, true)
+	setDoc(meta, cimdDoc(cid, map[string]any{
+		"token_endpoint_auth_method":            "private_key_jwt",
+		"token_endpoint_auth_methods_supported": []string{"private_key_jwt", "client_secret_basic"},
+	}))
+	assertRejectedWithoutRedirect(t, f, cid, nil)
+	if meta.hits() != 1 {
+		t.Fatalf("metadata fetches = %d, want 1: the rejection must come from validation", meta.hits())
+	}
+}
+
+// TestCIMDGrantListWithoutAuthorizationCodeIsRejected: unsupported grants are
+// dropped, but a list with no authorization_code leaves no way to obtain a code.
+func TestCIMDGrantListWithoutAuthorizationCodeIsRejected(t *testing.T) {
+	meta := newMetadataServer()
+	f, cid := newCIMDFixture(t, meta, true)
+	setDoc(meta, cimdDoc(cid, map[string]any{
+		"grant_types": []string{"urn:ietf:params:oauth:grant-type:jwt-bearer", "refresh_token"},
+	}))
+	assertRejectedWithoutRedirect(t, f, cid, nil)
+	if meta.hits() != 1 {
+		t.Fatalf("metadata fetches = %d, want 1: the rejection must come from validation", meta.hits())
 	}
 }
 

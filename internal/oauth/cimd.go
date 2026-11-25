@@ -56,13 +56,14 @@ type cimdOptions struct {
 
 // cimdMetadata is the subset of a Client ID Metadata Document this server reads.
 type cimdMetadata struct {
-	ClientID                string   `json:"client_id"`
-	ClientName              string   `json:"client_name"`
-	ClientURI               string   `json:"client_uri"`
-	RedirectURIs            []string `json:"redirect_uris"`
-	TokenEndpointAuthMethod string   `json:"token_endpoint_auth_method"`
-	GrantTypes              []string `json:"grant_types"`
-	ResponseTypes           []string `json:"response_types"`
+	ClientID                          string   `json:"client_id"`
+	ClientName                        string   `json:"client_name"`
+	ClientURI                         string   `json:"client_uri"`
+	RedirectURIs                      []string `json:"redirect_uris"`
+	TokenEndpointAuthMethod           string   `json:"token_endpoint_auth_method"`
+	TokenEndpointAuthMethodsSupported []string `json:"token_endpoint_auth_methods_supported"`
+	GrantTypes                        []string `json:"grant_types"`
+	ResponseTypes                     []string `json:"response_types"`
 }
 
 // isCIMDClientID reports whether a client_id is a metadata-document URL: https,
@@ -339,10 +340,11 @@ func validateCIMD(clientID string, doc cimdMetadata) (Client, error) {
 			return Client{}, errors.New("oauth: metadata redirect_uri is not allowed")
 		}
 	}
-	if doc.TokenEndpointAuthMethod != "" && doc.TokenEndpointAuthMethod != string(oidc.AuthMethodNone) {
+	if !cimdAuthMethodAccepted(doc) {
 		return Client{}, errors.New("oauth: metadata auth method must be none")
 	}
-	if err := checkGrantTypes(doc.GrantTypes); err != nil {
+	grants, err := cimdGrantTypes(doc.GrantTypes)
+	if err != nil {
 		return Client{}, err
 	}
 	if err := checkResponseTypes(doc.ResponseTypes); err != nil {
@@ -359,13 +361,50 @@ func validateCIMD(clientID string, doc cimdMetadata) (Client, error) {
 		Name:             doc.ClientName,
 		URI:              doc.ClientURI,
 		RedirectURIs:     append([]string(nil), doc.RedirectURIs...),
-		GrantTypes:       append([]string(nil), doc.GrantTypes...),
+		GrantTypes:       grants,
 		MetadataDocument: true,
 	}, nil
 }
 
+// cimdAuthMethodAccepted reports whether a document's token endpoint auth
+// method is one this server can honour. This server serves only none, and every
+// client it resolves is public. The singular member must be absent or none, or
+// the document must list none among token_endpoint_auth_methods_supported. A
+// document that names another method in the singular member and also lists
+// none is accepted on the strength of that list, and is treated as public.
+// The token endpoint refuses client_assertion and client_secret outright, so no
+// document can make this server authenticate a client.
+func cimdAuthMethodAccepted(doc cimdMetadata) bool {
+	if doc.TokenEndpointAuthMethod == "" || doc.TokenEndpointAuthMethod == string(oidc.AuthMethodNone) {
+		return true
+	}
+	return contains(doc.TokenEndpointAuthMethodsSupported, string(oidc.AuthMethodNone))
+}
+
+// cimdGrantTypes keeps the grant types this server supports and drops the rest.
+// A metadata document may list grants the server does not implement, such as
+// the JWT bearer grant; those are ignored rather than refused. An absent list
+// stays absent, so storage applies the default pair. A non-empty list must
+// still include authorization_code, and only the supported set is returned.
+func cimdGrantTypes(grants []string) ([]string, error) {
+	if len(grants) == 0 {
+		return nil, nil
+	}
+	var kept []string
+	for _, g := range grants {
+		if (g == "authorization_code" || g == "refresh_token") && !contains(kept, g) {
+			kept = append(kept, g)
+		}
+	}
+	if !contains(kept, "authorization_code") {
+		return nil, errors.New("oauth: grant_types must include authorization_code")
+	}
+	return kept, nil
+}
+
 // checkGrantTypes accepts an absent list, or a list drawn from
-// {authorization_code, refresh_token} that includes authorization_code.
+// {authorization_code, refresh_token} that includes authorization_code. It is
+// the DCR rule and stays strict; the CIMD path uses cimdGrantTypes.
 func checkGrantTypes(grants []string) error {
 	if len(grants) == 0 {
 		return nil
