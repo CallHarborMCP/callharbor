@@ -451,6 +451,45 @@ func TestRefreshRejectsForeignClient(t *testing.T) {
 	}
 }
 
+// TestRefreshNarrowingDoesNotNarrowRefreshToken: RFC 6749 section 6. A refresh
+// that asks for a subset narrows only the access token. The rotated refresh
+// token keeps the grant's scopes, so a later refresh without scope gets all of
+// them back.
+func TestRefreshNarrowingDoesNotNarrowRefreshToken(t *testing.T) {
+	f := newFixture(t)
+	status, body := f.exchange(url.Values{
+		"grant_type":    {"authorization_code"},
+		"code":          {codeFrom(t, f.approveAuthorize(map[string]string{"scope": "mcp:read mcp:call"}))},
+		"client_id":     {testClientID},
+		"redirect_uri":  {testRedirectURI},
+		"code_verifier": {testVerifier},
+	})
+	if status != http.StatusOK {
+		t.Fatalf("exchange: %d %v", status, body)
+	}
+	refresh, _ := body["refresh_token"].(string)
+
+	status, body = f.exchange(url.Values{
+		"grant_type":    {"refresh_token"},
+		"refresh_token": {refresh},
+		"client_id":     {testClientID},
+		"scope":         {"mcp:read"},
+	})
+	if status != http.StatusOK || body["scope"] != "mcp:read" {
+		t.Fatalf("narrowed refresh: status=%d body=%v, want scope mcp:read", status, body)
+	}
+	narrowedRefresh, _ := body["refresh_token"].(string)
+
+	status, body = f.exchange(url.Values{
+		"grant_type":    {"refresh_token"},
+		"refresh_token": {narrowedRefresh},
+		"client_id":     {testClientID},
+	})
+	if status != http.StatusOK || body["scope"] != "mcp:read mcp:call" {
+		t.Fatalf("refresh after narrowing: status=%d body=%v, want full original scopes", status, body)
+	}
+}
+
 func TestRefreshRejectsScopeEscalation(t *testing.T) {
 	f := newFixture(t)
 	// Grant only mcp:read, then ask to refresh for mcp:call.

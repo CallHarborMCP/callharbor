@@ -213,9 +213,10 @@ func (s *Server) refresh(ctx context.Context, req *oidc.RefreshTokenRequest, res
 	if serr != nil {
 		return nil, serr
 	}
-	grant.Scopes = joinScopes(scopes)
-
-	access, refreshTok, accessRow, refreshRow, err := s.mintTokens(grant, now, true)
+	// RFC 6749 section 6: the narrowed scope applies to the issued access token
+	// only. The rotated refresh token keeps the grant's original scopes, so a
+	// later refresh without a scope parameter can still ask for all of them.
+	access, refreshTok, accessRow, refreshRow, err := s.mintTokens(grant, joinScopes(scopes), now, true)
 	if err != nil {
 		return nil, err
 	}
@@ -235,7 +236,7 @@ func (s *Server) refresh(ctx context.Context, req *oidc.RefreshTokenRequest, res
 // A losing concurrent redemption is a replay: its grant family is revoked
 // after the winner has committed.
 func (s *Server) redeem(ctx context.Context, row storage.OAuthCode, grant grantView, now time.Time, withRefresh bool) (*TokenResponse, error) {
-	access, refreshTok, accessRow, refreshRow, err := s.mintTokens(grant, now, withRefresh)
+	access, refreshTok, accessRow, refreshRow, err := s.mintTokens(grant, grant.Scopes, now, withRefresh)
 	if err != nil {
 		return nil, err
 	}
@@ -253,9 +254,11 @@ func (s *Server) redeem(ctx context.Context, row storage.OAuthCode, grant grantV
 	return tokenResponse(access, refreshTok, accessRow.ExpiresAt, splitScopes(grant.Scopes), now), nil
 }
 
-// mintTokens creates opaque credentials and their storage rows. It returns the
+// mintTokens creates opaque credentials and their storage rows. The access
+// token carries accessScopes; the refresh token always carries the grant's
+// scopes, so a narrowed access token never narrows the grant. It returns the
 // plaintext values (for the response only) and the hashed rows.
-func (s *Server) mintTokens(grant grantView, now time.Time, withRefresh bool) (string, string, storage.OAuthToken, storage.OAuthToken, error) {
+func (s *Server) mintTokens(grant grantView, accessScopes string, now time.Time, withRefresh bool) (string, string, storage.OAuthToken, storage.OAuthToken, error) {
 	access, err := newOpaque(prefixAccess)
 	if err != nil {
 		return "", "", storage.OAuthToken{}, storage.OAuthToken{}, oidc.ErrServerError().WithParent(err)
@@ -266,7 +269,7 @@ func (s *Server) mintTokens(grant grantView, now time.Time, withRefresh bool) (s
 		UserID:    grant.UserID,
 		ClientID:  grant.ClientID,
 		Audience:  grant.Resource,
-		Scopes:    grant.Scopes,
+		Scopes:    accessScopes,
 		CreatedAt: formatTime(now),
 		ExpiresAt: formatTime(now.Add(accessTokenTTL)),
 	}
