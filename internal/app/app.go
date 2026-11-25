@@ -128,7 +128,7 @@ func Run(ctx context.Context, cfg config.Config, logger *slog.Logger, ln net.Lis
 	secretsAPI := secrets.NewHandler(identityHandler, secretSvc, store)
 	routes := []func(*http.ServeMux){identityHandler.Register, profiles.Register, secretsAPI.Register}
 	if cfg.PublicURL != "" {
-		authz := oauth.NewServer(oauth.Config{PublicURL: cfg.PublicURL}, store,
+		authz := oauth.NewServer(oauth.Config{PublicURL: cfg.PublicURL, TrustedProxies: cfg.TrustedProxies}, store,
 			oauth.NewClientResolver(store, time.Now), time.Now, logger)
 		routes = append(routes, authz.Register, func(mux *http.ServeMux) {
 			authz.RegisterConsentAPI(mux, sessionUser(identityHandler.Authenticate), sessionUser(identityHandler.AuthenticateMutating))

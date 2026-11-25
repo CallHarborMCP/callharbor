@@ -27,7 +27,7 @@ const maxStateLength = 1024
 func (s *Server) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 	// Limit before anything else. A limited request gets a plain 429 page and
 	// no redirect, so the limit cannot be used to send errors to a client.
-	if ok, retry := s.authorizeLimit.allow(registrationClientIP(r)); !ok {
+	if ok, retry := s.authorizeLimit.allow(registrationClientIP(r, s.trustedProxies)); !ok {
 		w.Header().Set("Retry-After", retryAfterSeconds(retry))
 		writeNoStore(w, http.StatusTooManyRequests, registrationError{
 			Error:            "temporarily_unavailable",

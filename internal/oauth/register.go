@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/netip"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 	"unicode/utf8"
@@ -119,20 +120,75 @@ func (l *registrationLimiter) evictOldest() {
 	delete(l.windows, oldestKey)
 }
 
-// registrationClientIP returns the limiter key for a request. It is the host of
-// RemoteAddr; X-Forwarded-For is never trusted. An IPv6 client usually controls
-// a whole /64, so its key is that prefix. An IPv4 client, including one written
-// as an IPv4-mapped IPv6 address, keys on the full address.
-func registrationClientIP(r *http.Request) string {
+// registrationClientIP returns the rate-limit key for a request's client.
+//
+// The peer is the host of RemoteAddr. X-Forwarded-For is read only when the
+// peer is in trusted (CALLHARBOR_TRUSTED_PROXIES). Then the chain is walked
+// from the right, and the first entry that is not itself trusted is the client.
+// A peer outside trusted, a missing header, a malformed or zoned entry, or a
+// chain made only of trusted hops all fall back to the peer. X-Real-IP and
+// Forwarded are never read. An IPv6 client keys on its /64, since one host
+// usually controls a whole /64; an IPv4 client, including an IPv4-mapped one,
+// keys on its full address.
+func registrationClientIP(r *http.Request, trusted []netip.Prefix) string {
 	host, _, err := net.SplitHostPort(r.RemoteAddr)
 	if err != nil {
 		host = r.RemoteAddr
 	}
-	addr, err := netip.ParseAddr(host)
+	peer, err := netip.ParseAddr(host)
 	if err != nil {
 		return host
 	}
-	addr = addr.Unmap()
+	peer = peer.Unmap()
+	if inTrustedPrefixes(peer, trusted) {
+		if client, ok := forwardedClient(r.Header.Values("X-Forwarded-For"), trusted); ok {
+			return limiterKey(client)
+		}
+	}
+	return limiterKey(peer)
+}
+
+// forwardedClient returns the rightmost forwarded entry that is not a trusted
+// proxy. Entries are comma-split across all header values, in order. It
+// reports false when the chain has no such entry or any entry it reaches is
+// empty, zoned, or not an IP address. Those entries are refused rather than
+// skipped: a broken chain from a trusted proxy is a configuration fault, and
+// the peer is the conservative key.
+func forwardedClient(values []string, trusted []netip.Prefix) (netip.Addr, bool) {
+	var hops []string
+	for _, v := range values {
+		hops = append(hops, strings.Split(v, ",")...)
+	}
+	for i := len(hops) - 1; i >= 0; i-- {
+		hop := strings.TrimSpace(hops[i])
+		if hop == "" || strings.Contains(hop, "%") {
+			return netip.Addr{}, false
+		}
+		addr, err := netip.ParseAddr(hop)
+		if err != nil {
+			return netip.Addr{}, false
+		}
+		addr = addr.Unmap()
+		if !inTrustedPrefixes(addr, trusted) {
+			return addr, true
+		}
+	}
+	return netip.Addr{}, false
+}
+
+// inTrustedPrefixes reports whether addr is inside one of the trusted prefixes.
+func inTrustedPrefixes(addr netip.Addr, trusted []netip.Prefix) bool {
+	for _, p := range trusted {
+		if p.Contains(addr) {
+			return true
+		}
+	}
+	return false
+}
+
+// limiterKey is the bucket for a client address: the full address for IPv4, and
+// the /64 for IPv6.
+func limiterKey(addr netip.Addr) string {
 	if addr.Is4() {
 		return addr.String()
 	}
@@ -158,7 +214,7 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 		writeRegistrationError(w, http.StatusUnsupportedMediaType, "invalid_client_metadata", "Content-Type must be application/json")
 		return
 	}
-	if ok, retry := s.registry.allow(registrationClientIP(r)); !ok {
+	if ok, retry := s.registry.allow(registrationClientIP(r, s.trustedProxies)); !ok {
 		w.Header().Set("Retry-After", retryAfterSeconds(retry))
 		writeRegistrationError(w, http.StatusTooManyRequests, "invalid_client_metadata", "too many registrations; try again later")
 		return

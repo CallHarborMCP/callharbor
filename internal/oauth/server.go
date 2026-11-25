@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"log/slog"
 	"net/http"
+	"net/netip"
 	"net/url"
 	"strings"
 	"time"
@@ -37,6 +38,9 @@ type Server struct {
 	// authorizeLimit bounds authorization requests per client IP, because each
 	// one writes a pending request and may trigger a metadata fetch.
 	authorizeLimit *registrationLimiter
+	// trustedProxies are the peers whose X-Forwarded-For selects the client for
+	// both limiters. It comes from Config.TrustedProxies.
+	trustedProxies []netip.Prefix
 }
 
 // NewServer builds the authorization server. The configured public origin
@@ -54,6 +58,7 @@ func newServer(cfg Config, store Store, clients ClientResolver, clock Clock, log
 		registry:       newRegistrationLimiter(clock, registerWindow, registerPerWindow),
 		registryCap:    registryCap,
 		authorizeLimit: newRegistrationLimiter(clock, authorizeWindow, authorizePerWindow),
+		trustedProxies: cfg.TrustedProxies,
 	}
 }
 

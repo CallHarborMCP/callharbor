@@ -22,6 +22,7 @@ package oauth
 import (
 	"context"
 	"errors"
+	"net/netip"
 	"net/url"
 	"strings"
 	"time"
@@ -116,6 +117,9 @@ type Store interface {
 type Config struct {
 	// PublicURL is the normalized origin, e.g. https://callharbor.example.com.
 	PublicURL string
+	// TrustedProxies are the peers whose X-Forwarded-For is believed when rate
+	// limits pick a client. Empty trusts none, so the TCP peer is always used.
+	TrustedProxies []netip.Prefix
 }
 
 // Issuer is the exact issuer identifier and the RFC 9207 iss value.

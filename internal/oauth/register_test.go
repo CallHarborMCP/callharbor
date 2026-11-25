@@ -298,7 +298,7 @@ func TestRegistrationKeyGroupsIPv6ByPrefix(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			req := httptest.NewRequest(http.MethodPost, "/oauth/register", nil)
 			req.RemoteAddr = tc.remoteAddr
-			if got := registrationClientIP(req); got != tc.want {
+			if got := registrationClientIP(req, nil); got != tc.want {
 				t.Fatalf("key = %q, want %q", got, tc.want)
 			}
 		})
