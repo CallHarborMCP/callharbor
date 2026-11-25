@@ -477,8 +477,10 @@ func revokeGrantFamily(ctx context.Context, tx *sql.Tx, grantID, now string) err
 	return err
 }
 
-// RevokeOAuthToken revokes one access or refresh token by hash. For a refresh
-// token the whole family is revoked, per RFC 7009 guidance.
+// RevokeOAuthTokenByHash revokes the grant behind an access or refresh token,
+// identified by hash. Revoking either kind revokes the whole grant family, so
+// every access and refresh token of that grant stops working. RFC 7009 permits
+// this, and it returns false when no token matches.
 func (s *Store) RevokeOAuthTokenByHash(ctx context.Context, tokenHash, now string) (bool, error) {
 	var found bool
 	err := s.inTx(ctx, func(tx *sql.Tx) error {
