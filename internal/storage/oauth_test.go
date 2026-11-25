@@ -363,3 +363,92 @@ func TestEvictUnusedMetadataOAuthClient(t *testing.T) {
 		}
 	})
 }
+
+// TestInsertDynamicOAuthClientCapped: at the limit, the oldest dynamic client
+// that is stale and unreferenced is evicted and the new client inserted. A
+// referenced or recent client is kept, and if nothing qualifies nothing is
+// inserted.
+func TestInsertDynamicOAuthClientCapped(t *testing.T) {
+	ctx := context.Background()
+	const cutoff = "2026-11-24T10:00:00.000Z"
+	dyn := func(id, created string) OAuthClient {
+		return OAuthClient{ClientID: id, ClientName: id, RedirectURIs: `["https://d.example/cb"]`,
+			GrantTypes: `["authorization_code","refresh_token"]`, CreatedAt: created, UpdatedAt: created}
+	}
+	audit := AuditEvent{OccurredAt: oauthNow, ActorRole: "system", Action: "oauth.client.register", ResourceType: "oauth_client", ResourceID: "x", Outcome: "success", DetailJSON: "{}"}
+
+	t.Run("evicts the oldest stale unreferenced client", func(t *testing.T) {
+		s := openOAuthFixture(t)
+		if err := s.InsertDynamicOAuthClient(ctx, dyn("dyn-old", "2026-11-23T09:00:00.000Z"), audit); err != nil {
+			t.Fatal(err)
+		}
+		if err := s.InsertDynamicOAuthClient(ctx, dyn("dyn-older", "2026-11-22T09:00:00.000Z"), audit); err != nil {
+			t.Fatal(err)
+		}
+		evicted, err := s.InsertDynamicOAuthClientCapped(ctx, dyn("dyn-new", oauthNow), 2, cutoff, audit)
+		if err != nil || evicted != "dyn-older" {
+			t.Fatalf("evicted = %q, err = %v; want dyn-older, nil", evicted, err)
+		}
+		if _, err := s.GetOAuthClient(ctx, "dyn-older"); !errors.Is(err, ErrNotFound) {
+			t.Fatalf("oldest client not removed: %v", err)
+		}
+		if _, err := s.GetOAuthClient(ctx, "dyn-new"); err != nil {
+			t.Fatalf("new client not inserted: %v", err)
+		}
+	})
+
+	t.Run("below the limit evicts nothing", func(t *testing.T) {
+		s := openOAuthFixture(t)
+		if err := s.InsertDynamicOAuthClient(ctx, dyn("dyn-old", "2026-11-23T09:00:00.000Z"), audit); err != nil {
+			t.Fatal(err)
+		}
+		evicted, err := s.InsertDynamicOAuthClientCapped(ctx, dyn("dyn-new", oauthNow), 5, cutoff, audit)
+		if err != nil || evicted != "" {
+			t.Fatalf("evicted = %q, err = %v; want none", evicted, err)
+		}
+		if _, err := s.GetOAuthClient(ctx, "dyn-old"); err != nil {
+			t.Fatalf("client removed below the limit: %v", err)
+		}
+	})
+
+	t.Run("refuses when no client is evictable and inserts nothing", func(t *testing.T) {
+		s := openOAuthFixture(t)
+		// A recent client, and an old client that holds a grant, are both kept.
+		if err := s.InsertDynamicOAuthClient(ctx, dyn("dyn-recent", "2026-11-25T09:59:00.000Z"), audit); err != nil {
+			t.Fatal(err)
+		}
+		if err := s.InsertDynamicOAuthClient(ctx, dyn("dyn-granted", "2026-11-23T09:00:00.000Z"), audit); err != nil {
+			t.Fatal(err)
+		}
+		seedApprovedGrantFor(t, s, "dyn-granted")
+		_, err := s.InsertDynamicOAuthClientCapped(ctx, dyn("dyn-new", oauthNow), 2, cutoff, audit)
+		if !errors.Is(err, ErrDynamicClientCapReached) {
+			t.Fatalf("err = %v, want ErrDynamicClientCapReached", err)
+		}
+		if _, err := s.GetOAuthClient(ctx, "dyn-new"); !errors.Is(err, ErrNotFound) {
+			t.Fatalf("refused insert wrote a row: %v", err)
+		}
+		for _, id := range []string{"dyn-recent", "dyn-granted"} {
+			if _, err := s.GetOAuthClient(ctx, id); err != nil {
+				t.Fatalf("%s removed: %v", id, err)
+			}
+		}
+	})
+}
+
+// seedApprovedGrantFor gives a dynamic client an approved grant so it is
+// referenced by oauth_grants, and so not evictable.
+func seedApprovedGrantFor(t *testing.T, s *Store, clientID string) {
+	t.Helper()
+	ctx := context.Background()
+	req := OAuthAuthRequest{ID: "req-" + clientID, ClientID: clientID, RedirectURI: "https://d.example/cb",
+		Scopes: "mcp:read", Resource: "https://cb.example/mcp", CodeChallenge: testChallenge, CreatedAt: oauthNow, ExpiresAt: oauthLater}
+	if err := s.InsertOAuthAuthRequest(ctx, req); err != nil {
+		t.Fatal(err)
+	}
+	grant := OAuthGrant{ID: "grant-" + clientID, UserID: "alice", ClientID: clientID, Resource: "https://cb.example/mcp", Scopes: "mcp:read", CreatedAt: oauthNow}
+	code := OAuthCode{CodeHash: hex64('d'), GrantID: grant.ID, AuthRequestID: req.ID, ClientID: clientID, RedirectURI: "https://d.example/cb", CodeChallenge: testChallenge, CreatedAt: oauthNow, ExpiresAt: oauthLater}
+	if err := s.DecideAndApproveOAuthRequest(ctx, req.ID, "alice", grant, code, oauthNow, AuditEvent{OccurredAt: oauthNow, Action: "oauth.consent", ResourceType: "oauth_grant", Outcome: "success", DetailJSON: "{}"}); err != nil {
+		t.Fatal(err)
+	}
+}

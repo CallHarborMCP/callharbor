@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"io"
 	"mime"
 	"net"
@@ -25,10 +26,14 @@ const (
 	registerPerWindow = 20
 	// Authorization requests are cheap per call, but each one stores a
 	// pending request and can start a metadata fetch, so they get a budget too.
-	authorizeWindow     = 1 * time.Minute
-	authorizePerWindow  = 60
-	registerMaxKeys     = 4096
-	registerGlobalCap   = 10000
+	authorizeWindow    = 1 * time.Minute
+	authorizePerWindow = 60
+	registerMaxKeys    = 4096
+	registerGlobalCap  = 10000
+	// dynamicEvictAfter is how old a dynamic client must be before it can be
+	// evicted at the cap. A day is long enough that a live client registers and
+	// then authorizes, and short enough that abandoned registrations free room.
+	dynamicEvictAfter   = 24 * time.Hour
 	registerIDBytes     = 16
 	registerClientIDPfx = "cho_client_"
 )
@@ -239,18 +244,11 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ctx := r.Context()
-	// The cap counts every dynamic client ever registered, so the lower bound
-	// is the Unix epoch.
-	n, err := s.store.CountDynamicOAuthClients(ctx, formatTime(time.Unix(0, 0)))
-	if err != nil {
-		writeRegistrationError(w, http.StatusServiceUnavailable, "temporarily_unavailable", "registration is unavailable")
-		return
-	}
-	if n >= s.registryCap {
-		writeRegistrationError(w, http.StatusServiceUnavailable, "temporarily_unavailable", "registration capacity reached")
-		return
-	}
 	if err := s.persistRegistration(ctx, &resp); err != nil {
+		if errors.Is(err, storage.ErrDynamicClientCapReached) {
+			writeRegistrationError(w, http.StatusServiceUnavailable, "temporarily_unavailable", "registration capacity reached")
+			return
+		}
 		s.logger.Error("oauth: persist dynamic registration", "error", err)
 		writeRegistrationError(w, http.StatusInternalServerError, "server_error", "registration failed")
 		return
@@ -340,7 +338,10 @@ func (s *Server) persistRegistration(ctx context.Context, resp *registrationResp
 		return err
 	}
 	stamp := formatTime(now)
-	return s.store.InsertDynamicOAuthClient(ctx, storage.OAuthClient{
+	// A client older than dynamicEvictAfter may be evicted at the cap, if
+	// nothing references it. Anything newer is kept, so a burst cannot push
+	// out clients that were just registered.
+	evicted, err := s.store.InsertDynamicOAuthClientCapped(ctx, storage.OAuthClient{
 		ClientID:     resp.ClientID,
 		Source:       "dynamic",
 		ClientName:   resp.ClientName,
@@ -349,7 +350,7 @@ func (s *Server) persistRegistration(ctx context.Context, resp *registrationResp
 		GrantTypes:   string(grants),
 		CreatedAt:    stamp,
 		UpdatedAt:    stamp,
-	}, storage.AuditEvent{
+	}, s.registryCap, formatTime(now.Add(-dynamicEvictAfter)), storage.AuditEvent{
 		OccurredAt:   stamp,
 		ActorRole:    "system",
 		Action:       "oauth.client.register",
@@ -358,6 +359,15 @@ func (s *Server) persistRegistration(ctx context.Context, resp *registrationResp
 		Outcome:      "success",
 		DetailJSON:   "{}",
 	})
+	if err != nil {
+		return err
+	}
+	if evicted != "" {
+		// Only the client ID is logged. It is a public identifier, not a secret.
+		s.logger.Info("oauth: evicted stale unused dynamic client at cap",
+			"evicted_client_id", evicted, "new_client_id", resp.ClientID)
+	}
+	return nil
 }
 
 // retryAfterSeconds renders a wait as whole seconds, rounded up, minimum 1.

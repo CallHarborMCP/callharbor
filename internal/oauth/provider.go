@@ -89,6 +89,7 @@ type Store interface {
 	GetOAuthClient(ctx context.Context, clientID string) (storage.OAuthClient, error)
 	UpsertOAuthClient(ctx context.Context, c storage.OAuthClient) error
 	InsertDynamicOAuthClient(ctx context.Context, c storage.OAuthClient, audit storage.AuditEvent) error
+	InsertDynamicOAuthClientCapped(ctx context.Context, c storage.OAuthClient, limit int, createdBefore string, audit storage.AuditEvent) (string, error)
 	TouchOAuthGrant(ctx context.Context, grantID, now, before string) error
 	CountDynamicOAuthClients(ctx context.Context, sinceISO string) (int, error)
 	CountMetadataOAuthClients(ctx context.Context) (int, error)

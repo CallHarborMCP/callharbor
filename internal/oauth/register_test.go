@@ -10,7 +10,12 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/CallHarborMCP/callharbor/internal/storage"
 )
+
+// hex64 returns a 64-character hash-shaped string for code rows in tests.
+func hex64(c byte) string { return strings.Repeat(string(c), 64) }
 
 // register posts a registration body from remoteAddr through the real handler.
 // httptest connections all come from 127.0.0.1, so the address is set on the
@@ -322,5 +327,85 @@ func TestRegisterLimitSharedAcrossIPv6Prefix(t *testing.T) {
 	elsewhere := f.register(t, "application/json", "[2001:db8:7:8::1]:4000", registrationBody(nil))
 	if elsewhere.StatusCode != http.StatusCreated {
 		t.Fatalf("different /64 status = %d, want 201", elsewhere.StatusCode)
+	}
+}
+
+// seedDynamicClient stores a dynamic client created at createdAt, the way a past
+// registration would have.
+func (f *fixture) seedDynamicClient(t *testing.T, id, createdAt string) {
+	t.Helper()
+	if err := f.store.InsertDynamicOAuthClient(f.ctx, storage.OAuthClient{
+		ClientID:     id,
+		ClientName:   "Old",
+		RedirectURIs: `["https://old.example/cb"]`,
+		GrantTypes:   `["authorization_code","refresh_token"]`,
+		CreatedAt:    createdAt,
+		UpdatedAt:    createdAt,
+	}, storage.AuditEvent{OccurredAt: createdAt, ActorRole: "system", Action: "oauth.client.register", ResourceType: "oauth_client", ResourceID: id, Outcome: "success", DetailJSON: "{}"}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestRegisterAtCapEvictsStaleUnusedDynamicClient: at the cap, a dynamic client
+// older than the cutoff that nothing references is evicted, and the new
+// registration succeeds in its place.
+func TestRegisterAtCapEvictsStaleUnusedDynamicClient(t *testing.T) {
+	f := newFixture(t)
+	f.serve(newServer(f.cfg, f.store, registeredResolver{f.store}, f.clock.Now, slog.New(slog.DiscardHandler), 2))
+	stale := formatTime(f.clock.Now().Add(-dynamicEvictAfter - time.Hour))
+	f.seedDynamicClient(t, "cho_client_stale", stale)
+	f.seedDynamicClient(t, "cho_client_stale2", formatTime(f.clock.Now().Add(-dynamicEvictAfter-2*time.Hour)))
+
+	id := f.registerOK(t, registrationBody(nil))
+	if _, err := f.store.GetOAuthClient(f.ctx, "cho_client_stale2"); err == nil {
+		t.Fatal("oldest stale client was not evicted")
+	}
+	if _, err := f.store.GetOAuthClient(f.ctx, id); err != nil {
+		t.Fatalf("new client not stored: %v", err)
+	}
+	if _, err := f.store.GetOAuthClient(f.ctx, "cho_client_stale"); err != nil {
+		t.Fatalf("second stale client removed too early: %v", err)
+	}
+}
+
+// TestRegisterAtCapKeepsReferencedOrRecentClients: at the cap, a client that
+// holds a grant, and a client newer than the cutoff, are both kept. Nothing is
+// evictable, so the registration gets the 503.
+func TestRegisterAtCapKeepsReferencedOrRecentClients(t *testing.T) {
+	f := newFixture(t)
+	f.serve(newServer(f.cfg, f.store, registeredResolver{f.store}, f.clock.Now, slog.New(slog.DiscardHandler), 2))
+	stale := formatTime(f.clock.Now().Add(-dynamicEvictAfter - time.Hour))
+	f.seedDynamicClient(t, "cho_client_granted", stale)
+	f.seedDynamicClient(t, "cho_client_recent", formatTime(f.clock.Now().Add(-time.Hour)))
+	seedApprovedGrantForClient(t, f, "cho_client_granted")
+
+	resp := f.register(t, "application/json", "203.0.113.50:4000", registrationBody(nil))
+	if resp.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want 503 when no client is evictable", resp.StatusCode)
+	}
+	for _, id := range []string{"cho_client_granted", "cho_client_recent"} {
+		if _, err := f.store.GetOAuthClient(f.ctx, id); err != nil {
+			t.Fatalf("%s was removed: %v", id, err)
+		}
+	}
+}
+
+// seedApprovedGrantForClient gives a dynamic client an approved grant, the way
+// a completed consent would, so that it is referenced and not evictable.
+func seedApprovedGrantForClient(t *testing.T, f *fixture, clientID string) {
+	t.Helper()
+	now := formatTime(f.clock.Now())
+	req := storage.OAuthAuthRequest{
+		ID: "req-" + clientID, ClientID: clientID, RedirectURI: "https://old.example/cb",
+		Scopes: "mcp:read", Resource: f.cfg.Resource(), CodeChallenge: testChallenge,
+		CreatedAt: now, ExpiresAt: formatTime(f.clock.Now().Add(time.Minute)),
+	}
+	if err := f.store.InsertOAuthAuthRequest(f.ctx, req); err != nil {
+		t.Fatal(err)
+	}
+	grant := storage.OAuthGrant{ID: "grant-" + clientID, UserID: f.userID, ClientID: clientID, Resource: f.cfg.Resource(), Scopes: "mcp:read", CreatedAt: now}
+	code := storage.OAuthCode{CodeHash: hex64('h'), GrantID: grant.ID, AuthRequestID: req.ID, ClientID: clientID, RedirectURI: req.RedirectURI, CodeChallenge: testChallenge, CreatedAt: now, ExpiresAt: now}
+	if err := f.store.DecideAndApproveOAuthRequest(f.ctx, req.ID, f.userID, grant, code, now, storage.AuditEvent{OccurredAt: now, Action: "oauth.consent", ResourceType: "oauth_grant", Outcome: "success", DetailJSON: "{}"}); err != nil {
+		t.Fatal(err)
 	}
 }

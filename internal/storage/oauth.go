@@ -112,20 +112,98 @@ func (s *Store) GetOAuthClient(ctx context.Context, clientID string) (OAuthClien
 	return c, notFound(err)
 }
 
+// ErrDynamicClientCapReached reports that the dynamic client cap is full and no
+// stale, unreferenced dynamic client could be evicted to make room.
+var ErrDynamicClientCapReached = errors.New("oauth dynamic client capacity reached")
+
 // InsertDynamicOAuthClient stores a dynamically registered client and its audit
 // event in one transaction. A new client_id is never an update.
 func (s *Store) InsertDynamicOAuthClient(ctx context.Context, c OAuthClient, audit AuditEvent) error {
 	return s.inTx(ctx, func(tx *sql.Tx) error {
-		if _, err := tx.ExecContext(ctx, `INSERT INTO oauth_clients
-			(client_id, source, client_name, client_uri, redirect_uris_json, grant_types_json, created_at, updated_at)
-			VALUES (?, 'dynamic', ?, ?, ?, ?, ?, ?)`,
-			c.ClientID, c.ClientName, c.ClientURI, c.RedirectURIs, c.GrantTypes, c.CreatedAt, c.UpdatedAt); err != nil {
-			return err
-		}
-		return insertAudit(ctx, tx, audit)
+		return insertDynamicClient(ctx, tx, c, audit)
 	})
 }
 
+// InsertDynamicOAuthClientCapped is InsertDynamicOAuthClient bounded by a
+// lifetime cap on dynamic clients. The count, the optional eviction and the
+// insert run in one immediate transaction, so concurrent registrations cannot
+// both see room and exceed the cap. At the cap it evicts the oldest dynamic
+// client created before createdBefore that no grant, request, code or token
+// references. If none qualifies it inserts nothing and returns
+// ErrDynamicClientCapReached. It returns the evicted client ID, or "" if
+// nothing was evicted.
+func (s *Store) InsertDynamicOAuthClientCapped(ctx context.Context, c OAuthClient, limit int, createdBefore string, audit AuditEvent) (string, error) {
+	var evicted string
+	err := s.inTx(ctx, func(tx *sql.Tx) error {
+		var n int
+		if err := tx.QueryRowContext(ctx, "SELECT COUNT(*) FROM oauth_clients WHERE source = 'dynamic'").Scan(&n); err != nil {
+			return err
+		}
+		if n >= limit {
+			id, err := evictOneUnusedDynamicClient(ctx, tx, createdBefore)
+			if err != nil {
+				return err
+			}
+			if id == "" {
+				return ErrDynamicClientCapReached
+			}
+			evicted = id
+		}
+		return insertDynamicClient(ctx, tx, c, audit)
+	})
+	if err != nil {
+		return "", err
+	}
+	return evicted, nil
+}
+
+// evictOneUnusedDynamicClient deletes the oldest dynamic client created before
+// createdBefore that nothing references, and returns its ID, or "" when none
+// qualifies. Grants, requests, codes and tokens reference oauth_clients with ON
+// DELETE RESTRICT, so a referenced row could not be removed anyway; the
+// NOT EXISTS checks keep the choice explicit.
+func evictOneUnusedDynamicClient(ctx context.Context, tx *sql.Tx, createdBefore string) (string, error) {
+	var id string
+	err := tx.QueryRowContext(ctx, `SELECT c.client_id FROM oauth_clients c
+		WHERE c.source = 'dynamic' AND c.created_at < ?
+		AND NOT EXISTS (SELECT 1 FROM oauth_grants g WHERE g.client_id = c.client_id)
+		AND NOT EXISTS (SELECT 1 FROM oauth_auth_requests r WHERE r.client_id = c.client_id)
+		AND NOT EXISTS (SELECT 1 FROM oauth_codes k WHERE k.client_id = c.client_id)
+		AND NOT EXISTS (SELECT 1 FROM oauth_access_tokens a WHERE a.client_id = c.client_id)
+		AND NOT EXISTS (SELECT 1 FROM oauth_refresh_tokens t WHERE t.client_id = c.client_id)
+		ORDER BY c.created_at, c.client_id LIMIT 1`, createdBefore).Scan(&id)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", nil
+	}
+	if err != nil {
+		return "", err
+	}
+	res, err := tx.ExecContext(ctx, `DELETE FROM oauth_clients WHERE client_id = ? AND source = 'dynamic'
+		AND NOT EXISTS (SELECT 1 FROM oauth_grants g WHERE g.client_id = oauth_clients.client_id)
+		AND NOT EXISTS (SELECT 1 FROM oauth_auth_requests r WHERE r.client_id = oauth_clients.client_id)
+		AND NOT EXISTS (SELECT 1 FROM oauth_codes k WHERE k.client_id = oauth_clients.client_id)
+		AND NOT EXISTS (SELECT 1 FROM oauth_access_tokens a WHERE a.client_id = oauth_clients.client_id)
+		AND NOT EXISTS (SELECT 1 FROM oauth_refresh_tokens t WHERE t.client_id = oauth_clients.client_id)`, id)
+	if err != nil {
+		return "", err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return "", nil
+	}
+	return id, nil
+}
+
+func insertDynamicClient(ctx context.Context, tx *sql.Tx, c OAuthClient, audit AuditEvent) error {
+	if _, err := tx.ExecContext(ctx, `INSERT INTO oauth_clients
+		(client_id, source, client_name, client_uri, redirect_uris_json, grant_types_json, created_at, updated_at)
+		VALUES (?, 'dynamic', ?, ?, ?, ?, ?, ?)`,
+		c.ClientID, c.ClientName, c.ClientURI, c.RedirectURIs, c.GrantTypes, c.CreatedAt, c.UpdatedAt); err != nil {
+		return err
+	}
+	return insertAudit(ctx, tx, audit)
+}
+
+// CountDynamicOAuthClients counts dynamic clients created at or after sinceISO.
 func (s *Store) CountDynamicOAuthClients(ctx context.Context, sinceISO string) (int, error) {
 	var n int
 	err := s.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM oauth_clients WHERE source = 'dynamic' AND created_at >= ?", sinceISO).Scan(&n)
