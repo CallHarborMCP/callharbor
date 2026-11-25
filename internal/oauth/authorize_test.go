@@ -2,9 +2,11 @@ package oauth
 
 import (
 	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"strings"
 	"testing"
+	"time"
 )
 
 // location returns the redirect target of resp, failing if it is not a
@@ -29,6 +31,52 @@ func get(t *testing.T, target string) *http.Response {
 	}
 	t.Cleanup(func() { _ = resp.Body.Close() })
 	return resp
+}
+
+// authorizeFrom runs a valid authorization request from remoteAddr through the
+// handler directly, so the per-IP key can vary.
+func authorizeFrom(t *testing.T, f *fixture, remoteAddr string) *http.Response {
+	t.Helper()
+	target, err := url.Parse(f.authorizeURL(nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest(http.MethodGet, "/oauth/authorize?"+target.RawQuery, nil)
+	req.RemoteAddr = remoteAddr
+	rec := httptest.NewRecorder()
+	f.srv.handleAuthorize(rec, req)
+	return rec.Result()
+}
+
+// TestAuthorizeRateLimitReturns429WithoutRedirect: past the per-IP budget an
+// authorization request gets a 429 page and no redirect, and other IPs and
+// later windows are not affected.
+func TestAuthorizeRateLimitReturns429WithoutRedirect(t *testing.T) {
+	f := newFixture(t)
+	const ip = "198.51.100.40:4000"
+	for i := 0; i < authorizePerWindow; i++ {
+		resp := authorizeFrom(t, f, ip)
+		if resp.StatusCode != http.StatusFound {
+			t.Fatalf("request %d status = %d, want 302", i+1, resp.StatusCode)
+		}
+	}
+	resp := authorizeFrom(t, f, ip)
+	if resp.StatusCode != http.StatusTooManyRequests {
+		t.Fatalf("over-limit status = %d, want 429", resp.StatusCode)
+	}
+	if loc := resp.Header.Get("Location"); loc != "" {
+		t.Fatalf("429 must not redirect, got Location %q", loc)
+	}
+	if resp.Header.Get("Retry-After") == "" {
+		t.Fatal("429 without Retry-After")
+	}
+	if other := authorizeFrom(t, f, "198.51.100.41:4000"); other.StatusCode != http.StatusFound {
+		t.Fatalf("other IP status = %d, want 302", other.StatusCode)
+	}
+	f.clock.Advance(authorizeWindow + time.Second)
+	if after := authorizeFrom(t, f, ip); after.StatusCode != http.StatusFound {
+		t.Fatalf("after window status = %d, want 302", after.StatusCode)
+	}
 }
 
 func TestAuthorizeRedirectsToConsentWithRequestID(t *testing.T) {

@@ -34,6 +34,9 @@ type Server struct {
 	// global ceiling on dynamic clients; tests lower it through newServer.
 	registry    *registrationLimiter
 	registryCap int
+	// authorizeLimit bounds authorization requests per client IP, because each
+	// one writes a pending request and may trigger a metadata fetch.
+	authorizeLimit *registrationLimiter
 }
 
 // NewServer builds the authorization server. The configured public origin
@@ -48,7 +51,9 @@ func newServer(cfg Config, store Store, clients ClientResolver, clock Clock, log
 	dec.IgnoreUnknownKeys(true)
 	return &Server{
 		cfg: cfg, store: store, clients: clients, clock: clock, decoder: dec, logger: logger,
-		registry: newRegistrationLimiter(clock), registryCap: registryCap,
+		registry:       newRegistrationLimiter(clock, registerWindow, registerPerWindow),
+		registryCap:    registryCap,
+		authorizeLimit: newRegistrationLimiter(clock, authorizeWindow, authorizePerWindow),
 	}
 }
 

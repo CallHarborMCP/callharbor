@@ -18,9 +18,13 @@ import (
 )
 
 const (
-	registerMaxBody     = 16 << 10
-	registerWindow      = 10 * time.Minute
-	registerPerWindow   = 20
+	registerMaxBody   = 16 << 10
+	registerWindow    = 10 * time.Minute
+	registerPerWindow = 20
+	// Authorization requests are cheap per call, but each one stores a
+	// pending request and can start a metadata fetch, so they get a budget too.
+	authorizeWindow     = 1 * time.Minute
+	authorizePerWindow  = 60
 	registerMaxKeys     = 4096
 	registerGlobalCap   = 10000
 	registerIDBytes     = 16
@@ -63,6 +67,8 @@ type registrationError struct {
 type registrationLimiter struct {
 	mu      sync.Mutex
 	clock   Clock
+	window  time.Duration
+	budget  int
 	windows map[string]registrationWindowState
 }
 
@@ -71,26 +77,28 @@ type registrationWindowState struct {
 	count int
 }
 
-func newRegistrationLimiter(clock Clock) *registrationLimiter {
-	return &registrationLimiter{clock: clock, windows: make(map[string]registrationWindowState)}
+// newRegistrationLimiter allows budget events per key in each window. The
+// registration and authorization endpoints each have their own limiter.
+func newRegistrationLimiter(clock Clock, window time.Duration, budget int) *registrationLimiter {
+	return &registrationLimiter{clock: clock, window: window, budget: budget, windows: make(map[string]registrationWindowState)}
 }
 
-// allow records one registration for key. When the limit is reached it returns
+// allow records one event for key. When the limit is reached it returns
 // false and how long until the window resets.
 func (l *registrationLimiter) allow(key string) (bool, time.Duration) {
 	now := l.clock()
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	w, ok := l.windows[key]
-	if !ok || !now.Before(w.start.Add(registerWindow)) {
+	if !ok || !now.Before(w.start.Add(l.window)) {
 		if !ok && len(l.windows) >= registerMaxKeys {
 			l.evictOldest()
 		}
 		l.windows[key] = registrationWindowState{start: now, count: 1}
 		return true, 0
 	}
-	if w.count >= registerPerWindow {
-		return false, w.start.Add(registerWindow).Sub(now)
+	if w.count >= l.budget {
+		return false, w.start.Add(l.window).Sub(now)
 	}
 	w.count++
 	l.windows[key] = w
