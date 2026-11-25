@@ -49,6 +49,8 @@ type compositeResolver struct {
 	cimd  *cimdResolver
 	db    ClientResolver
 	now   Clock
+	// mirrorCap bounds mirrored rows. Tests lower it through newClientResolver.
+	mirrorCap int
 }
 
 // NewClientResolver is the production resolver: the default SSRF policy and
@@ -61,10 +63,11 @@ func NewClientResolver(store Store, clock Clock) ClientResolver {
 // a loopback httptest server; production passes the zero value.
 func newClientResolver(store Store, clock Clock, opts cimdOptions) ClientResolver {
 	return &compositeResolver{
-		store: store,
-		cimd:  newCIMDResolver(clock, opts),
-		db:    storeResolver{store: store},
-		now:   clock,
+		store:     store,
+		cimd:      newCIMDResolver(clock, opts),
+		db:        storeResolver{store: store},
+		now:       clock,
+		mirrorCap: cimdMirrorCap,
 	}
 }
 
@@ -85,6 +88,15 @@ func (r *compositeResolver) ResolveClient(ctx context.Context, clientID string) 
 	return c, nil
 }
 
+// cimdMirrorCap bounds mirrored metadata-document rows in oauth_clients.
+// Rows are never evicted: grants and requests reference them with ON DELETE
+// RESTRICT, so a row in use cannot be removed. A new document beyond the cap
+// is refused instead.
+const cimdMirrorCap = 10000
+
+// errMetadataClientCapReached is returned when the mirror table is full.
+var errMetadataClientCapReached = errors.New("oauth: metadata client capacity reached")
+
 // mirror writes a freshly fetched metadata client into oauth_clients.
 func (r *compositeResolver) mirror(ctx context.Context, c Client) error {
 	uris, err := json.Marshal(c.RedirectURIs)
@@ -97,6 +109,17 @@ func (r *compositeResolver) mirror(ctx context.Context, c Client) error {
 	if len(c.GrantTypes) > 0 {
 		if grants, err = json.Marshal(c.GrantTypes); err != nil {
 			return fmt.Errorf("oauth: encode grant_types: %w", err)
+		}
+	}
+	// Refreshing a known document is always allowed. Only a new row counts
+	// against the cap, so a flood of distinct metadata URLs is refused.
+	if _, err := r.store.GetOAuthClient(ctx, c.ID); errors.Is(err, storage.ErrNotFound) {
+		n, err := r.store.CountMetadataOAuthClients(ctx)
+		if err != nil {
+			return fmt.Errorf("oauth: count metadata clients: %w", err)
+		}
+		if n >= r.mirrorCap {
+			return errMetadataClientCapReached
 		}
 	}
 	now := formatTime(r.now())

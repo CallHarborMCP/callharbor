@@ -131,6 +131,14 @@ func (s *Store) CountDynamicOAuthClients(ctx context.Context, sinceISO string) (
 	return n, err
 }
 
+// CountMetadataOAuthClients counts mirrored metadata-document clients, so a
+// flood of distinct metadata URLs cannot grow oauth_clients without bound.
+func (s *Store) CountMetadataOAuthClients(ctx context.Context) (int, error) {
+	var n int
+	err := s.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM oauth_clients WHERE source = 'metadata_document'").Scan(&n)
+	return n, err
+}
+
 func (s *Store) InsertOAuthAuthRequest(ctx context.Context, r OAuthAuthRequest) error {
 	_, err := s.db.ExecContext(ctx, `INSERT INTO oauth_auth_requests
 		(id, client_id, redirect_uri, state, scopes, resource, code_challenge, nonce, created_at, expires_at)

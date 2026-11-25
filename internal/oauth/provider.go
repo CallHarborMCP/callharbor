@@ -81,6 +81,7 @@ type Store interface {
 	InsertDynamicOAuthClient(ctx context.Context, c storage.OAuthClient, audit storage.AuditEvent) error
 	TouchOAuthGrant(ctx context.Context, grantID, now, before string) error
 	CountDynamicOAuthClients(ctx context.Context, sinceISO string) (int, error)
+	CountMetadataOAuthClients(ctx context.Context) (int, error)
 	InsertOAuthAuthRequest(ctx context.Context, r storage.OAuthAuthRequest) error
 	GetOAuthAuthRequest(ctx context.Context, id string) (storage.OAuthAuthRequest, error)
 	DecideOAuthAuthRequest(ctx context.Context, id, userID, now string) error

@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/x509"
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -316,6 +317,40 @@ func TestCIMDFailedFetchIsNegativelyCached(t *testing.T) {
 	}
 	if n := meta.hits(); n != 1 {
 		t.Fatalf("fetches within negative TTL = %d, want 1", n)
+	}
+}
+
+// TestCIMDMirrorCapRefusesNewDocumentsButKeepsKnownOnes: once the mirror holds
+// cap rows, a new metadata document is refused and writes no row, while a
+// document already mirrored still resolves.
+func TestCIMDMirrorCapRefusesNewDocumentsButKeepsKnownOnes(t *testing.T) {
+	first := newMetadataServer()
+	f, firstCID := newCIMDFixture(t, first, true)
+	setDoc(first, cimdDoc(firstCID, nil))
+	if _, err := f.srv.clients.ResolveClient(f.ctx, firstCID); err != nil {
+		t.Fatalf("first mirror: %v", err)
+	}
+
+	// A second metadata host, with the same trusted root.
+	second := newMetadataServer()
+	ts := httptest.NewTLSServer(second)
+	t.Cleanup(ts.Close)
+	pool := x509.NewCertPool()
+	pool.AddCert(ts.Certificate())
+	secondCID := ts.URL + "/client.json"
+	setDoc(second, cimdDoc(secondCID, nil))
+	capped := newClientResolver(f.store, f.clock.Now, cimdOptions{allowPrivate: true, rootCAs: pool})
+	capped.(*compositeResolver).mirrorCap = 1
+	f.resetResolver(capped)
+
+	if _, err := f.srv.clients.ResolveClient(f.ctx, secondCID); err == nil {
+		t.Fatal("new document beyond the mirror cap was accepted")
+	}
+	if _, err := f.store.GetOAuthClient(f.ctx, secondCID); !errors.Is(err, storage.ErrNotFound) {
+		t.Fatalf("refused document wrote a row: err = %v", err)
+	}
+	if _, err := f.srv.clients.ResolveClient(f.ctx, firstCID); err != nil {
+		t.Fatalf("already-mirrored document refused at cap: %v", err)
 	}
 }
 
