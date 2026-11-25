@@ -117,7 +117,9 @@ func (s *Store) GetOAuthClient(ctx context.Context, clientID string) (OAuthClien
 var ErrDynamicClientCapReached = errors.New("oauth dynamic client capacity reached")
 
 // InsertDynamicOAuthClient stores a dynamically registered client and its audit
-// event in one transaction. A new client_id is never an update.
+// event in one transaction, with no cap. Production registration goes through
+// InsertDynamicOAuthClientCapped. This uncapped insert is kept for tests that
+// need rows with chosen created_at values. A new client_id is never an update.
 func (s *Store) InsertDynamicOAuthClient(ctx context.Context, c OAuthClient, audit AuditEvent) error {
 	return s.inTx(ctx, func(tx *sql.Tx) error {
 		return insertDynamicClient(ctx, tx, c, audit)
@@ -201,13 +203,6 @@ func insertDynamicClient(ctx context.Context, tx *sql.Tx, c OAuthClient, audit A
 		return err
 	}
 	return insertAudit(ctx, tx, audit)
-}
-
-// CountDynamicOAuthClients counts dynamic clients created at or after sinceISO.
-func (s *Store) CountDynamicOAuthClients(ctx context.Context, sinceISO string) (int, error) {
-	var n int
-	err := s.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM oauth_clients WHERE source = 'dynamic' AND created_at >= ?", sinceISO).Scan(&n)
-	return n, err
 }
 
 // CountMetadataOAuthClients counts mirrored metadata-document clients, so a
