@@ -75,19 +75,13 @@ func errorParams(e *oidc.Error, state string) url.Values {
 }
 
 // errorCode extracts the RFC 6749 error code from an oidc.Error. The library
-// keeps the code in an unexported field, so it is read from its JSON form.
+// exports the ErrorType field, whose underlying type is string, so it is read
+// directly. An empty code falls back to server_error.
 func errorCode(e *oidc.Error) string {
-	raw, err := json.Marshal(e)
-	if err != nil {
-		return "server_error"
+	if code := string(e.ErrorType); code != "" {
+		return code
 	}
-	var body struct {
-		Error string `json:"error"`
-	}
-	if err := json.Unmarshal(raw, &body); err != nil || body.Error == "" {
-		return "server_error"
-	}
-	return body.Error
+	return "server_error"
 }
 
 // joinScopes is the space-delimited scope string stored with a grant.
