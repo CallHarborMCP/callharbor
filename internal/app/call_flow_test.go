@@ -161,10 +161,13 @@ func startCallAppWith(t *testing.T, tel *fakeTelnyx, aiDialers realtime.Dialers,
 // The signature covers the exact body, as Telnyx signs it.
 func (e *callTestEnv) signedWebhook(callID, eventType, eventID, controlID string) {
 	e.t.Helper()
+	// Telnyx returns the dial's client_state on every event for the call. The
+	// dial sends the call id, so the fixture echoes it the same way.
+	clientState := base64.StdEncoding.EncodeToString([]byte(callID))
 	body, err := json.Marshal(map[string]any{"data": map[string]any{
 		"record_type": "event", "id": eventID, "event_type": eventType,
 		"occurred_at": "2026-11-25T10:00:00Z",
-		"payload":     map[string]any{"call_control_id": controlID},
+		"payload":     map[string]any{"call_control_id": controlID, "client_state": clientState},
 	}})
 	if err != nil {
 		e.t.Fatal(err)
@@ -196,8 +199,15 @@ func (e *callTestEnv) dialedStreamURL() string {
 // signedMediaDial opens a Telnyx-signed media WebSocket to streamURL. It trusts
 // only the test CA.
 func (e *callTestEnv) signedMediaDial(streamURL string) (*telnyxfake.Stream, error) {
+	return e.signedMediaDialAt(streamURL, time.Now())
+}
+
+// signedMediaDialAt is signedMediaDial with an explicit signing time. The app
+// refuses a repeated handshake signature (replay protection), so two streams to
+// the same URL must be signed at different instants, as Telnyx does per dial.
+func (e *callTestEnv) signedMediaDialAt(streamURL string, at time.Time) (*telnyxfake.Stream, error) {
 	hc := &http.Client{Transport: &http.Transport{
 		TLSClientConfig: &tls.Config{RootCAs: e.roots, MinVersion: tls.VersionTLS12},
 	}}
-	return telnyxfake.DialMedia(context.Background(), streamURL, e.privKey, time.Now(), telnyxfake.WithHTTPClient(hc))
+	return telnyxfake.DialMedia(context.Background(), streamURL, e.privKey, at, telnyxfake.WithHTTPClient(hc))
 }

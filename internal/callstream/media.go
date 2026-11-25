@@ -2,13 +2,13 @@ package callstream
 
 import (
 	"context"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"time"
 
 	"github.com/CallHarborMCP/callharbor/internal/realtime"
 	"github.com/CallHarborMCP/callharbor/internal/voice"
-	"github.com/CallHarborMCP/callharbor/internal/voicecall"
 )
 
 // Reason codes for a call CallHarbor ends or fails on the media path. Public
@@ -27,16 +27,22 @@ const (
 // The caller sees only that the stream is refused, never which check failed.
 var ErrCallUnavailable = errors.New("callstream: call is not accepting media")
 
-// BindControlID checks that a media start frame belongs to the call. The
-// stream must carry the call_control_id the dial response recorded. Until
-// that is recorded the call has no control id, so the stream is refused and
-// Telnyx may retry it.
-func BindControlID(recorded, frameControlID string) error {
-	if recorded == "" {
-		return ErrCallUnavailable
+// BindControlID checks that a media start frame belongs to the call. When the
+// dial response recorded a control id, the stream must carry that exact id.
+//
+// When no control id is recorded yet, the start frame may bind only if its
+// client_state names this call: the dial sent the call id as client_state, and
+// Telnyx returns it on the stream. Anything else is refused, so an unrelated
+// stream can never attach to a call.
+func BindControlID(callID, recorded, frameControlID, frameClientState string) error {
+	if recorded != "" {
+		if frameControlID != recorded {
+			return fmt.Errorf("%w: stream call_control_id does not match the call", ErrCallUnavailable)
+		}
+		return nil
 	}
-	if frameControlID != recorded {
-		return fmt.Errorf("%w: stream call_control_id does not match the call", ErrCallUnavailable)
+	if frameControlID == "" || clientStateOf(frameClientState) != callID {
+		return fmt.Errorf("%w: no recorded control id and the stream does not name this call", ErrCallUnavailable)
 	}
 	return nil
 }
@@ -64,13 +70,15 @@ func Run(ctx context.Context, sess realtime.Session, bridge voice.AudioBridge, s
 	return res, false, err
 }
 
-// Resolve returns the AI profile for a call and the session requirements for
-// the stream's format. It fails with the voicecall error, so the caller can map
-// a missing key or profile to a visible reason.
-func Resolve(ctx context.Context, r *voicecall.Resolver, ownerUserID, aiProfileID string) (realtime.Profile, error) {
-	prof, err := r.Resolve(ctx, ownerUserID, aiProfileID)
-	if err != nil {
-		return realtime.Profile{}, err
+// clientStateOf decodes the client_state the dial sent: the call id, base64
+// encoded by the Telnyx client. A missing or malformed value names no call.
+func clientStateOf(b64 string) string {
+	if b64 == "" {
+		return ""
 	}
-	return prof, nil
+	raw, err := base64.StdEncoding.DecodeString(b64)
+	if err != nil {
+		return ""
+	}
+	return string(raw)
 }

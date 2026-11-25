@@ -13,12 +13,15 @@ import (
 var ErrCallForeignProvider = errors.New("storage: signal for a different provider call")
 
 // CallSignalState is the stored lifecycle state a signal is applied to. It is
-// the minimum the call state machine needs to rebuild its position.
+// the minimum the call state machine needs to rebuild its position, plus the
+// leg's profile so a hangup can be sent with the owner's key.
 type CallSignalState struct {
 	ID                    string
 	OwnerUserID           string
+	TelephonyProfileID    string
 	Status                string
 	Outcome               string
+	ReasonCode            string
 	ProviderCallControlID string
 }
 
@@ -26,9 +29,11 @@ type CallSignalState struct {
 // webhook's receipt transaction, so the state it reads is the state it writes.
 func ReadCallForSignal(ctx context.Context, tx *sql.Tx, callID string) (CallSignalState, error) {
 	var c CallSignalState
-	var control, outcome sql.NullString
-	err := tx.QueryRowContext(ctx, `SELECT id, owner_user_id, status, outcome, provider_call_control_id
-		FROM calls WHERE id = ?`, callID).Scan(&c.ID, &c.OwnerUserID, &c.Status, &outcome, &control)
+	var control, outcome, reason sql.NullString
+	err := tx.QueryRowContext(ctx, `SELECT id, owner_user_id, telephony_profile_id, status, outcome,
+		outcome_reason_code, provider_call_control_id
+		FROM calls WHERE id = ?`, callID).Scan(&c.ID, &c.OwnerUserID, &c.TelephonyProfileID, &c.Status,
+		&outcome, &reason, &control)
 	if errors.Is(err, sql.ErrNoRows) {
 		return CallSignalState{}, ErrCallNotFound
 	}
@@ -36,15 +41,38 @@ func ReadCallForSignal(ctx context.Context, tx *sql.Tx, callID string) (CallSign
 		return CallSignalState{}, fmt.Errorf("read call for signal: %w", err)
 	}
 	c.Outcome = outcome.String
+	c.ReasonCode = reason.String
 	c.ProviderCallControlID = control.String
 	return c, nil
 }
 
+// RecordCallControlID records the provider control id of a call that has none,
+// inside tx. A verified event can name the leg of a call whose status does not
+// change (for example a failed call whose dial was never confirmed), so the leg
+// must still be traceable for a later hangup. A control id already taken by
+// another call is ErrCallForeignProvider.
+func RecordCallControlID(ctx context.Context, tx *sql.Tx, callID, controlID string, now time.Time) error {
+	_, err := tx.ExecContext(ctx, `UPDATE calls SET provider_call_control_id = ?, updated_at = ?
+		WHERE id = ? AND provider_call_control_id IS NULL`,
+		controlID, now.UTC().Format(storageTime), callID)
+	if isUniqueViolation(err) {
+		return ErrCallForeignProvider
+	}
+	if err != nil {
+		return fmt.Errorf("record call control id: %w", err)
+	}
+	return nil
+}
+
 // WriteCallSignal persists the result of applying one signal, inside the same
 // tx. It sets the status, records the provider control id when first seen,
-// sets ended_at on a terminal state, and appends one call_events row. It
-// requires the status it read (from), so a stale write cannot overwrite a
-// later one.
+// records the reason code when the signal carries one, sets ended_at on a
+// terminal state, and appends one call_events row. It requires the status it
+// read (from), so a stale write cannot overwrite a later one.
+//
+// The reason is kept so the state machine can rebuild it: a hangup that arrives
+// before answered is only completed by a later answered signal when its reason
+// is known to be normal clearing or the time limit.
 func WriteCallSignal(ctx context.Context, tx *sql.Tx, from CallSignalState, to, kind, reason, providerEventID, controlID string, now time.Time) error {
 	ts := now.UTC().Format(storageTime)
 	ended := sql.NullString{}
@@ -53,8 +81,9 @@ func WriteCallSignal(ctx context.Context, tx *sql.Tx, from CallSignalState, to, 
 	}
 	res, err := tx.ExecContext(ctx, `UPDATE calls SET status = ?, updated_at = ?,
 		provider_call_control_id = COALESCE(provider_call_control_id, NULLIF(?, '')),
-		ended_at = COALESCE(ended_at, ?)
-		WHERE id = ? AND status = ?`, to, ts, controlID, ended, from.ID, from.Status)
+		ended_at = COALESCE(ended_at, ?),
+		outcome_reason_code = COALESCE(NULLIF(?, ''), outcome_reason_code)
+		WHERE id = ? AND status = ?`, to, ts, controlID, ended, reason, from.ID, from.Status)
 	if err != nil {
 		return fmt.Errorf("write call signal: %w", err)
 	}

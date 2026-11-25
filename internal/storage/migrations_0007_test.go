@@ -145,3 +145,39 @@ func TestMigration0007RollbackRestoresOwnerScopedKey(t *testing.T) {
 		t.Fatalf("foreign_keys after rollback = %d, want 1", n)
 	}
 }
+
+// restoreForeignKeys must re-enable enforcement and confirm it. A connection
+// left with enforcement off is an error, so a migration cannot pass silently.
+func TestRestoreForeignKeysConfirmsEnforcement(t *testing.T) {
+	ctx := context.Background()
+	s, err := Open(ctx, filepath.Join(t.TempDir(), "fk.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = s.Close() })
+	conn, err := s.db.Conn(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = conn.Close() })
+
+	if _, err := conn.ExecContext(ctx, "PRAGMA foreign_keys = OFF"); err != nil {
+		t.Fatal(err)
+	}
+	if err := restoreForeignKeys(ctx, conn); err != nil {
+		t.Fatalf("restore on a normal connection: %v", err)
+	}
+	var on int
+	if err := conn.QueryRowContext(ctx, "PRAGMA foreign_keys").Scan(&on); err != nil || on != 1 {
+		t.Fatalf("pragma after restore = %d (err %v), want 1", on, err)
+	}
+	// A closed connection cannot be restored, and that must be reported. The
+	// pool holds a single connection, so this reuses conn rather than opening
+	// another, which would block.
+	if err := conn.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := restoreForeignKeys(ctx, conn); err == nil {
+		t.Fatal("restore on a closed connection returned no error")
+	}
+}

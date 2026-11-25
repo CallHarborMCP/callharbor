@@ -52,43 +52,23 @@ func (s *Store) LoadCallForMedia(ctx context.Context, callID string) (MediaCall,
 	return m, nil
 }
 
-// FailOpenCall marks a call failed with a reason. Unlike MarkCallFailed it also
-// covers ringing and active calls, because a media-path failure can happen
-// after the callee has answered. A call already ended or failed is not
-// changed. One event is appended.
-func (s *Store) FailOpenCall(ctx context.Context, callID, reasonCode string, now time.Time) error {
-	if reasonCode == "" {
-		return errors.New("storage: fail open call: empty reason")
-	}
-	tx, err := s.db.BeginTx(ctx, nil)
+// BindStreamControlID records the control id a media start frame proved, when
+// the call has none yet. It is conditional: it writes only while the id is
+// empty and the call is still live, so it never replaces a recorded id. It
+// reports whether a row was bound. A stream that binds from its start frame is
+// the only way a call gets a control id without a dial response, and the local
+// hangup needs that id to end the leg.
+func (s *Store) BindStreamControlID(ctx context.Context, callID, controlID string, now time.Time) (bool, error) {
+	res, err := s.db.ExecContext(ctx, `UPDATE calls SET provider_call_control_id = ?, updated_at = ?
+		WHERE id = ? AND provider_call_control_id IS NULL
+		AND status IN ('initiating', 'ringing', 'active')`,
+		controlID, now.UTC().Format(storageTime), callID)
 	if err != nil {
-		return fmt.Errorf("begin fail open call: %w", err)
-	}
-	defer func() { _ = tx.Rollback() }()
-	ts := now.UTC().Format(storageTime)
-	res, err := tx.ExecContext(ctx, `UPDATE calls SET status = 'failed', outcome_reason_code = ?,
-		ended_at = ?, updated_at = ?
-		WHERE id = ? AND status IN ('queued', 'initiating', 'ringing', 'active', 'ending') AND ended_at IS NULL`,
-		reasonCode, ts, ts, callID)
-	if err != nil {
-		return fmt.Errorf("fail open call: %w", err)
+		return false, fmt.Errorf("bind stream control id: %w", err)
 	}
 	n, err := res.RowsAffected()
 	if err != nil {
-		return fmt.Errorf("fail open call rows: %w", err)
+		return false, fmt.Errorf("bind stream control id: %w", err)
 	}
-	if n == 0 {
-		return nil
-	}
-	var owner string
-	if err := tx.QueryRowContext(ctx, `SELECT owner_user_id FROM calls WHERE id = ?`, callID).Scan(&owner); err != nil {
-		return fmt.Errorf("read call owner: %w", err)
-	}
-	if err := appendCallEvent(ctx, tx, CallEvent{
-		CallID: callID, OwnerUserID: owner, Kind: "call.failed", State: "failed",
-		ReasonCode: reasonCode, Provider: "telnyx", OccurredAt: ts,
-	}); err != nil {
-		return err
-	}
-	return tx.Commit()
+	return n == 1, nil
 }

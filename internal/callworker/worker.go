@@ -312,26 +312,41 @@ func (w *Worker) dialOne(ctx context.Context, c storage.QueuedCallRef) error {
 		WebhookURL:   plan.WebhookURL,
 		StreamURL:    plan.StreamURL,
 		Codec:        plan.Codec,
-		CommandID:    telnyx.CommandID(c.ID),
-		TimeLimit:    plan.MaxSeconds,
+		// CommandID is sent so a retried request carries the same id. Telnyx's
+		// handling of a repeated POST /calls is not verified, and this worker
+		// never retries a dial, so this is not relied on for dedupe.
+		CommandID: telnyx.CommandID(c.ID),
+		// ClientState carries the call id. Webhooks check it, so an event
+		// that names another call is refused rather than applied.
+		ClientState: []byte(c.ID),
+		TimeLimit:   plan.MaxSeconds,
 	})
 	// Writes after a dial use a context that survives cancellation. A dial that
 	// Telnyx accepted must still record its control id during shutdown.
 	durable := context.WithoutCancel(ctx)
 	if err != nil {
-		// A dial cut off by shutdown may still have reached Telnyx. Only an
-		// answer that was actually received counts as rejected.
-		if ctx.Err() != nil {
-			w.opts.Logger.Warn("dial interrupted by shutdown", "call_id", c.ID)
-			return w.fail(durable, c, ReasonDialUnconfirmed)
+		// Only a received 4xx answer proves Telnyx refused the dial. Anything
+		// else (transport error, timeout, 5xx, shutdown, or a 2xx with a bad
+		// body) may have placed a billable leg, so it is left unconfirmed.
+		if rejected(err) {
+			w.opts.Logger.Warn("dial rejected", "call_id", c.ID, "error", err.Error())
+			return w.fail(durable, c, ReasonDialRejected)
 		}
-		w.opts.Logger.Warn("dial rejected", "call_id", c.ID, "error", err.Error())
-		return w.fail(durable, c, ReasonDialRejected)
+		w.opts.Logger.Warn("dial unconfirmed", "call_id", c.ID, "error", err.Error())
+		return w.fail(durable, c, ReasonDialUnconfirmed)
 	}
 	if err := w.store.RecordProviderCallControlID(durable, c.ID, c.OwnerUserID, res.CallControlID, w.opts.Now()); err != nil {
 		return fmt.Errorf("record control id %s: %w", c.ID, err)
 	}
 	return nil
+}
+
+// rejected reports whether a dial error is Telnyx's received 4xx answer. Only
+// that proves no leg was placed. A 5xx, a transport error, a timeout or a 2xx
+// with a bad body does not.
+func rejected(err error) bool {
+	var ae *telnyx.APIError
+	return errors.As(err, &ae) && ae.Status >= 400 && ae.Status < 500
 }
 
 func (w *Worker) fail(ctx context.Context, c storage.QueuedCallRef, reason string) error {

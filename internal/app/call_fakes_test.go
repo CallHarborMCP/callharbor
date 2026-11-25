@@ -33,6 +33,30 @@ type fakeTelnyx struct {
 	mu      sync.Mutex
 	dials   []map[string]any
 	hangups []string // "control_id|command_id", in arrival order
+	// badDialBody makes POST /v2/calls answer 200 with a body that has no
+	// call_control_id. The dial was accepted but the response cannot confirm it.
+	badDialBody bool
+	// dialGate, when set, holds POST /v2/calls until it is closed, so a test can
+	// prove make_call answers before the provider has even answered the dial.
+	dialGate chan struct{}
+}
+
+// setBadDialBody switches the dial response to a 2xx with no control id.
+func (f *fakeTelnyx) setBadDialBody(v bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.badDialBody = v
+}
+
+// holdDials makes the next dials wait until the returned release func runs.
+// The release is idempotent, so a test may call it early and again in cleanup.
+func (f *fakeTelnyx) holdDials() func() {
+	f.mu.Lock()
+	gate := make(chan struct{})
+	f.dialGate = gate
+	f.mu.Unlock()
+	var once sync.Once
+	return func() { once.Do(func() { close(gate) }) }
 }
 
 // hangupsSeen returns a copy of every hangup the fake received.
@@ -64,7 +88,18 @@ func newFakeTelnyx(t *testing.T, controlID string) *fakeTelnyx {
 		}
 		f.mu.Lock()
 		f.dials = append(f.dials, body)
+		bad := f.badDialBody
+		gate := f.dialGate
 		f.mu.Unlock()
+		// The dial is recorded before the gate, so a test can see it was sent
+		// while the provider has not yet answered.
+		if gate != nil {
+			<-gate
+		}
+		if bad {
+			writeFakeJSON(w, map[string]any{"data": map[string]any{"call_leg_id": "leg-1"}})
+			return
+		}
 		writeFakeJSON(w, map[string]any{"data": map[string]any{
 			"call_control_id": f.controlID, "call_leg_id": "leg-1", "call_session_id": "sess-1",
 		}})
@@ -217,6 +252,38 @@ func (f *fakeAI) handle(ctx context.Context, c *websocket.Conn, m map[string]any
 		_ = c.Write(ctx, websocket.MessageText, out)
 	case "input_audio_buffer.append", "session.input_audio.append":
 		f.record(aiEventAudio)
+	case "session.close": // live_ws close handshake: acknowledge, then the caller drops
+		// The app sends session.close on a cap or a stop and waits for this
+		// acknowledgement before dropping the socket. A fake that never answers
+		// makes each close wait the full graceful timeout.
+		_ = c.Write(ctx, websocket.MessageText, []byte(`{"type":"session.closed","event_id":"evt_closed","client_event_id":"ch_close"}`))
+	}
+}
+
+// sendAgentAudio pushes one agent audio chunk down the open session, in the
+// active protocol's output-audio event. The chunk is base64 PCMU.
+func (f *fakeAI) sendAgentAudio(t *testing.T, payload string) {
+	t.Helper()
+	f.mu.Lock()
+	c := f.live
+	f.mu.Unlock()
+	if c == nil {
+		t.Fatal("no provider session open to send agent audio")
+	}
+	var msg map[string]any
+	if f.protocol == realtime.ProtocolLive {
+		msg = map[string]any{"type": "session.output_audio.delta", "event_id": "evt_out",
+			"delta": payload, "start_ms": 0, "end_ms": 20}
+	} else {
+		msg = map[string]any{"type": "response.output_audio.delta", "event_id": "evt_out",
+			"delta": payload, "item_id": "item_1", "response_id": "resp_1"}
+	}
+	b, err := json.Marshal(msg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := c.Write(context.Background(), websocket.MessageText, b); err != nil {
+		t.Fatalf("send agent audio: %v", err)
 	}
 }
 

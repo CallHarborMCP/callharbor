@@ -3,6 +3,7 @@ package callworker
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync"
 	"testing"
 	"time"
@@ -198,21 +199,38 @@ func TestDialCarriesDeterministicCommandIDAndCallFields(t *testing.T) {
 	}
 }
 
-func TestDialErrorFailsCallWithoutRedial(t *testing.T) {
-	store := newFakeStore(call("c1"))
-	d := &fakeDialer{err: errors.New("telnyx: refused")}
-	w := newWorker(t, store, fixedPlanner{dialer: d}, true)
-	if err := w.Tick(context.Background()); err != nil {
-		t.Fatal(err)
+// Only a received 4xx answer proves a dial was refused. Every other failure may
+// have placed a billable leg, so it is recorded as unconfirmed, and never
+// redialed.
+func TestDialFailureClassification(t *testing.T) {
+	cases := []struct {
+		name   string
+		err    error
+		reason string
+	}{
+		{"received 4xx is rejected", &telnyx.APIError{Method: "POST", Path: "/calls", Status: 422}, ReasonDialRejected},
+		{"5xx is unconfirmed", &telnyx.APIError{Method: "POST", Path: "/calls", Status: 503}, ReasonDialUnconfirmed},
+		{"transport error is unconfirmed", errors.New("dial tcp: connection reset"), ReasonDialUnconfirmed},
+		{"2xx with bad body is unconfirmed", fmt.Errorf("%w: dial response", telnyx.ErrBadResponse), ReasonDialUnconfirmed},
 	}
-	if err := w.Tick(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	if len(d.dials) != 1 {
-		t.Fatalf("dials = %d, want exactly 1", len(d.dials))
-	}
-	if store.status["c1"] != "failed" || store.reasons["c1"] != ReasonDialRejected {
-		t.Fatalf("status=%s reason=%s", store.status["c1"], store.reasons["c1"])
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			store := newFakeStore(call("c1"))
+			d := &fakeDialer{err: tc.err}
+			w := newWorker(t, store, fixedPlanner{dialer: d}, true)
+			if err := w.Tick(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+			if err := w.Tick(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+			if len(d.dials) != 1 {
+				t.Fatalf("dials = %d, want exactly 1", len(d.dials))
+			}
+			if store.status["c1"] != "failed" || store.reasons["c1"] != tc.reason {
+				t.Fatalf("status=%s reason=%s, want failed/%s", store.status["c1"], store.reasons["c1"], tc.reason)
+			}
+		})
 	}
 }
 

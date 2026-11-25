@@ -6,7 +6,6 @@ import (
 	"time"
 
 	"github.com/CallHarborMCP/callharbor/internal/callworker"
-	"github.com/CallHarborMCP/callharbor/internal/realtime"
 )
 
 // legHangupCommandID is the command id the production hangup sends for a call,
@@ -19,45 +18,49 @@ func legHangupCommandID(callID string) string { return callworker.LegCommandID(c
 // reach Telnyx for the call's control id. A signed call.hangup then moves the
 // call to ended. The test waits on the cap, not a fixed sleep.
 func TestMaxDurationCapEndsTheCall(t *testing.T) {
-	const ctl = "v3:ctl-cap"
-	tel := newFakeTelnyx(t, ctl)
-	ai := newFakeAI(t, realtime.ProtocolRealtime)
-	env := startCallApp(t, tel, nil)
-	h := env.admin.headers(true)
-	tpID := createTelephonyFixture(t, env, h)
-	createAIFixture(t, env, h, realtime.ProtocolRealtime, ai.endpoint())
+	for _, protocol := range aiFlowProtocols {
+		t.Run(string(protocol), func(t *testing.T) {
+			const ctl = "v3:ctl-cap"
+			tel := newFakeTelnyx(t, ctl)
+			ai := newFakeAI(t, protocol)
+			env := startCallApp(t, tel, nil)
+			h := env.admin.headers(true)
+			tpID := createTelephonyFixture(t, env, h)
+			createAIFixture(t, env, h, protocol, ai.endpoint())
 
-	callID := createCapCall(t, env, h, tpID, "cap-1")
-	tel.waitDials(t, 1)
-	env.signedWebhook(callID, "call.initiated", "evt-cap-1", ctl)
-	env.signedWebhook(callID, "call.answered", "evt-cap-2", ctl)
+			callID := createCapCall(t, env, h, tpID, "cap-1")
+			tel.waitDials(t, 1)
+			env.signedWebhook(callID, "call.initiated", "evt-cap-1", ctl)
+			env.signedWebhook(callID, "call.answered", "evt-cap-2", ctl)
 
-	mediaConn, err := env.signedMediaDial(env.dialedStreamURL())
-	if err != nil {
-		t.Fatalf("media dial: %v", err)
-	}
-	defer func() { _ = mediaConn.Close() }()
-	sendStart(t, mediaConn, ctl)
+			mediaConn, err := env.signedMediaDial(env.dialedStreamURL())
+			if err != nil {
+				t.Fatalf("media dial: %v", err)
+			}
+			defer func() { _ = mediaConn.Close() }()
+			sendStart(t, mediaConn, ctl)
 
-	waitAISessionClosed(t, ai)
-	waitTechnicalStatus(t, env, h, callID, "ending")
+			waitAISessionClosed(t, ai)
+			waitTechnicalStatus(t, env, h, callID, "ending")
 
-	// Exactly one hangup, for the stored control id. The command id is the
-	// deterministic one, so a retry of the same leg is idempotent at Telnyx.
-	waitHangups(t, tel, 1)
-	got := tel.hangupsSeen()
-	if len(got) != 1 || got[0] != ctl+"|"+legHangupCommandID(callID) {
-		t.Fatalf("hangups = %v, want one for %s with the leg command id", got, ctl)
-	}
-	if reason := callReason(t, env, h, callID); reason != "max_duration" {
-		t.Fatalf("outcome_reason_code = %q, want max_duration", reason)
-	}
+			// Exactly one hangup, for the stored control id. The command id is the
+			// deterministic one, so a retry of the same leg is idempotent at Telnyx.
+			waitHangups(t, tel, 1)
+			got := tel.hangupsSeen()
+			if len(got) != 1 || got[0] != ctl+"|"+legHangupCommandID(callID) {
+				t.Fatalf("hangups = %v, want one for %s with the leg command id", got, ctl)
+			}
+			if reason := callReason(t, env, h, callID); reason != "max_duration" {
+				t.Fatalf("outcome_reason_code = %q, want max_duration", reason)
+			}
 
-	// The hangup is terminal only once Telnyx reports it.
-	env.signedWebhook(callID, "call.hangup", "evt-cap-3", ctl)
-	waitTechnicalStatus(t, env, h, callID, "ended")
-	if n := len(tel.hangupsSeen()); n != 1 {
-		t.Fatalf("hangups after call.hangup = %d, want still 1", n)
+			// The hangup is terminal only once Telnyx reports it.
+			env.signedWebhook(callID, "call.hangup", "evt-cap-3", ctl)
+			waitTechnicalStatus(t, env, h, callID, "ended")
+			if n := len(tel.hangupsSeen()); n != 1 {
+				t.Fatalf("hangups after call.hangup = %d, want still 1", n)
+			}
+		})
 	}
 }
 
@@ -66,38 +69,42 @@ func TestMaxDurationCapEndsTheCall(t *testing.T) {
 // one hangup for the leg, with reason media_failed. The call must not be left
 // live.
 func TestMediaFailureEndsTheCallWithOneHangup(t *testing.T) {
-	const ctl = "v3:ctl-drop"
-	tel := newFakeTelnyx(t, ctl)
-	ai := newFakeAI(t, realtime.ProtocolRealtime)
-	env := startCallApp(t, tel, nil)
-	h := env.admin.headers(true)
-	tpID := createTelephonyFixture(t, env, h)
-	createAIFixture(t, env, h, realtime.ProtocolRealtime, ai.endpoint())
+	for _, protocol := range aiFlowProtocols {
+		t.Run(string(protocol), func(t *testing.T) {
+			const ctl = "v3:ctl-drop"
+			tel := newFakeTelnyx(t, ctl)
+			ai := newFakeAI(t, protocol)
+			env := startCallApp(t, tel, nil)
+			h := env.admin.headers(true)
+			tpID := createTelephonyFixture(t, env, h)
+			createAIFixture(t, env, h, protocol, ai.endpoint())
 
-	callID := createCapCall(t, env, h, tpID, "drop-1")
-	tel.waitDials(t, 1)
-	env.signedWebhook(callID, "call.initiated", "evt-drop-1", ctl)
-	env.signedWebhook(callID, "call.answered", "evt-drop-2", ctl)
+			callID := createCapCall(t, env, h, tpID, "drop-1")
+			tel.waitDials(t, 1)
+			env.signedWebhook(callID, "call.initiated", "evt-drop-1", ctl)
+			env.signedWebhook(callID, "call.answered", "evt-drop-2", ctl)
 
-	mediaConn, err := env.signedMediaDial(env.dialedStreamURL())
-	if err != nil {
-		t.Fatalf("media dial: %v", err)
-	}
-	defer func() { _ = mediaConn.Close() }()
-	sendStart(t, mediaConn, ctl)
+			mediaConn, err := env.signedMediaDial(env.dialedStreamURL())
+			if err != nil {
+				t.Fatalf("media dial: %v", err)
+			}
+			defer func() { _ = mediaConn.Close() }()
+			sendStart(t, mediaConn, ctl)
 
-	// Wait until the session is live, so the drop happens mid-call and not
-	// during setup. The instructions event is the first one the provider sees.
-	waitEvents(t, ai, 1)
-	ai.drop()
+			// Wait until the session is live, so the drop happens mid-call and not
+			// during setup. The instructions event is the first one the provider sees.
+			waitEvents(t, ai, 1)
+			ai.drop()
 
-	waitTechnicalStatus(t, env, h, callID, "ending")
-	waitHangups(t, tel, 1)
-	if got := tel.hangupsSeen(); len(got) != 1 || got[0] != ctl+"|"+legHangupCommandID(callID) {
-		t.Fatalf("hangups = %v, want one for %s", got, ctl)
-	}
-	if reason := callReason(t, env, h, callID); reason != "media_failed" {
-		t.Fatalf("outcome_reason_code = %q, want media_failed", reason)
+			waitTechnicalStatus(t, env, h, callID, "ending")
+			waitHangups(t, tel, 1)
+			if got := tel.hangupsSeen(); len(got) != 1 || got[0] != ctl+"|"+legHangupCommandID(callID) {
+				t.Fatalf("hangups = %v, want one for %s", got, ctl)
+			}
+			if reason := callReason(t, env, h, callID); reason != "media_failed" {
+				t.Fatalf("outcome_reason_code = %q, want media_failed", reason)
+			}
+		})
 	}
 }
 

@@ -15,23 +15,27 @@ import (
 // does not match the call looks exactly like an unknown call: 404, and no
 // provider session is opened.
 func TestMediaRejectsWrongTokenAsNotFound(t *testing.T) {
-	tel := newFakeTelnyx(t, "v3:ctl-2")
-	env := startCallApp(t, tel, nil)
-	h := env.admin.headers(true)
-	tpID := createTelephonyFixture(t, env, h)
-	createAIFixture(t, env, h, realtime.ProtocolRealtime, newFakeAI(t, realtime.ProtocolRealtime).endpoint())
-	status, _, body := sendJSON(t, env.client, http.MethodPost, env.base+"/api/v1/calls", map[string]any{
-		"profile_id": tpID, "to": "+14155550111", "objective": "Confirm",
-	}, withIdempotency(h, "reject-token"))
-	if status != http.StatusAccepted {
-		t.Fatalf("create call = %d %s", status, body)
-	}
-	tel.waitDials(t, 1)
-	// Swap the token for a wrong one in the dialed URL; the path shape is kept.
-	good := env.dialedStreamURL()
-	bad := good[:strings.LastIndex(good, "/")+1] + "not-the-token"
-	if _, err := env.signedMediaDial(bad); err == nil {
-		t.Fatal("stream with a wrong token was accepted")
+	for _, protocol := range aiFlowProtocols {
+		t.Run(string(protocol), func(t *testing.T) {
+			tel := newFakeTelnyx(t, "v3:ctl-2")
+			env := startCallApp(t, tel, nil)
+			h := env.admin.headers(true)
+			tpID := createTelephonyFixture(t, env, h)
+			createAIFixture(t, env, h, protocol, newFakeAI(t, protocol).endpoint())
+			status, _, body := sendJSON(t, env.client, http.MethodPost, env.base+"/api/v1/calls", map[string]any{
+				"profile_id": tpID, "to": "+14155550111", "objective": "Confirm",
+			}, withIdempotency(h, "reject-token"))
+			if status != http.StatusAccepted {
+				t.Fatalf("create call = %d %s", status, body)
+			}
+			tel.waitDials(t, 1)
+			// Swap the token for a wrong one in the dialed URL; the path shape is kept.
+			good := env.dialedStreamURL()
+			bad := good[:strings.LastIndex(good, "/")+1] + "not-the-token"
+			if _, err := env.signedMediaDial(bad); err == nil {
+				t.Fatal("stream with a wrong token was accepted")
+			}
+		})
 	}
 }
 
@@ -39,39 +43,43 @@ func TestMediaRejectsWrongTokenAsNotFound(t *testing.T) {
 // whose call_control_id does not match the recorded one is refused. The call
 // stays out of the active state and no provider session is opened.
 func TestMediaRejectsForeignControlIDAndFailsCall(t *testing.T) {
-	tel := newFakeTelnyx(t, "v3:ctl-3")
-	ai := newFakeAI(t, realtime.ProtocolRealtime)
-	env := startCallApp(t, tel, nil)
-	h := env.admin.headers(true)
-	tpID := createTelephonyFixture(t, env, h)
-	createAIFixture(t, env, h, realtime.ProtocolRealtime, ai.endpoint())
-	status, _, body := sendJSON(t, env.client, http.MethodPost, env.base+"/api/v1/calls", map[string]any{
-		"profile_id": tpID, "to": "+14155550111", "objective": "Confirm",
-	}, withIdempotency(h, "reject-bind"))
-	if status != http.StatusAccepted {
-		t.Fatalf("create call = %d %s", status, body)
-	}
-	callID, _ := decodeObject(t, body)["call_id"].(string)
-	tel.waitDials(t, 1)
-	env.signedWebhook(callID, "call.initiated", "evt-bind-1", "v3:ctl-3")
+	for _, protocol := range aiFlowProtocols {
+		t.Run(string(protocol), func(t *testing.T) {
+			tel := newFakeTelnyx(t, "v3:ctl-3")
+			ai := newFakeAI(t, protocol)
+			env := startCallApp(t, tel, nil)
+			h := env.admin.headers(true)
+			tpID := createTelephonyFixture(t, env, h)
+			createAIFixture(t, env, h, protocol, ai.endpoint())
+			status, _, body := sendJSON(t, env.client, http.MethodPost, env.base+"/api/v1/calls", map[string]any{
+				"profile_id": tpID, "to": "+14155550111", "objective": "Confirm",
+			}, withIdempotency(h, "reject-bind"))
+			if status != http.StatusAccepted {
+				t.Fatalf("create call = %d %s", status, body)
+			}
+			callID, _ := decodeObject(t, body)["call_id"].(string)
+			tel.waitDials(t, 1)
+			env.signedWebhook(callID, "call.initiated", "evt-bind-1", "v3:ctl-3")
 
-	mediaConn, err := env.signedMediaDial(env.dialedStreamURL())
-	if err != nil {
-		t.Fatalf("media dial: %v", err)
+			mediaConn, err := env.signedMediaDial(env.dialedStreamURL())
+			if err != nil {
+				t.Fatalf("media dial: %v", err)
+			}
+			defer func() { _ = mediaConn.Close() }()
+			sendStart(t, mediaConn, "v3:someone-else")
+			// A refused start closes the stream. The read returns only after the server
+			// has processed the frame, so the checks below are not racing it.
+			readCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			if _, err := mediaConn.Recv(readCtx); err == nil {
+				t.Fatal("stream stayed open after a foreign control id")
+			}
+			if got := ai.snapshot(); len(got) != 0 {
+				t.Fatalf("provider saw %v for a foreign control id", got)
+			}
+			waitForCallStatus(t, env, h, callID, "ringing")
+		})
 	}
-	defer func() { _ = mediaConn.Close() }()
-	sendStart(t, mediaConn, "v3:someone-else")
-	// A refused start closes the stream. The read returns only after the server
-	// has processed the frame, so the checks below are not racing it.
-	readCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	if _, err := mediaConn.Recv(readCtx); err == nil {
-		t.Fatal("stream stayed open after a foreign control id")
-	}
-	if got := ai.snapshot(); len(got) != 0 {
-		t.Fatalf("provider saw %v for a foreign control id", got)
-	}
-	waitForCallStatus(t, env, h, callID, "ringing")
 }
 
 // waitForCallStatus polls GET /api/v1/calls/{id} until technical_status is
@@ -98,32 +106,36 @@ func waitForCallStatus(t *testing.T, env *callTestEnv, h http.Header, callID, wa
 // and is visible in the call status. The injected dialer returns that error,
 // since the shipped matrices accept the fixed media format.
 func TestMediaCapabilityMismatchIsSurfacedInCallStatus(t *testing.T) {
-	tel := newFakeTelnyx(t, "v3:ctl-cap")
-	refuse := realtime.Dialers{
-		realtime.ProtocolRealtime: func(context.Context, realtime.Profile) (realtime.Session, error) {
-			return nil, fmt.Errorf("refused: %w", realtime.ErrCapability)
-		},
+	for _, protocol := range aiFlowProtocols {
+		t.Run(string(protocol), func(t *testing.T) {
+			tel := newFakeTelnyx(t, "v3:ctl-cap")
+			refuse := realtime.Dialers{
+				protocol: func(context.Context, realtime.Profile) (realtime.Session, error) {
+					return nil, fmt.Errorf("refused: %w", realtime.ErrCapability)
+				},
+			}
+			env := startCallApp(t, tel, refuse)
+			h := env.admin.headers(true)
+			tpID := createTelephonyFixture(t, env, h)
+			createAIFixture(t, env, h, protocol, newFakeAI(t, protocol).endpoint())
+			status, _, body := sendJSON(t, env.client, http.MethodPost, env.base+"/api/v1/calls", map[string]any{
+				"profile_id": tpID, "to": "+14155550111", "objective": "Confirm",
+			}, withIdempotency(h, "reject-cap"))
+			if status != http.StatusAccepted {
+				t.Fatalf("create call = %d %s", status, body)
+			}
+			callID, _ := decodeObject(t, body)["call_id"].(string)
+			tel.waitDials(t, 1)
+			env.signedWebhook(callID, "call.initiated", "evt-cap-1", "v3:ctl-cap")
+			mediaConn, err := env.signedMediaDial(env.dialedStreamURL())
+			if err != nil {
+				t.Fatalf("media dial: %v", err)
+			}
+			defer func() { _ = mediaConn.Close() }()
+			sendStart(t, mediaConn, "v3:ctl-cap")
+			waitForCallReason(t, env, h, callID, "capability_mismatch")
+		})
 	}
-	env := startCallApp(t, tel, refuse)
-	h := env.admin.headers(true)
-	tpID := createTelephonyFixture(t, env, h)
-	createAIFixture(t, env, h, realtime.ProtocolRealtime, newFakeAI(t, realtime.ProtocolRealtime).endpoint())
-	status, _, body := sendJSON(t, env.client, http.MethodPost, env.base+"/api/v1/calls", map[string]any{
-		"profile_id": tpID, "to": "+14155550111", "objective": "Confirm",
-	}, withIdempotency(h, "reject-cap"))
-	if status != http.StatusAccepted {
-		t.Fatalf("create call = %d %s", status, body)
-	}
-	callID, _ := decodeObject(t, body)["call_id"].(string)
-	tel.waitDials(t, 1)
-	env.signedWebhook(callID, "call.initiated", "evt-cap-1", "v3:ctl-cap")
-	mediaConn, err := env.signedMediaDial(env.dialedStreamURL())
-	if err != nil {
-		t.Fatalf("media dial: %v", err)
-	}
-	defer func() { _ = mediaConn.Close() }()
-	sendStart(t, mediaConn, "v3:ctl-cap")
-	waitForCallReason(t, env, h, callID, "capability_mismatch")
 }
 
 // waitForCallReason polls the call until outcome_reason_code is want, or fails.
@@ -220,5 +232,62 @@ func TestCallWithoutVerifiedTelephonyIsRefusedBeforeQueue(t *testing.T) {
 	}
 	if n := countCallRows(t, env.dataDir); n != 0 {
 		t.Fatalf("refused call wrote %d rows", n)
+	}
+}
+
+// TestSecondStreamForLiveCallIsRefused covers m1 on the wire. Once a call has
+// one live media session, a second stream for the same call is refused and
+// closed, and the first session keeps running untouched. The provider sees only
+// the first session's setup.
+func TestSecondStreamForLiveCallIsRefused(t *testing.T) {
+	for _, protocol := range aiFlowProtocols {
+		t.Run(string(protocol), func(t *testing.T) {
+			const ctl = "v3:ctl-second"
+			tel := newFakeTelnyx(t, ctl)
+			ai := newFakeAI(t, protocol)
+			env := startCallApp(t, tel, nil)
+			h := env.admin.headers(true)
+			tpID := createTelephonyFixture(t, env, h)
+			createAIFixture(t, env, h, protocol, ai.endpoint())
+			status, _, body := sendJSON(t, env.client, http.MethodPost, env.base+"/api/v1/calls", map[string]any{
+				"profile_id": tpID, "to": "+14155550111", "objective": "Confirm",
+			}, withIdempotency(h, "second-stream"))
+			if status != http.StatusAccepted {
+				t.Fatalf("create call = %d %s", status, body)
+			}
+			callID, _ := decodeObject(t, body)["call_id"].(string)
+			tel.waitDials(t, 1)
+			env.signedWebhook(callID, "call.initiated", "evt-second-1", ctl)
+			env.signedWebhook(callID, "call.answered", "evt-second-2", ctl)
+
+			first, err := env.signedMediaDial(env.dialedStreamURL())
+			if err != nil {
+				t.Fatalf("first media dial: %v", err)
+			}
+			defer func() { _ = first.Close() }()
+			sendStart(t, first, ctl)
+			waitEvents(t, ai, 1)
+
+			// A distinct signing instant, as a real second dial would have. The same
+			// instant would repeat the handshake digest and be refused as a replay
+			// before the session-slot check runs.
+			second, err := env.signedMediaDialAt(env.dialedStreamURL(), time.Now().Add(time.Second))
+			if err != nil {
+				t.Fatalf("second media dial: %v", err)
+			}
+			defer func() { _ = second.Close() }()
+			sendStart(t, second, ctl)
+			readCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			if _, err := second.Recv(readCtx); err == nil {
+				t.Fatal("second stream for a live call stayed open")
+			}
+			if readCtx.Err() != nil {
+				t.Fatal("second stream was not closed within 5s")
+			}
+			// The first session is untouched: it is still live and the call stays
+			// live. A refused second stream must not end the call.
+			waitForCallStatus(t, env, h, callID, "active")
+		})
 	}
 }

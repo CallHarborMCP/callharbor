@@ -135,6 +135,18 @@ func (o *CallOperator) MakeCall(ctx context.Context, actor Actor, in MakeCallInp
 	if err != nil {
 		return MakeCallResult{}, err
 	}
+	// Refuse the full session text now, not at media time. The profile's
+	// instructions plus the brief and the notice must fit the limit, so an
+	// oversize request is never queued. A later edit to the profile is still
+	// checked when the media session starts.
+	if _, err := RenderInstructions(aiProfile.Instructions, rendered.CanonicalJSON, o.deps.MaxBriefBytes); err != nil {
+		if errors.Is(err, ErrInstructionsTooLarge) {
+			return MakeCallResult{}, newError(CodeInvalidInput, fmt.Sprintf(
+				"brief_too_large: the session instructions exceed %d bytes with the AI profile (CALLHARBOR_MAX_CALL_BRIEF_BYTES)",
+				o.deps.MaxBriefBytes))
+		}
+		return MakeCallResult{}, internal(fmt.Errorf("render instructions: %w", err))
+	}
 
 	callID, err := o.deps.NewCallID()
 	if err != nil {

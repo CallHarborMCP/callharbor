@@ -431,3 +431,43 @@ func TestReplayValidatesBeforeLookup(t *testing.T) {
 		t.Fatal("invalid request was written")
 	}
 }
+
+// The limit applies to the full session text, profile instructions included.
+// A request whose brief fits alone but whose profile pushes the rendered text
+// over the limit is refused with brief_too_large before any insert, so it never
+// gets a 202 for a call that media would later refuse.
+func TestMakeCallRefusesFullRenderedTextOverLimitWithoutInsert(t *testing.T) {
+	ai := oneAI()
+	ai.Instructions = strings.Repeat("p", 4000)
+	store := newFakeCallStore(ai)
+	op, err := NewCallOperator(store, CallDeps{
+		Resolver: fakeResolver{p: readyProfile()}, MaxBriefBytes: 4096,
+		Now:       func() time.Time { return time.Date(2026, 11, 25, 10, 0, 0, 0, time.UTC) },
+		NewCallID: func() (string, error) { return "call_test", nil },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	in := validInput()
+	_, err = op.MakeCall(context.Background(), callerAlice, in)
+	if err == nil || !strings.Contains(err.Error(), "brief_too_large") {
+		t.Fatalf("oversize rendered text = %v, want brief_too_large", err)
+	}
+	if store.inserts != 0 {
+		t.Fatalf("inserts = %d, want 0: an oversize request must not queue", store.inserts)
+	}
+}
+
+// A request that fits with the profile instructions still queues.
+func TestMakeCallQueuesWhenRenderedTextFits(t *testing.T) {
+	ai := oneAI()
+	ai.Instructions = "short profile"
+	store := newFakeCallStore(ai)
+	op := newOperator(t, store, fakeResolver{p: readyProfile()})
+	if _, err := op.MakeCall(context.Background(), callerAlice, validInput()); err != nil {
+		t.Fatalf("fitting request = %v", err)
+	}
+	if store.inserts != 1 {
+		t.Fatalf("inserts = %d, want 1", store.inserts)
+	}
+}

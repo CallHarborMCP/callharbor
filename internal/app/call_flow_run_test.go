@@ -80,6 +80,12 @@ func TestCallFlowEndToEnd(t *testing.T) {
 			if len(instr) < 20*1024 {
 				t.Fatalf("instructions = %d bytes, want the full over-20KB context", len(instr))
 			}
+
+			// Agent to callee: a chunk the provider sends must reach the Telnyx
+			// media stream as a media frame with the same payload.
+			const agentChunk = "QUFBQUFBQUFBQQ=="
+			ai.sendAgentAudio(t, agentChunk)
+			assertStreamMediaPayload(t, mediaConn, agentChunk)
 		})
 	}
 }
@@ -154,6 +160,37 @@ func sendStart(t *testing.T, s *telnyxfake.Stream, controlID string) {
 	}
 	if err := s.Send(context.Background(), b); err != nil {
 		t.Fatalf("send start: %v", err)
+	}
+}
+
+// assertStreamMediaPayload reads CallHarbor's outbound frames until a media
+// frame arrives and checks its payload. A bounded context keeps a missing frame
+// from hanging the test. Non-media frames such as marks are skipped.
+func assertStreamMediaPayload(t *testing.T, s *telnyxfake.Stream, want string) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	for {
+		b, err := s.Recv(ctx)
+		if err != nil {
+			t.Fatalf("no agent media frame reached the stream: %v", err)
+		}
+		var f struct {
+			Event string `json:"event"`
+			Media struct {
+				Payload string `json:"payload"`
+			} `json:"media"`
+		}
+		if err := json.Unmarshal(b, &f); err != nil {
+			t.Fatalf("stream frame is not JSON: %v", err)
+		}
+		if f.Event != "media" {
+			continue
+		}
+		if f.Media.Payload != want {
+			t.Fatalf("agent media payload = %q, want %q", f.Media.Payload, want)
+		}
+		return
 	}
 }
 

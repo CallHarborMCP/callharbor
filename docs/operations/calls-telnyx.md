@@ -10,7 +10,7 @@ refuses when it is missing, and how to roll back safely. The REST contract is in
 | Setting | Required | Purpose |
 | --- | --- | --- |
 | `CALLHARBOR_PUBLIC_URL` | Yes | The public origin Telnyx calls back. Must be `https` in production. |
-| `CALLHARBOR_MASTER_KEY` or `CALLHARBOR_MASTER_KEY_FILE` | Yes | Secrets key. Call stream URLs and webhook keys derive from it. |
+| `CALLHARBOR_MASTER_KEY` or `CALLHARBOR_MASTER_KEY_FILE` | Yes | Secrets key. Stored Telnyx keys, including the webhook public key, are encrypted with it. Stream URL tokens are derived from it. |
 | `CALLHARBOR_MAX_CALL_BRIEF_BYTES` | No | Limit on the canonical brief, default 32 KiB, bounds 1 KiB to 256 KiB. A larger brief is refused with `brief_too_large`. |
 
 The call worker runs only when `CALLHARBOR_PUBLIC_URL` is set **and** the master
@@ -45,8 +45,10 @@ A new call needs a telephony profile that is:
 Otherwise the call is refused with `telephony_not_verified`,
 `telephony_connection_missing` or `telephony_webhook_key_missing`.
 
-The webhook public key is resolved from the telephony profile owner's secrets,
-not the grantee's.
+The webhook public key is stored encrypted with the master key, not derived from
+it, and it is resolved from the telephony profile owner's secrets, not the
+grantee's. Each dial sends its own webhook URL, so the server does not depend on
+one webhook URL configured in Telnyx.
 
 ## Grants
 
@@ -62,6 +64,9 @@ On shutdown the server stops taking new dials, lets an in-flight dial finish up
 to `CALLHARBOR_SHUTDOWN_TIMEOUT`, then sends a best-effort hangup for each live
 leg. A hangup that fails is logged and does not block shutdown. A dial cut off by
 shutdown is recorded as `dial_unconfirmed`, never redialed.
+
+Dials are serial: one worker places one call at a time, so a slow dial delays
+the dials queued behind it. Head-of-line blocking is tracked for issue #65.
 
 ## Ending a call from CallHarbor
 

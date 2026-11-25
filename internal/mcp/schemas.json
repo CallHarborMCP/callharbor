@@ -426,7 +426,7 @@
           "type": "string"
         },
         "instructions": {
-          "description": "Configurable server limit; oversized input is rejected, never truncated.",
+          "description": "Configurable server limit; oversized input is rejected, never truncated. The limit applies to the full session text, so an oversize request is refused before queueing.",
           "type": "string"
         },
         "language": {

@@ -105,7 +105,12 @@ func TestAccessLogRecordsStatusWithoutQueryString(t *testing.T) {
 	if err := json.Unmarshal([]byte(strings.TrimSpace(out)), &record); err != nil {
 		t.Fatalf("not JSON: %v", err)
 	}
-	if record["status"] != float64(http.StatusTeapot) || record["path"] != "/some/path" {
+	// The request did not match a route pattern, so the path is the fixed label.
+	// The raw path is never logged: a media stream token lives in it (B1).
+	if record["status"] != float64(http.StatusTeapot) || record["path"] != "unmatched" {
 		t.Errorf("unexpected access record: %v", record)
+	}
+	if strings.Contains(out, "/some/path") {
+		t.Fatalf("access log leaked the raw path: %s", out)
 	}
 }

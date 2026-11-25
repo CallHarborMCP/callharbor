@@ -139,15 +139,19 @@ var errNoWebhookKey = errors.New("calls: telephony profile has no webhook public
 // newCallIngress builds the per-call webhook and media routes. Each webhook is
 // verified with the owning telephony profile's key, read per request. Each media
 // stream is authenticated by its path token and the Telnyx handshake.
-func newCallIngress(store *storage.Store, sec *secrets.Service, tokens *callstream.Tokens, legs callworker.LegResolver, cfg config.Config, opts runOptions, logger *slog.Logger) ([]func(*http.ServeMux), error) {
+func newCallIngress(store *storage.Store, sec *secrets.Service, tokens *callstream.Tokens, legs callworker.LegResolver, cfg config.Config, opts runOptions, logger *slog.Logger) ([]func(*http.ServeMux), *callstream.Media, error) {
 	// The public origin must map to a WebSocket origin. Checking it here means
 	// StreamURL cannot fail later for the configured origin.
 	if _, err := callworker.StreamURL(cfg.PublicURL, "probe", "probe"); err != nil {
-		return nil, fmt.Errorf("call stream url: %w", err)
+		return nil, nil, fmt.Errorf("call stream url: %w", err)
 	}
-	webhooks, err := callstream.NewWebhooks(store, opts.Now)
+	// The same leg hangup the media path and shutdown use, so a retry is one leg.
+	legHangup := func(ctx context.Context, leg storage.LiveCallLeg) error {
+		return callworker.HangupLeg(ctx, legs, leg)
+	}
+	webhooks, err := callstream.NewWebhooks(store, opts.Now, legHangup, logger)
 	if err != nil {
-		return nil, fmt.Errorf("call webhooks: %w", err)
+		return nil, nil, fmt.Errorf("call webhooks: %w", err)
 	}
 	keys := func(ctx context.Context, ownerUserID, secretID string) (string, error) {
 		if secretID == "" {
@@ -168,7 +172,7 @@ func newCallIngress(store *storage.Store, sec *secrets.Service, tokens *callstre
 	}
 	resolver, err := voicecall.NewResolver(store, sec, mediaFormat, opts.EndpointPolicy)
 	if err != nil {
-		return nil, fmt.Errorf("call ai resolver: %w", err)
+		return nil, nil, fmt.Errorf("call ai resolver: %w", err)
 	}
 	dialers := opts.AIDialers
 	if dialers == nil {
@@ -202,7 +206,7 @@ func newCallIngress(store *storage.Store, sec *secrets.Service, tokens *callstre
 	return []func(*http.ServeMux){func(mux *http.ServeMux) {
 		mux.Handle("POST /telnyx/calls/{call_id}/webhook", webhooks.Handler(lookup))
 		mux.Handle("GET /telnyx/calls/{call_id}/media/{token}", media.Handler())
-	}}, nil
+	}}, media, nil
 }
 
 // newCallWorker builds the dial worker. It is enabled whenever calls are
@@ -216,8 +220,7 @@ func newCallWorker(store *storage.Store, resolver callworker.ProfileResolver, cf
 			PublicURL:   cfg.PublicURL,
 			StreamToken: tokens.Token,
 		},
-		MaxCallSeconds: maxCallSeconds,
-		Codec:          mediaFormat,
+		Codec: mediaFormat,
 	}
 	w, err := callworker.New(store, planner, callworker.Options{
 		Enabled: true,
@@ -229,10 +232,6 @@ func newCallWorker(store *storage.Store, resolver callworker.ProfileResolver, cf
 	}
 	return w, planner, nil
 }
-
-// maxCallSeconds bounds a dial's time_limit_secs. Each call's own
-// max_duration_seconds is applied per call; this is the outer cap.
-const maxCallSeconds = 7200
 
 // telnyxProvider builds the read-only Telnyx client for one plaintext key at
 // baseURL. Production passes telnyx.DefaultBaseURL. Validation issues GET
@@ -328,6 +327,7 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger, ln net.Lis
 	var worker *callworker.Worker
 	var legResolver callworker.LegResolver
 	var callRoutes []func(*http.ServeMux)
+	var mediaSvc *callstream.Media
 	tokens, tokenErr := callStreamTokens(os.Getenv)
 	if cfg.PublicURL != "" && tokenErr != nil {
 		// Calls need the master key for stream tokens. OAuth and MCP do not,
@@ -352,7 +352,7 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger, ln net.Lis
 			return fmt.Errorf("call service: %w", err)
 		}
 		svc.WithCalls(callOp)
-		callRoutes, err = newCallIngress(store, secretSvc, tokens, legResolver, cfg, opts, logger)
+		callRoutes, mediaSvc, err = newCallIngress(store, secretSvc, tokens, legResolver, cfg, opts, logger)
 		if err != nil {
 			return err
 		}
@@ -403,61 +403,147 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger, ln net.Lis
 	}()
 	logger.Info("server listening", "addr", ln.Addr().String(), "data_dir", cfg.DataDir)
 
+	// Every exit from here goes through stop, so the store never closes under
+	// a live media session or a running dial. serveFailure is set when the
+	// server stopped on its own, which the caller reports as an error.
+	var serveFailure error
 	select {
 	case err := <-serveErr:
-		if worker != nil {
-			worker.Stop()
-			worker.Abort()
-		}
-		return fmt.Errorf("serve: %w", err)
+		serveFailure = fmt.Errorf("serve: %w", err)
 	case <-ctx.Done():
 	}
-
-	srv.SetReady(false)
-	logger.Info("shutdown started", "timeout", cfg.ShutdownTimeout.String())
-
-	shutdownCtx, cancel := context.WithTimeout(context.Background(), cfg.ShutdownTimeout)
-	defer cancel()
-	// Stop new dials first, so no call is claimed while HTTP drains.
-	if worker != nil {
-		worker.Stop()
+	runErr := shutdown(shutdownParts{
+		cfg:        cfg,
+		logger:     logger,
+		srv:        srv,
+		httpServer: httpServer,
+		serveErr:   serveErr,
+		serveDead:  serveFailure != nil,
+		worker:     worker,
+		workerDone: workerDone,
+		legs:       legResolver,
+		media:      mediaSvc,
+	})
+	if serveFailure != nil {
+		return errors.Join(serveFailure, runErr)
 	}
-	if err := httpServer.Shutdown(shutdownCtx); err != nil {
-		if worker != nil {
-			worker.Abort()
-		}
-		return fmt.Errorf("shutdown: %w", err)
+	return runErr
+}
+
+// shutdownParts is what shutdown needs from run. serveDead is true when the
+// HTTP server already stopped, so shutdown must not wait on serveErr again.
+type shutdownParts struct {
+	cfg        config.Config
+	logger     *slog.Logger
+	srv        *server.Server
+	httpServer *http.Server
+	serveErr   chan error
+	serveDead  bool
+	worker     *callworker.Worker
+	workerDone chan error
+	legs       callworker.LegResolver
+	media      *callstream.Media
+}
+
+// shutdown runs on every exit from run: a clean stop, a failed Shutdown and a
+// failed server. Its budgets are separate, so a slow drain cannot leave the
+// hangup pass with no time:
+//
+//  1. Stop new work: the worker takes no new dials and media refuses new streams.
+//  2. Drain HTTP under the shutdown deadline.
+//  3. Let in-flight dials finish under the same deadline, then abort them. An
+//     aborted dial is recorded as dial_unconfirmed and never redialed.
+//  4. Cancel and wait for media sessions, so none touches the store after close.
+//  5. Hang up every live leg under a reserved budget of its own. The budget
+//     is a share of the shutdown timeout with a floor, so it runs even when the
+//     drain used the whole deadline.
+//
+// The store is closed by run after shutdown returns, and only when every
+// media session and dial has released.
+func shutdown(p shutdownParts) error {
+	p.srv.SetReady(false)
+	p.logger.Info("shutdown started", "timeout", p.cfg.ShutdownTimeout.String())
+
+	var drainErr error
+	drainCtx, cancelDrain := context.WithTimeout(context.Background(), p.cfg.ShutdownTimeout)
+	defer cancelDrain()
+
+	if p.worker != nil {
+		p.worker.Stop()
 	}
-	if err := <-serveErr; err != nil && !errors.Is(err, http.ErrServerClosed) {
-		if worker != nil {
-			worker.Abort()
+	if p.media != nil {
+		// Refuse new streams and cancel running ones now. Their local ends are
+		// suppressed; HangupLive below ends every live leg.
+		p.media.StopMedia()
+	}
+	if !p.serveDead {
+		if err := p.httpServer.Shutdown(drainCtx); err != nil {
+			drainErr = fmt.Errorf("shutdown: %w", err)
 		}
-		return fmt.Errorf("serve: %w", err)
+		if err := <-p.serveErr; err != nil && !errors.Is(err, http.ErrServerClosed) && drainErr == nil {
+			drainErr = fmt.Errorf("serve: %w", err)
+		}
 	}
 
-	// An in-flight dial finishes within the deadline. Past the deadline it is
-	// aborted. An aborted dial is recorded as dial_unconfirmed, so the next
-	// start fails it rather than redialing.
-	select {
-	case err := <-workerDone:
-		if err != nil {
-			logger.Error("call worker stopped with error", "error", err.Error())
+	if p.worker != nil {
+		select {
+		case err := <-p.workerDone:
+			if err != nil {
+				p.logger.Error("call worker stopped with error", "error", err.Error())
+			}
+		case <-drainCtx.Done():
+			// Past the deadline: abort the dial, which records it as
+			// dial_unconfirmed. Then wait for the worker to return, bounded, so
+			// it does not write to the store after the store closes.
+			p.logger.Warn("call worker did not drain before the shutdown timeout")
+			p.worker.Abort()
+			select {
+			case err := <-p.workerDone:
+				if err != nil {
+					p.logger.Error("call worker stopped with error", "error", err.Error())
+				}
+			case <-time.After(hangupFloor):
+				p.logger.Warn("call worker did not stop before the store closed")
+			}
 		}
-	case <-shutdownCtx.Done():
-		if worker != nil {
-			worker.Abort()
-		}
-		logger.Warn("call worker did not drain before the shutdown timeout")
 	}
 
-	// Best-effort: end live legs so callers are not left on a dead stream. It
-	// runs under the same deadline, and a failure is logged rather than fatal.
-	if worker != nil && legResolver != nil {
-		if err := worker.HangupLive(shutdownCtx, legResolver); err != nil {
-			logger.Warn("hangup at shutdown incomplete", "error", err.Error())
-		}
+	if p.media != nil && !p.media.WaitMedia(mediaWaitBound(p.cfg.ShutdownTimeout)) {
+		p.logger.Warn("media sessions did not finish before the store closed")
 	}
 
-	logger.Info("shutdown complete")
+	// Best-effort: end live legs so callers are not left on a dead stream. The
+	// budget is reserved, not the leftover of the drain: a drain that used the
+	// whole deadline must not skip the hangups.
+	if p.worker != nil && p.legs != nil {
+		hangupCtx, cancelHangup := context.WithTimeout(context.Background(), hangupBudget(p.cfg.ShutdownTimeout))
+		if err := p.worker.HangupLive(hangupCtx, p.legs); err != nil {
+			p.logger.Warn("hangup at shutdown incomplete", "error", err.Error())
+		}
+		cancelHangup()
+	}
+
+	if drainErr != nil {
+		return drainErr
+	}
+	p.logger.Info("shutdown complete")
 	return nil
+}
+
+// hangupFloor is the least time reserved for the shutdown hangup pass, so a
+// short shutdown timeout still gives every live leg one attempt.
+const hangupFloor = 5 * time.Second
+
+// hangupBudget reserves a share of the shutdown timeout for the hangup pass.
+func hangupBudget(timeout time.Duration) time.Duration {
+	if b := timeout / 3; b > hangupFloor {
+		return b
+	}
+	return hangupFloor
+}
+
+// mediaWaitBound bounds how long a media session may take to finish after
+// cancellation before the store closes anyway.
+func mediaWaitBound(timeout time.Duration) time.Duration {
+	return hangupBudget(timeout)
 }

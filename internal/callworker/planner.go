@@ -17,6 +17,9 @@ import (
 // owner's key and the owner's key is never returned to a transport.
 type ProfileResolver interface {
 	Resolve(ctx context.Context, actor telephonyprofile.Actor, id string) (telephonyprofile.Resolved, error)
+	// ResolveForHangup reads the owner's key for ending a live leg without
+	// re-checking a grantee, so a grant revoked mid-call cannot strand the leg.
+	ResolveForHangup(ctx context.Context, ownerUserID, id string) (telephonyprofile.Resolved, error)
 }
 
 // DialerFactory builds a Dialer for one plaintext Telnyx key. Production uses
@@ -38,8 +41,6 @@ type ProductionPlanner struct {
 	Profiles ProfileResolver
 	Dialers  DialerFactory
 	Routes   PublicRoutes
-	// MaxCallSeconds is the upper bound the dial's time_limit_secs carries.
-	MaxCallSeconds int
 	// Codec is the bidirectional stream format every dial requests. It must be
 	// a format the media path serves, so the planner sets it, never the dialer.
 	Codec audio.Format
@@ -109,11 +110,12 @@ func telnyxTimeLimit(seconds int) int {
 }
 
 // LegHanger returns the Telnyx client for a live leg, keyed by the owner's
-// telephony profile. It shares Plan's key path, so a grantee's leg is ended
-// with the owner's key, exactly as it was dialed. A profile that no longer
-// resolves returns an error, so the leg is skipped and logged.
+// telephony profile. It uses the owner's key, as the dial did, but does not
+// re-authorize a grantee: ending a leg must still work after a grant is
+// revoked. A profile that no longer resolves returns an error, so the leg is
+// skipped and logged.
 func (p ProductionPlanner) LegHanger(ctx context.Context, leg storage.LiveCallLeg) (Hanger, error) {
-	res, err := p.Profiles.Resolve(ctx, telephonyprofile.Actor{UserID: leg.OwnerUserID}, leg.TelephonyProfileID)
+	res, err := p.Profiles.ResolveForHangup(ctx, leg.OwnerUserID, leg.TelephonyProfileID)
 	if err != nil {
 		return nil, fmt.Errorf("resolve telephony profile: %w", err)
 	}

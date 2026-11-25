@@ -215,7 +215,7 @@
           "language": { "type": "string", "maxLength": 35, "description": "BCP 47 language tag." },
           "objective": { "type": "string", "minLength": 1 },
           "context": { "type": "string", "description": "Configurable server limit; oversized input is rejected, never truncated." },
-          "instructions": { "type": "string", "description": "Configurable server limit; oversized input is rejected, never truncated." },
+          "instructions": { "type": "string", "description": "Configurable server limit; oversized input is rejected, never truncated. The limit applies to the full session text, so an oversize request is refused before queueing." },
           "constraints": { "type": "array", "items": { "type": "string" } },
           "fallbacks": { "type": "array", "items": { "type": "string" } },
           "success_criteria": { "type": "array", "items": { "type": "string" } },

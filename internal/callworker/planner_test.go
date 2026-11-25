@@ -21,6 +21,10 @@ func (f fixedProfiles) Resolve(context.Context, telephonyprofile.Actor, string) 
 	return f.p, f.err
 }
 
+func (f fixedProfiles) ResolveForHangup(context.Context, string, string) (telephonyprofile.Resolved, error) {
+	return f.p, f.err
+}
+
 func readyResolved() telephonyprofile.Resolved {
 	return telephonyprofile.Resolved{
 		ID: "tp", OwnerUserID: "alice", CallerNumber: "+14155550100", ConnectionID: "conn-1",
@@ -39,7 +43,7 @@ func planner(t *testing.T, res telephonyprofile.Resolved, routes PublicRoutes) P
 	t.Helper()
 	var key string
 	return ProductionPlanner{
-		Profiles: fixedProfiles{p: res}, Dialers: fakeDialerFactory(t, &key), Routes: routes, MaxCallSeconds: 7200,
+		Profiles: fixedProfiles{p: res}, Dialers: fakeDialerFactory(t, &key), Routes: routes,
 	}
 }
 

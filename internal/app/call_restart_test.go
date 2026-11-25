@@ -3,13 +3,13 @@ package app
 import (
 	"context"
 	"crypto/ed25519"
-	"crypto/rand"
 	"crypto/tls"
 	"database/sql"
 	"io"
 	"log/slog"
 	"net/http"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -39,7 +39,7 @@ func TestRestartFailsUnconfirmedAndDialsQueuedOnce(t *testing.T) {
 
 	seedRestartRows(t, first.dataDir, tpID)
 
-	second := restartCallApp(t, tel, first.dataDir)
+	second := restartCallApp(t, tel, first.dataDir, first.pubKey, first.privKey)
 	h2 := second.admin.headers(true)
 
 	waitForCallReason(t, second, h2, "call_unconfirmed", "dial_unconfirmed")
@@ -62,6 +62,19 @@ func TestRestartFailsUnconfirmedAndDialsQueuedOnce(t *testing.T) {
 // admin and using the profiles created by the first run.
 func seedRestartRows(t *testing.T, dataDir, tpID string) {
 	t.Helper()
+	seedRestartRowsFor(t, dataDir, tpID, []restartRow{
+		{"call_unconfirmed", "initiating", "restart-unconfirmed"},
+		{"call_queued", "queued", "restart-queued"},
+	})
+}
+
+// restartRow is one call a test seeds into the crash state.
+type restartRow struct{ id, status, key string }
+
+// seedRestartRowsFor inserts the given calls, owned by the admin, with their
+// brief rows, so each one is visible to webhook and media lookups.
+func seedRestartRowsFor(t *testing.T, dataDir, tpID string, rows []restartRow) {
+	t.Helper()
 	db, err := sql.Open("sqlite", "file:"+filepath.Join(dataDir, databaseFileName)+"?_pragma=busy_timeout(5000)")
 	if err != nil {
 		t.Fatal(err)
@@ -76,27 +89,26 @@ func seedRestartRows(t *testing.T, dataDir, tpID string) {
 		t.Fatalf("ai profile: %v", err)
 	}
 	now := time.Now().UTC().Format(time.RFC3339Nano)
-	for _, row := range []struct{ id, status, key string }{
-		{"call_unconfirmed", "initiating", "restart-unconfirmed"},
-		{"call_queued", "queued", "restart-queued"},
-	} {
+	for _, row := range rows {
 		if _, err := db.Exec(`INSERT INTO calls (id, owner_user_id, telephony_profile_id, ai_profile_id, idempotency_key, to_number, status, max_duration_seconds, created_at, updated_at) VALUES (?, ?, ?, ?, ?, '+14155550111', ?, 300, ?, ?)`,
 			row.id, owner, tpID, ai, row.key, row.status, now, now); err != nil {
 			t.Fatalf("seed %s: %v", row.id, err)
+		}
+		// Every call has a brief row; media and webhook lookups join it. A row
+		// without one is invisible to them, as a real call never is.
+		if _, err := db.Exec(`INSERT INTO call_briefs (call_id, owner_user_id, version, content_json, content_sha256, created_at) VALUES (?, ?, 1, '{"version":1,"objective":"Confirm"}', ?, ?)`,
+			row.id, owner, strings.Repeat("0", 64), now); err != nil {
+			t.Fatalf("seed brief %s: %v", row.id, err)
 		}
 	}
 }
 
 // restartCallApp runs the app again on an existing data dir. It skips setup,
 // since the admin already exists, and logs in with the same password.
-func restartCallApp(t *testing.T, tel *fakeTelnyx, dataDir string) *callTestEnv {
+func restartCallApp(t *testing.T, tel *fakeTelnyx, dataDir string, pub ed25519.PublicKey, priv ed25519.PrivateKey) *callTestEnv {
 	t.Helper()
 	t.Setenv(secrets.EnvKey, validKeyB64())
 	ln, roots := newTLSListener(t)
-	pub, priv, err := ed25519.GenerateKey(rand.Reader)
-	if err != nil {
-		t.Fatal(err)
-	}
 	cfg := testConfig(t)
 	cfg.DataDir = dataDir
 	cfg.PublicURL = "https://" + ln.Addr().String()

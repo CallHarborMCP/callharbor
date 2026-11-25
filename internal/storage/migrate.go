@@ -182,8 +182,10 @@ func (s *Store) runMigration(ctx context.Context, script string, version int, na
 		if _, err := conn.ExecContext(ctx, "PRAGMA foreign_keys = OFF"); err != nil {
 			return fmt.Errorf("migration %04d_%s %s: disable foreign keys: %w", version, name, direction, err)
 		}
+		// Enforcement must be back on before the connection returns to the pool.
+		// The success path restores it and checks the result. This defer covers
+		// only the paths that return early, where the migration already failed.
 		defer func() {
-			// Restore enforcement on the pinned connection before it returns to the pool.
 			_, _ = conn.ExecContext(context.Background(), "PRAGMA foreign_keys = ON")
 		}()
 	}
@@ -213,6 +215,28 @@ func (s *Store) runMigration(ctx context.Context, script string, version int, na
 	}
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("commit migration %04d_%s %s: %w", version, name, direction, err)
+	}
+	if fkOff {
+		if err := restoreForeignKeys(ctx, conn); err != nil {
+			return fmt.Errorf("migration %04d_%s %s: %w", version, name, direction, err)
+		}
+	}
+	return nil
+}
+
+// restoreForeignKeys turns enforcement back on for the pinned connection and
+// re-reads the pragma. A failure to restore is reported, not ignored: a pool
+// connection with enforcement off would silently accept dangling references.
+func restoreForeignKeys(ctx context.Context, conn *sql.Conn) error {
+	if _, err := conn.ExecContext(ctx, "PRAGMA foreign_keys = ON"); err != nil {
+		return fmt.Errorf("restore foreign keys: %w", err)
+	}
+	var on int
+	if err := conn.QueryRowContext(ctx, "PRAGMA foreign_keys").Scan(&on); err != nil {
+		return fmt.Errorf("read foreign_keys pragma: %w", err)
+	}
+	if on != 1 {
+		return fmt.Errorf("foreign keys not enforced after migration (pragma = %d)", on)
 	}
 	return nil
 }
