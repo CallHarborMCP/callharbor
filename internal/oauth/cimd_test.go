@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/x509"
 	"encoding/json"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -124,7 +125,7 @@ func newCIMDFixture(t *testing.T, meta *metadataServer, allowPrivate bool) (*fix
 // resolver. The store, user and clock are unchanged.
 func (f *fixture) resetResolver(clients ClientResolver) {
 	f.t.Helper()
-	f.serve(NewServer(f.cfg, f.store, clients, f.clock.Now))
+	f.serve(NewServer(f.cfg, f.store, clients, f.clock.Now, slog.New(slog.DiscardHandler)))
 }
 
 // serve replaces the fixture's server and HTTP front end with srv.
@@ -406,7 +407,7 @@ func TestCIMDMirrorsOnFetchOnly(t *testing.T) {
 	cid := ts.URL + "/client.json"
 	setDoc(meta, cimdDoc(cid, nil))
 	counter := &upsertCounter{Store: f.store}
-	f.srv = NewServer(f.cfg, counter, newClientResolver(counter, f.clock.Now, cimdOptions{allowPrivate: true, rootCAs: pool}), f.clock.Now)
+	f.srv = NewServer(f.cfg, counter, newClientResolver(counter, f.clock.Now, cimdOptions{allowPrivate: true, rootCAs: pool}), f.clock.Now, slog.New(slog.DiscardHandler))
 	for i := 0; i < 3; i++ {
 		if _, err := f.srv.clients.ResolveClient(f.ctx, cid); err != nil {
 			t.Fatal(err)
@@ -440,7 +441,7 @@ func TestTokenTimeResolveFailureIsInvalidClient(t *testing.T) {
 	f := newFixture(t)
 	refresh := f.refreshTokenForDefaultClient(t)
 	flaky := &flakyResolver{inner: storeResolver{store: f.store}, fail: true}
-	f.serve(NewServer(f.cfg, f.store, flaky, f.clock.Now))
+	f.serve(NewServer(f.cfg, f.store, flaky, f.clock.Now, slog.New(slog.DiscardHandler)))
 	status, body := f.exchange(url.Values{
 		"grant_type":    {"refresh_token"},
 		"refresh_token": {refresh},
@@ -468,7 +469,7 @@ func TestRefreshRefusedWhenClientLostRefreshGrant(t *testing.T) {
 		t.Fatal(err)
 	}
 	// Resolve through storage so the stored grant types are what the gate sees.
-	f.serve(NewServer(f.cfg, f.store, storeResolver{store: f.store}, f.clock.Now))
+	f.serve(NewServer(f.cfg, f.store, storeResolver{store: f.store}, f.clock.Now, slog.New(slog.DiscardHandler)))
 	status, body := f.exchange(url.Values{
 		"grant_type":    {"refresh_token"},
 		"refresh_token": {refresh},

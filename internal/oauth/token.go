@@ -56,15 +56,16 @@ func (s *Server) handleToken(w http.ResponseWriter, r *http.Request) {
 		err = oidc.ErrUnsupportedGrantType().WithDescription("grant_type must be authorization_code or refresh_token")
 	}
 	if err != nil {
-		writeTokenError(w, err)
+		s.writeTokenError(w, err)
 		return
 	}
 	writeNoStore(w, http.StatusOK, resp)
 }
 
 // writeTokenError maps a failure to its OAuth error response. Only an
-// oidc.Error reaches the client; everything else becomes server_error.
-func writeTokenError(w http.ResponseWriter, err error) {
+// oidc.Error reaches the client; everything else becomes server_error. Internal
+// failures are logged with their cause, never with credential values.
+func (s *Server) writeTokenError(w http.ResponseWriter, err error) {
 	var oerr *oidc.Error
 	if !errors.As(err, &oerr) {
 		oerr = oidc.ErrServerError()
@@ -72,6 +73,7 @@ func writeTokenError(w http.ResponseWriter, err error) {
 	status := http.StatusBadRequest
 	if errorCode(oerr) == string(oidc.ServerError) {
 		status = http.StatusInternalServerError
+		s.logger.Error("oauth token: internal failure", "error", err)
 	}
 	writeNoStore(w, status, oerr)
 }
@@ -369,11 +371,11 @@ func refreshScopes(requestedScopes oidc.SpaceDelimitedArray, granted string) ([]
 }
 
 // revokeReplayedGrant revokes a whole grant family after reuse is detected,
-// and records the event. Failure to revoke is logged by the caller path; the
-// client still gets invalid_grant.
+// and records the event. A failed revocation is logged here; the client still
+// gets invalid_grant, because the replay is refused either way.
 func (s *Server) revokeReplayedGrant(ctx context.Context, grantID string) {
 	now := formatTime(s.clock())
-	_ = s.store.RevokeOAuthGrant(ctx, grantID, now, storage.AuditEvent{
+	err := s.store.RevokeOAuthGrant(ctx, grantID, now, storage.AuditEvent{
 		OccurredAt:   now,
 		Action:       "oauth.reuse_detected",
 		ResourceType: "oauth_grant",
@@ -381,6 +383,9 @@ func (s *Server) revokeReplayedGrant(ctx context.Context, grantID string) {
 		Outcome:      "denied",
 		DetailJSON:   "{}",
 	})
+	if err != nil {
+		s.logger.Error("oauth: revoke replayed grant failed", "error", err)
+	}
 }
 
 func contains(list []string, want string) bool {

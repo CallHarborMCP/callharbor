@@ -3,6 +3,7 @@ package oauth
 import (
 	"bytes"
 	"encoding/json"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -249,7 +250,7 @@ func TestRegisterIgnoresForwardedForForRateLimit(t *testing.T) {
 // TestRegisterGlobalCapRefusesNewClients uses a cap of 2 through newServer.
 func TestRegisterGlobalCapRefusesNewClients(t *testing.T) {
 	f := newFixture(t)
-	f.serve(newServer(f.cfg, f.store, registeredResolver{f.store}, f.clock.Now, 2))
+	f.serve(newServer(f.cfg, f.store, registeredResolver{f.store}, f.clock.Now, slog.New(slog.DiscardHandler), 2))
 	f.registerOK(t, registrationBody(nil))
 	f.registerOK(t, registrationBody(nil))
 	resp := f.register(t, "application/json", "203.0.113.40:4000", registrationBody(nil))

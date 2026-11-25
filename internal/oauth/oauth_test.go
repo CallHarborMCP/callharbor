@@ -3,6 +3,7 @@ package oauth
 import (
 	"context"
 	"encoding/json"
+	"log/slog"
 
 	"net/http"
 	"net/http/httptest"
@@ -90,7 +91,7 @@ func newFixture(t *testing.T) *fixture {
 	}
 	f := &fixture{t: t, ctx: ctx, store: st, clock: clk, userID: u.ID}
 	f.cfg = Config{PublicURL: "https://callharbor.example"}
-	f.srv = NewServer(f.cfg, st, registeredResolver{st}, clk.Now)
+	f.srv = NewServer(f.cfg, st, registeredResolver{st}, clk.Now, slog.New(slog.DiscardHandler))
 	f.registerClient(testClientID, []string{testRedirectURI})
 
 	// Consent decisions are exercised through the test session principal:

@@ -39,6 +39,13 @@ func apiError(w http.ResponseWriter, status int, code string) {
 	writeNoStore(w, status, map[string]any{"error": map[string]string{"code": code}})
 }
 
+// internalError logs a failure the browser sees only as "internal", then writes
+// the 500 response.
+func (a *consentAPI) internalError(w http.ResponseWriter, err error) {
+	a.s.logger.Error("oauth consent api: internal failure", "error", err)
+	apiError(w, http.StatusInternalServerError, "internal")
+}
+
 // verifiedHost returns the domain that identifies a client on the consent
 // screen. Only the host of a metadata-document client_id counts: the server
 // fetched the document from that host. client_uri is self-declared, so it is
@@ -68,7 +75,7 @@ func (a *consentAPI) getRequest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err != nil {
-		apiError(w, http.StatusInternalServerError, "internal")
+		a.internalError(w, err)
 		return
 	}
 	client, err := a.s.clients.ResolveClient(ctx, req.ClientID)
@@ -78,7 +85,7 @@ func (a *consentAPI) getRequest(w http.ResponseWriter, r *http.Request) {
 	}
 	redirect, err := a.redirectFor(ctx, r.PathValue("id"))
 	if err != nil {
-		apiError(w, http.StatusInternalServerError, "internal")
+		a.internalError(w, err)
 		return
 	}
 	writeNoStore(w, http.StatusOK, map[string]any{
@@ -125,7 +132,7 @@ func (a *consentAPI) decide(w http.ResponseWriter, r *http.Request) {
 	case errors.Is(err, ErrRequestNotFound):
 		apiError(w, http.StatusNotFound, "not_found")
 	case err != nil:
-		apiError(w, http.StatusInternalServerError, "internal")
+		a.internalError(w, err)
 	default:
 		writeNoStore(w, http.StatusOK, map[string]string{"redirect_url": target})
 	}
@@ -139,7 +146,7 @@ func (a *consentAPI) listGrants(w http.ResponseWriter, r *http.Request) {
 	}
 	grants, err := a.s.store.ListOAuthGrants(r.Context(), userID)
 	if err != nil {
-		apiError(w, http.StatusInternalServerError, "internal")
+		a.internalError(w, err)
 		return
 	}
 	out := make([]map[string]any, 0, len(grants))
@@ -171,7 +178,7 @@ func (a *consentAPI) revokeGrant(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err != nil {
-		apiError(w, http.StatusInternalServerError, "internal")
+		a.internalError(w, err)
 		return
 	}
 	if g.RevokedAt != "" {
@@ -191,7 +198,7 @@ func (a *consentAPI) revokeGrant(w http.ResponseWriter, r *http.Request) {
 		DetailJSON:   "{}",
 	})
 	if err != nil {
-		apiError(w, http.StatusInternalServerError, "internal")
+		a.internalError(w, err)
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)

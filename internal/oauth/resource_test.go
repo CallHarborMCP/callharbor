@@ -1,6 +1,7 @@
 package oauth
 
 import (
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -168,7 +169,7 @@ func TestBearerWrongAudienceIsInvalid(t *testing.T) {
 	f := newFixture(t)
 	access, _ := f.bearerFixture(t)
 	// Serve the same stored token from an instance whose resource differs.
-	other := newServer(Config{PublicURL: "https://other.example"}, f.store, registeredResolver{f.store}, f.clock.Now, registerGlobalCap)
+	other := newServer(Config{PublicURL: "https://other.example"}, f.store, registeredResolver{f.store}, f.clock.Now, slog.New(slog.DiscardHandler), registerGlobalCap)
 	rec := httptest.NewRecorder()
 	other.RequireBearer(ScopeRead)(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusNoContent)

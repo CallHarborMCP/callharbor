@@ -2,6 +2,7 @@ package oauth
 
 import (
 	"encoding/json"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"strings"
@@ -27,6 +28,8 @@ type Server struct {
 	clients ClientResolver
 	clock   Clock
 	decoder *schema.Decoder
+	// logger records internal failures. It never receives credential values.
+	logger *slog.Logger
 	// registry limits dynamic registrations per client IP. registryCap is the
 	// global ceiling on dynamic clients; tests lower it through newServer.
 	registry    *registrationLimiter
@@ -35,16 +38,16 @@ type Server struct {
 
 // NewServer builds the authorization server. The configured public origin
 // must already be normalized by config.Load.
-func NewServer(cfg Config, store Store, clients ClientResolver, clock Clock) *Server {
-	return newServer(cfg, store, clients, clock, registerGlobalCap)
+func NewServer(cfg Config, store Store, clients ClientResolver, clock Clock, logger *slog.Logger) *Server {
+	return newServer(cfg, store, clients, clock, logger, registerGlobalCap)
 }
 
 // newServer is NewServer with an explicit dynamic-client cap.
-func newServer(cfg Config, store Store, clients ClientResolver, clock Clock, registryCap int) *Server {
+func newServer(cfg Config, store Store, clients ClientResolver, clock Clock, logger *slog.Logger, registryCap int) *Server {
 	dec := schema.NewDecoder()
 	dec.IgnoreUnknownKeys(true)
 	return &Server{
-		cfg: cfg, store: store, clients: clients, clock: clock, decoder: dec,
+		cfg: cfg, store: store, clients: clients, clock: clock, decoder: dec, logger: logger,
 		registry: newRegistrationLimiter(clock), registryCap: registryCap,
 	}
 }

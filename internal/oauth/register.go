@@ -172,6 +172,7 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := s.persistRegistration(ctx, &resp); err != nil {
+		s.logger.Error("oauth: persist dynamic registration", "error", err)
 		writeRegistrationError(w, http.StatusInternalServerError, "server_error", "registration failed")
 		return
 	}

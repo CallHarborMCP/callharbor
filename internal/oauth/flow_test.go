@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"strings"
@@ -641,4 +643,45 @@ func (f *fixture) refreshTokenForDefaultClient(t *testing.T) string {
 	}
 	refresh, _ := body["refresh_token"].(string)
 	return refresh
+}
+
+// revokeFailer makes grant revocation fail, to exercise the logged path.
+type revokeFailer struct {
+	*storage.Store
+}
+
+func (r revokeFailer) RevokeOAuthGrant(context.Context, string, string, storage.AuditEvent) error {
+	return errors.New("disk on fire")
+}
+
+// TestReplayRevocationFailureIsLoggedWithoutTokens: when the family cannot be
+// revoked after reuse, the failure is logged, the client still gets
+// invalid_grant, and the log carries no token values.
+func TestReplayRevocationFailureIsLoggedWithoutTokens(t *testing.T) {
+	f := newFixture(t)
+	original := f.refreshTokenForDefaultClient(t)
+	f.exchange(url.Values{
+		"grant_type":    {"refresh_token"},
+		"refresh_token": {original},
+		"client_id":     {testClientID},
+	})
+
+	var logs bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&logs, nil))
+	f.serve(newServer(f.cfg, revokeFailer{f.store}, registeredResolver{f.store}, f.clock.Now, logger, registerGlobalCap))
+
+	status, _ := f.exchange(url.Values{
+		"grant_type":    {"refresh_token"},
+		"refresh_token": {original},
+		"client_id":     {testClientID},
+	})
+	if status != http.StatusBadRequest {
+		t.Fatalf("replay status = %d, want 400", status)
+	}
+	if !strings.Contains(logs.String(), "revoke replayed grant failed") {
+		t.Fatalf("revocation failure not logged: %q", logs.String())
+	}
+	if strings.Contains(logs.String(), original) {
+		t.Fatalf("log leaked a refresh token: %q", logs.String())
+	}
 }

@@ -72,6 +72,7 @@ func (s *Server) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 
 	id, err := newOpaque(prefixRequest)
 	if err != nil {
+		s.logger.Error("oauth: mint request id", "error", err)
 		fail(oidc.ErrServerError())
 		return
 	}
@@ -88,6 +89,7 @@ func (s *Server) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 		ExpiresAt:     formatTime(now.Add(authRequestTTL)),
 	}
 	if err := s.store.InsertOAuthAuthRequest(ctx, stored); err != nil {
+		s.logger.Error("oauth: store authorization request", "error", err)
 		fail(oidc.ErrServerError())
 		return
 	}
