@@ -30,6 +30,7 @@ type Route struct {
 var Routes = []Route{
 	{Method: http.MethodGet, Path: "/api/v1/profiles"},
 	{Method: http.MethodGet, Path: "/api/v1/calls"},
+	{Method: http.MethodPost, Path: "/api/v1/calls"},
 	{Method: http.MethodGet, Path: "/api/v1/calls/{call_id}"},
 	{Method: http.MethodGet, Path: "/api/v1/telephony-profiles"},
 	{Method: http.MethodPost, Path: "/api/v1/telephony-profiles"},
@@ -47,7 +48,6 @@ var Routes = []Route{
 // one returns 404 from the mux. Routes holds only available paths; the two
 // lists are disjoint, and the tests enforce that.
 var PlannedRoutes = []Route{
-	{Method: http.MethodPost, Path: "/api/v1/calls"},
 	{Method: http.MethodGet, Path: "/api/v1/calls/{call_id}/transcript"},
 	{Method: http.MethodGet, Path: "/api/v1/calls/{call_id}/recording"},
 	{Method: http.MethodGet, Path: "/api/v1/calls/{call_id}/recording/audio"},
@@ -82,6 +82,7 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	handlers := map[string]http.HandlerFunc{
 		"GET /api/v1/profiles":        h.getProfiles,
 		"GET /api/v1/calls":           h.listCalls,
+		"POST /api/v1/calls":          h.createCall,
 		"GET /api/v1/calls/{call_id}": h.getCall,
 
 		"GET /api/v1/telephony-profiles":                                  h.listTelephonyProfiles,

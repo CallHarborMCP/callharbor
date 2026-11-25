@@ -97,10 +97,10 @@ func TestOAuthE2EHappyPath(t *testing.T) {
 			names[m["name"].(string)] = true
 		}
 	}
-	if len(names) != 3 || !names["get_profiles"] || !names["list_calls"] || !names["get_call"] {
-		t.Fatalf("registered tools = %v, want exactly get_profiles, list_calls, get_call", names)
+	if len(names) != 4 || !names["get_profiles"] || !names["list_calls"] || !names["get_call"] || !names["make_call"] {
+		t.Fatalf("registered tools = %v, want exactly get_profiles, list_calls, get_call, make_call", names)
 	}
-	for _, planned := range []string{"make_call", "get_transcript", "get_recording", "hangup_call"} {
+	for _, planned := range []string{"get_transcript", "get_recording", "hangup_call"} {
 		if names[planned] {
 			t.Fatalf("planned tool %s is registered", planned)
 		}

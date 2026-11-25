@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/ed25519"
 	"fmt"
+	"net/http"
 	"time"
 
 	"github.com/coder/websocket"
@@ -17,11 +18,25 @@ type Stream struct {
 	conn *websocket.Conn
 }
 
+// DialOption configures DialMedia. Options are optional, so existing callers
+// are unaffected.
+type DialOption func(*websocket.DialOptions)
+
+// WithHTTPClient sets the client used for the upgrade. Tests use it to trust a
+// test CA for a TLS media origin.
+func WithHTTPClient(hc *http.Client) DialOption {
+	return func(o *websocket.DialOptions) { o.HTTPClient = hc }
+}
+
 // DialMedia opens a signed media stream to streamURL. The signature covers the
 // exact streamURL, so the server must be configured with the same string.
-func DialMedia(ctx context.Context, streamURL string, key ed25519.PrivateKey, now time.Time) (*Stream, error) {
+func DialMedia(ctx context.Context, streamURL string, key ed25519.PrivateKey, now time.Time, opts ...DialOption) (*Stream, error) {
 	h := telnyx.Sign(key, now, []byte(streamURL))
-	c, resp, err := websocket.Dial(ctx, streamURL, &websocket.DialOptions{HTTPHeader: h})
+	do := &websocket.DialOptions{HTTPHeader: h}
+	for _, o := range opts {
+		o(do)
+	}
+	c, resp, err := websocket.Dial(ctx, streamURL, do)
 	if err != nil {
 		if resp != nil && resp.Body != nil {
 			_ = resp.Body.Close()

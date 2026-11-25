@@ -20,8 +20,14 @@ const (
 	CodeNotFound          Code = "not_found"
 	CodeInvalidInput      Code = "invalid_input"
 	CodeConflict          Code = "conflict"
+	CodeUnavailable       Code = "unavailable"
 	CodeInternal          Code = "internal"
 )
+
+// ReasonCallsUnavailable is the machine reason returned when calls are not
+// running: CALLHARBOR_PUBLIC_URL is unset, or the secrets master key is absent.
+// No call row is written in that state.
+const ReasonCallsUnavailable = "calls_unavailable"
 
 // HTTPStatus maps a code to the status used by the REST API.
 func (c Code) HTTPStatus() int {
@@ -36,6 +42,8 @@ func (c Code) HTTPStatus() int {
 		return http.StatusBadRequest
 	case CodeConflict:
 		return http.StatusConflict
+	case CodeUnavailable:
+		return http.StatusServiceUnavailable
 	default:
 		return http.StatusInternalServerError
 	}

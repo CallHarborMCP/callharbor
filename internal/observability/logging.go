@@ -61,3 +61,10 @@ func (r *statusRecorder) Write(b []byte) (int, error) {
 	r.wrote = true
 	return r.ResponseWriter.Write(b)
 }
+
+// Unwrap exposes the underlying writer. WebSocket upgrades (coder/websocket)
+// and http.ResponseController find the http.Hijacker through it. Without this,
+// every upgrade behind the access log fails with 501.
+func (r *statusRecorder) Unwrap() http.ResponseWriter {
+	return r.ResponseWriter
+}

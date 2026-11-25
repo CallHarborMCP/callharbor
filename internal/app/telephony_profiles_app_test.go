@@ -82,10 +82,11 @@ func TestTelephonyProfileCreateWithoutMasterKeyIs503InRealApp(t *testing.T) {
 // TestTelnyxProviderRejectsEmptyKeyAndReturnsClient unit-tests the production
 // provider factory. It never dials: it only builds the client.
 func TestTelnyxProviderRejectsEmptyKeyAndReturnsClient(t *testing.T) {
-	if _, err := telnyxProvider(""); err == nil {
+	factory := telnyxProvider(telnyx.DefaultBaseURL)
+	if _, err := factory(""); err == nil {
 		t.Fatal("empty key built a provider")
 	}
-	p, err := telnyxProvider("KEY-provider-0123456789")
+	p, err := factory("KEY-provider-0123456789")
 	if err != nil {
 		t.Fatalf("telnyxProvider: %v", err)
 	}

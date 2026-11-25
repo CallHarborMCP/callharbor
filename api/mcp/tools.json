@@ -17,7 +17,7 @@
           "properties": {
             "code": {
               "type": "string",
-              "enum": ["unauthenticated", "forbidden", "insufficient_scope", "not_found", "invalid_input", "conflict", "internal"]
+              "enum": ["unauthenticated", "forbidden", "insufficient_scope", "not_found", "invalid_input", "conflict", "unavailable", "internal"]
             },
             "message": { "type": "string" }
           }
@@ -201,9 +201,9 @@
     },
     {
       "name": "make_call",
-      "status": "planned",
+      "status": "implemented",
       "scope": "mcp:call",
-      "description": "Planned. Not registered. Calling it returns an unknown-tool error and never starts a call.",
+      "description": "Queue one outbound AI voice call. Returns the queued call id at once; the dial happens asynchronously. Requires an idempotency_key: the same key with the same request returns the original call, and the same key with a different request is a conflict. The telephony profile must be verified and the caller must have exactly one AI profile.",
       "inputSchema": {
         "type": "object",
         "required": ["profile_id", "to", "objective", "idempotency_key"],

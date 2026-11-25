@@ -19,10 +19,11 @@ import (
 func testConfig(t *testing.T) config.Config {
 	t.Helper()
 	return config.Config{
-		ListenAddr:      "127.0.0.1:0",
-		DataDir:         t.TempDir(),
-		LogLevel:        slog.LevelError,
-		ShutdownTimeout: 5 * time.Second,
+		ListenAddr:        "127.0.0.1:0",
+		DataDir:           t.TempDir(),
+		LogLevel:          slog.LevelError,
+		ShutdownTimeout:   5 * time.Second,
+		MaxCallBriefBytes: config.DefaultMaxCallBriefBytes,
 	}
 }
 

@@ -382,6 +382,9 @@ type Resolved struct {
 	Access           string
 	APIKey           string
 	WebhookPublicKey string
+	// ConnectivityStatus is the last validation result: unknown, verified or
+	// failed. Only the call path gates on it.
+	ConnectivityStatus string
 }
 
 // String redacts the keys. fmt uses it for %v and %+v.
@@ -424,6 +427,7 @@ func (s *Service) Resolve(ctx context.Context, actor Actor, id string) (Resolved
 	out := Resolved{
 		ID: rec.ID, OwnerUserID: rec.OwnerUserID, CallerNumber: rec.CallerNumber,
 		ConnectionID: rec.ConnectionID, Access: u.Access, APIKey: string(apiKey),
+		ConnectivityStatus: rec.ConnectivityStatus,
 	}
 	if rec.WebhookPublicKeySecretID != "" {
 		webhook, err := s.secrets.Resolve(ctx, u.OwnerUserID, rec.WebhookPublicKeySecretID, secrets.PurposeTelnyxWebhookKey)

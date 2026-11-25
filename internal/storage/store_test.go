@@ -112,8 +112,8 @@ func TestMigrationsRoundTripUpAndDown(t *testing.T) {
 	if err := s.Migrate(ctx); err != nil {
 		t.Fatalf("Migrate: %v", err)
 	}
-	if v, _ := s.SchemaVersion(ctx); v != 6 {
-		t.Fatalf("schema version = %d, want 6", v)
+	if v, _ := s.SchemaVersion(ctx); v != latestSchemaVersion(t) {
+		t.Fatalf("schema version = %d, want %d", v, latestSchemaVersion(t))
 	}
 	if err := s.Migrate(ctx); err != nil {
 		t.Fatalf("second Migrate should be a no-op: %v", err)
@@ -138,7 +138,7 @@ func TestMigrationsRoundTripUpAndDown(t *testing.T) {
 func TestMigrateRefusesNewerSchema(t *testing.T) {
 	ctx := context.Background()
 	s := openMigrated(t, filepath.Join(t.TempDir(), "newer.db"))
-	if _, err := s.db.ExecContext(ctx, "INSERT INTO schema_migrations (version, name) VALUES (7, 'future')"); err != nil {
+	if _, err := s.db.ExecContext(ctx, "INSERT INTO schema_migrations (version, name) VALUES (?, 'future')", latestSchemaVersion(t)+1); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.Migrate(ctx); err == nil || !strings.Contains(err.Error(), "newer") {
@@ -149,7 +149,7 @@ func TestMigrateRefusesNewerSchema(t *testing.T) {
 func TestMigrateDownRejectsOutOfRangeTarget(t *testing.T) {
 	ctx := context.Background()
 	s := openMigrated(t, filepath.Join(t.TempDir(), "range.db"))
-	if err := s.MigrateDown(ctx, 7); err == nil {
+	if err := s.MigrateDown(ctx, latestSchemaVersion(t)+1); err == nil {
 		t.Fatal("rollback target above current version accepted")
 	}
 	if err := s.MigrateDown(ctx, -1); err == nil {
@@ -459,7 +459,7 @@ func TestDataSurvivesRestartAndCrashCopy(t *testing.T) {
 		t.Fatalf("reopen: %v", err)
 	}
 	t.Cleanup(func() { _ = reopened.Close() })
-	if v, _ := reopened.SchemaVersion(ctx); v != 6 {
+	if v, _ := reopened.SchemaVersion(ctx); v != latestSchemaVersion(t) {
 		t.Fatalf("schema version after restart = %d", v)
 	}
 	if n := scalarInt(t, reopened, "SELECT COUNT(*) FROM calls WHERE id = 'alice-call'"); n != 1 {
@@ -494,7 +494,7 @@ func TestBackupCapturesWALAndRestoresConsistently(t *testing.T) {
 	if err := restored.IntegrityCheck(ctx); err != nil {
 		t.Fatalf("backup integrity: %v", err)
 	}
-	if v, _ := restored.SchemaVersion(ctx); v != 6 {
+	if v, _ := restored.SchemaVersion(ctx); v != latestSchemaVersion(t) {
 		t.Fatalf("backup schema version = %d", v)
 	}
 	if n := scalarInt(t, restored, "SELECT COUNT(*) FROM users"); n != 2 {
@@ -525,7 +525,7 @@ func TestRestoredBackupRollsBackToPriorSchema(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = restored.Close() }()
-	if v, _ := restored.SchemaVersion(ctx); v != 6 {
+	if v, _ := restored.SchemaVersion(ctx); v != latestSchemaVersion(t) {
 		t.Fatalf("restored version = %d", v)
 	}
 	if n := scalarInt(t, restored, "SELECT COUNT(*) FROM calls"); n != 1 {
@@ -600,4 +600,15 @@ func copyFile(t *testing.T, src, dst string) {
 	if err := out.Close(); err != nil {
 		t.Fatal(err)
 	}
+}
+
+// latestSchemaVersion is the newest embedded migration. Head-version assertions
+// use it so adding a migration does not require editing every test.
+func latestSchemaVersion(t *testing.T) int {
+	t.Helper()
+	migrations, err := loadMigrations()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return migrations[len(migrations)-1].version
 }

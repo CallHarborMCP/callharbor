@@ -101,9 +101,8 @@
       },
       "post": {
         "operationId": "createCall",
-        "summary": "Start a call (planned)",
-        "description": "Planned. Not mounted yet: the operation is not implemented. Requests return 404, or 405 when the path is mounted for another method. Requires an Idempotency-Key header. A repeated key returns the original call.",
-        "x-callharbor-availability": "planned",
+        "summary": "Start a call",
+        "description": "Queue one outbound call and return 202 with the queued call. The dial happens asynchronously in a bounded worker. Requires a session cookie with the CSRF token (403 forbidden on a bad token) and an Idempotency-Key header. Only a scoped OAuth token lacking mcp:call is refused 403 insufficient_scope; a browser session carries that scope. The same key with the same request returns the current call and its created_at; a different request under the same key is 409 idempotency_conflict. Refusals: invalid_input (400; malformed JSON, a body over 300 KiB, a missing Idempotency-Key, or out-of-range fields, including an E.164 to number); brief_too_large (the rendered brief exceeds CALLHARBOR_MAX_CALL_BRIEF_BYTES; the brief is never truncated); ai_profile_required (no AI profile is owned by the caller); ai_profile_ambiguous (more than one is owned; no request field selects one); not_found (unknown or ungranted telephony profile, with the same response for both); telephony_not_verified, telephony_connection_missing and telephony_webhook_key_missing (the profile is not ready for new calls); unavailable with reason calls_unavailable (HTTP 503) when the server is not running the call worker, because CALLHARBOR_PUBLIC_URL or the master key is missing. A refusal never writes a queued row.",
         "security": [
           {
             "sessionCookie": []
@@ -123,8 +122,8 @@
           }
         ],
         "responses": {
-          "201": {
-            "description": "Call created",
+          "202": {
+            "description": "Call queued",
             "content": {
               "application/json": {
                 "schema": {
@@ -139,6 +138,9 @@
           "401": {
             "$ref": "#/components/responses/Error"
           },
+          "403": {
+            "$ref": "#/components/responses/Error"
+          },
           "404": {
             "$ref": "#/components/responses/Error"
           },
@@ -146,6 +148,9 @@
             "$ref": "#/components/responses/Error"
           },
           "500": {
+            "$ref": "#/components/responses/Error"
+          },
+          "503": {
             "$ref": "#/components/responses/Error"
           }
         },
@@ -925,6 +930,7 @@
           "not_found",
           "invalid_input",
           "conflict",
+          "unavailable",
           "internal"
         ]
       },
