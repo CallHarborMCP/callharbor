@@ -279,3 +279,48 @@ func TestRegisterWritesAuditRowWithoutIP(t *testing.T) {
 		t.Fatalf("stored client = %+v", stored)
 	}
 }
+
+// TestRegistrationKeyGroupsIPv6ByPrefix: an IPv6 client controls a whole /64,
+// so the limit keys on that prefix. Addresses in one /64 share a budget and
+// addresses in another /64 do not. IPv4 keeps one key per address.
+func TestRegistrationKeyGroupsIPv6ByPrefix(t *testing.T) {
+	cases := []struct {
+		name       string
+		remoteAddr string
+		want       string
+	}{
+		{"ipv6 host bits ignored", "[2001:db8:1:2::aaaa]:4000", "2001:db8:1:2::/64"},
+		{"same /64, other host", "[2001:db8:1:2:ffff:ffff:ffff:ffff]:4000", "2001:db8:1:2::/64"},
+		{"ipv4 keeps full address", "198.51.100.7:4000", "198.51.100.7"},
+		{"ipv4-mapped ipv6 is ipv4", "[::ffff:198.51.100.7]:4000", "198.51.100.7"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodPost, "/oauth/register", nil)
+			req.RemoteAddr = tc.remoteAddr
+			if got := registrationClientIP(req); got != tc.want {
+				t.Fatalf("key = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestRegisterLimitSharedAcrossIPv6Prefix: exhausting the budget from one /64
+// also limits another address in that /64, but not an address elsewhere.
+func TestRegisterLimitSharedAcrossIPv6Prefix(t *testing.T) {
+	f := newFixture(t)
+	for i := 0; i < registerPerWindow; i++ {
+		resp := f.register(t, "application/json", "[2001:db8:7:7::1]:4000", registrationBody(nil))
+		if resp.StatusCode != http.StatusCreated {
+			t.Fatalf("registration %d status = %d", i+1, resp.StatusCode)
+		}
+	}
+	sibling := f.register(t, "application/json", "[2001:db8:7:7:dead:beef::2]:4000", registrationBody(nil))
+	if sibling.StatusCode != http.StatusTooManyRequests {
+		t.Fatalf("same /64 sibling status = %d, want 429", sibling.StatusCode)
+	}
+	elsewhere := f.register(t, "application/json", "[2001:db8:7:8::1]:4000", registrationBody(nil))
+	if elsewhere.StatusCode != http.StatusCreated {
+		t.Fatalf("different /64 status = %d, want 201", elsewhere.StatusCode)
+	}
+}

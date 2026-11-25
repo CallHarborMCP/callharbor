@@ -9,6 +9,7 @@ import (
 	"mime"
 	"net"
 	"net/http"
+	"net/netip"
 	"strconv"
 	"sync"
 	"time"
@@ -118,14 +119,28 @@ func (l *registrationLimiter) evictOldest() {
 	delete(l.windows, oldestKey)
 }
 
-// registrationClientIP mirrors identity.clientIP: the host of RemoteAddr. The
-// X-Forwarded-For header is never trusted.
+// registrationClientIP returns the limiter key for a request. It is the host of
+// RemoteAddr; X-Forwarded-For is never trusted. An IPv6 client usually controls
+// a whole /64, so its key is that prefix. An IPv4 client, including one written
+// as an IPv4-mapped IPv6 address, keys on the full address.
 func registrationClientIP(r *http.Request) string {
 	host, _, err := net.SplitHostPort(r.RemoteAddr)
 	if err != nil {
-		return r.RemoteAddr
+		host = r.RemoteAddr
 	}
-	return host
+	addr, err := netip.ParseAddr(host)
+	if err != nil {
+		return host
+	}
+	addr = addr.Unmap()
+	if addr.Is4() {
+		return addr.String()
+	}
+	prefix, err := addr.Prefix(64)
+	if err != nil {
+		return addr.String()
+	}
+	return prefix.String()
 }
 
 // writeRegistrationError writes an RFC 7591 error with status 400, or the
