@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/netip"
 	"testing"
 	"time"
 
@@ -34,9 +35,18 @@ func newE2EClient() *http.Client {
 // until it is ready. Shutdown is registered with t.Cleanup.
 func startInstance(t *testing.T, dataDir string, ln net.Listener, publicURL string) {
 	t.Helper()
+	startInstanceWithProxies(t, dataDir, ln, publicURL, nil)
+}
+
+// startInstanceWithProxies is startInstance with CALLHARBOR_TRUSTED_PROXIES
+// already parsed into trusted, so a test can prove that the list reaches the
+// OAuth server through Run.
+func startInstanceWithProxies(t *testing.T, dataDir string, ln net.Listener, publicURL string, trusted []netip.Prefix) {
+	t.Helper()
 	cfg := testConfig(t)
 	cfg.DataDir = dataDir
 	cfg.PublicURL = publicURL
+	cfg.TrustedProxies = trusted
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() {
