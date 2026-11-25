@@ -57,6 +57,7 @@ type fixture struct {
 	t      *testing.T
 	ctx    context.Context
 	store  *storage.Store
+	dbPath string
 	clock  *fixedClock
 	srv    *Server
 	http   *httptest.Server
@@ -67,7 +68,8 @@ type fixture struct {
 func newFixture(t *testing.T) *fixture {
 	t.Helper()
 	ctx := context.Background()
-	st, err := storage.Open(ctx, filepath.Join(t.TempDir(), "oauth.db"))
+	dbPath := filepath.Join(t.TempDir(), "oauth.db")
+	st, err := storage.Open(ctx, dbPath)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -89,7 +91,7 @@ func newFixture(t *testing.T) *fixture {
 	if _, err := ident.CreateUser(ctx, &identity.Principal{User: u}, "bob", "correct-horse-battery", identity.RoleAdmin); err != nil {
 		t.Fatal(err)
 	}
-	f := &fixture{t: t, ctx: ctx, store: st, clock: clk, userID: u.ID}
+	f := &fixture{t: t, ctx: ctx, store: st, dbPath: dbPath, clock: clk, userID: u.ID}
 	f.cfg = Config{PublicURL: "https://callharbor.example"}
 	f.srv = NewServer(f.cfg, st, registeredResolver{st}, clk.Now, slog.New(slog.DiscardHandler))
 	f.registerClient(testClientID, []string{testRedirectURI})
