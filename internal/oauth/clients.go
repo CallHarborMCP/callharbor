@@ -85,10 +85,9 @@ func (r *compositeResolver) ResolveClient(ctx context.Context, clientID string) 
 	return c, nil
 }
 
-// cimdMirrorCap bounds mirrored metadata-document rows in oauth_clients.
-// Rows are never evicted: grants and requests reference them with ON DELETE
-// RESTRICT, so a row in use cannot be removed. A new document beyond the cap
-// is refused instead.
+// cimdMirrorCap bounds mirrored metadata-document rows in oauth_clients. At the
+// cap, the oldest stale row that no grant, request, code or token references is
+// evicted for a new document. If no row qualifies, the new document is refused.
 const cimdMirrorCap = 10000
 
 // errMetadataClientCapReached is returned when the mirror table is full.
@@ -109,14 +108,24 @@ func (r *compositeResolver) mirror(ctx context.Context, c Client) error {
 		}
 	}
 	// Refreshing a known document is always allowed. Only a new row counts
-	// against the cap, so a flood of distinct metadata URLs is refused.
+	// against the cap. At the cap, a stale row that nothing references is
+	// evicted to make room; if none is evictable, the new document is refused.
 	if _, err := r.store.GetOAuthClient(ctx, c.ID); errors.Is(err, storage.ErrNotFound) {
 		n, err := r.store.CountMetadataOAuthClients(ctx)
 		if err != nil {
 			return fmt.Errorf("oauth: count metadata clients: %w", err)
 		}
 		if n >= r.mirrorCap {
-			return errMetadataClientCapReached
+			// A row is evictable only once it is older than any cached copy of
+			// it can be, so a cache hit never points at a missing row.
+			cutoff := formatTime(r.now().Add(-cimdMaxTTL))
+			evicted, err := r.store.EvictUnusedMetadataOAuthClient(ctx, cutoff)
+			if err != nil {
+				return fmt.Errorf("oauth: evict metadata client: %w", err)
+			}
+			if !evicted {
+				return errMetadataClientCapReached
+			}
 		}
 	}
 	now := formatTime(r.now())

@@ -139,6 +139,28 @@ func (s *Store) CountMetadataOAuthClients(ctx context.Context) (int, error) {
 	return n, err
 }
 
+// EvictUnusedMetadataOAuthClient deletes the least recently mirrored metadata
+// document row that was last updated before updatedBefore and that nothing
+// references. It reports whether a row was removed. Grants, requests, codes and
+// tokens all reference oauth_clients with ON DELETE RESTRICT, so a referenced
+// row is never a candidate. Dynamic clients are never candidates.
+func (s *Store) EvictUnusedMetadataOAuthClient(ctx context.Context, updatedBefore string) (bool, error) {
+	res, err := s.db.ExecContext(ctx, `DELETE FROM oauth_clients WHERE client_id = (
+		SELECT c.client_id FROM oauth_clients c
+		WHERE c.source = 'metadata_document' AND c.updated_at < ?
+		AND NOT EXISTS (SELECT 1 FROM oauth_grants g WHERE g.client_id = c.client_id)
+		AND NOT EXISTS (SELECT 1 FROM oauth_auth_requests r WHERE r.client_id = c.client_id)
+		AND NOT EXISTS (SELECT 1 FROM oauth_codes k WHERE k.client_id = c.client_id)
+		AND NOT EXISTS (SELECT 1 FROM oauth_access_tokens a WHERE a.client_id = c.client_id)
+		AND NOT EXISTS (SELECT 1 FROM oauth_refresh_tokens t WHERE t.client_id = c.client_id)
+		ORDER BY c.updated_at, c.client_id LIMIT 1)`, updatedBefore)
+	if err != nil {
+		return false, err
+	}
+	n, err := res.RowsAffected()
+	return n > 0, err
+}
+
 // PurgeExpiredOAuthAuth deletes up to limit expired codes, then up to limit
 // expired authorization requests that no remaining code references. Codes go
 // first because oauth_codes references oauth_auth_requests with ON DELETE

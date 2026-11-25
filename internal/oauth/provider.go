@@ -91,6 +91,7 @@ type Store interface {
 	TouchOAuthGrant(ctx context.Context, grantID, now, before string) error
 	CountDynamicOAuthClients(ctx context.Context, sinceISO string) (int, error)
 	CountMetadataOAuthClients(ctx context.Context) (int, error)
+	EvictUnusedMetadataOAuthClient(ctx context.Context, updatedBefore string) (bool, error)
 	InsertOAuthAuthRequest(ctx context.Context, r storage.OAuthAuthRequest) error
 	PurgeExpiredOAuthAuth(ctx context.Context, now string, limit int) error
 	GetOAuthAuthRequest(ctx context.Context, id string) (storage.OAuthAuthRequest, error)

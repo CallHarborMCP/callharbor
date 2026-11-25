@@ -263,3 +263,100 @@ func TestTouchOAuthGrantUnknownIsNoOp(t *testing.T) {
 		t.Fatalf("touch of unknown grant: %v", err)
 	}
 }
+
+// TestEvictUnusedMetadataOAuthClient: a metadata-document row is evicted only
+// when it is stale and nothing references it. Referenced rows, recent rows and
+// dynamic clients are never removed, and the oldest eligible row goes first.
+func TestEvictUnusedMetadataOAuthClient(t *testing.T) {
+	ctx := context.Background()
+	const meta = "https://client.example/meta.json"
+	// The fixture row is updated at oauthNow (10:00). The stale cutoff is later
+	// than that, the fresh cutoff earlier.
+	const stale = "2026-11-25T11:00:00.000Z"
+	const fresh = "2026-11-25T09:00:00.000Z"
+
+	t.Run("evicts a stale unreferenced row", func(t *testing.T) {
+		s := openOAuthFixture(t)
+		evicted, err := s.EvictUnusedMetadataOAuthClient(ctx, stale)
+		if err != nil || !evicted {
+			t.Fatalf("evicted = %v, err = %v; want true, nil", evicted, err)
+		}
+		if _, err := s.GetOAuthClient(ctx, meta); !errors.Is(err, ErrNotFound) {
+			t.Fatalf("evicted row still present: err = %v", err)
+		}
+	})
+
+	t.Run("keeps a row referenced by a grant and code", func(t *testing.T) {
+		s := openOAuthFixture(t)
+		seedApprovedGrant(t, s, "req-g", "grant-g", hex64('g'))
+		evicted, err := s.EvictUnusedMetadataOAuthClient(ctx, stale)
+		if err != nil || evicted {
+			t.Fatalf("evicted = %v, err = %v; want false, nil", evicted, err)
+		}
+		if _, err := s.GetOAuthClient(ctx, meta); err != nil {
+			t.Fatalf("referenced row removed: %v", err)
+		}
+	})
+
+	t.Run("keeps a row referenced by a pending request", func(t *testing.T) {
+		s := openOAuthFixture(t)
+		if err := s.InsertOAuthAuthRequest(ctx, OAuthAuthRequest{
+			ID: "req-p", ClientID: meta, RedirectURI: "https://client.example/cb", Scopes: "mcp:read",
+			Resource: "https://cb.example/mcp", CodeChallenge: testChallenge, CreatedAt: oauthNow, ExpiresAt: oauthLater,
+		}); err != nil {
+			t.Fatal(err)
+		}
+		evicted, err := s.EvictUnusedMetadataOAuthClient(ctx, stale)
+		if err != nil || evicted {
+			t.Fatalf("evicted = %v, err = %v; want false, nil", evicted, err)
+		}
+		if _, err := s.GetOAuthClient(ctx, meta); err != nil {
+			t.Fatalf("referenced row removed: %v", err)
+		}
+	})
+
+	t.Run("keeps a recently updated row", func(t *testing.T) {
+		s := openOAuthFixture(t)
+		evicted, err := s.EvictUnusedMetadataOAuthClient(ctx, fresh)
+		if err != nil || evicted {
+			t.Fatalf("evicted = %v, err = %v; want false, nil", evicted, err)
+		}
+	})
+
+	t.Run("never evicts dynamic clients and takes the oldest metadata row first", func(t *testing.T) {
+		s := openOAuthFixture(t)
+		if err := s.UpsertOAuthClient(ctx, OAuthClient{ClientID: "dyn-client", Source: "dynamic", ClientName: "D", RedirectURIs: `["https://dyn.example/cb"]`, CreatedAt: oauthNow, UpdatedAt: "2026-11-25T09:00:00.000Z"}); err != nil {
+			t.Fatal(err)
+		}
+		older := "https://older.example/meta.json"
+		if err := s.UpsertOAuthClient(ctx, OAuthClient{ClientID: older, Source: "metadata_document", ClientName: "O", RedirectURIs: `["https://older.example/cb"]`, CreatedAt: "2026-11-25T09:30:00.000Z", UpdatedAt: "2026-11-25T09:30:00.000Z"}); err != nil {
+			t.Fatal(err)
+		}
+		evicted, err := s.EvictUnusedMetadataOAuthClient(ctx, stale)
+		if err != nil || !evicted {
+			t.Fatalf("first eviction = %v, err = %v; want true, nil", evicted, err)
+		}
+		if _, err := s.GetOAuthClient(ctx, older); !errors.Is(err, ErrNotFound) {
+			t.Fatalf("oldest row not evicted first: err = %v", err)
+		}
+		if _, err := s.GetOAuthClient(ctx, meta); err != nil {
+			t.Fatalf("newer metadata row removed too early: %v", err)
+		}
+		// Only the dynamic client remains, so there is nothing left to evict.
+		evicted, err = s.EvictUnusedMetadataOAuthClient(ctx, stale)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !evicted {
+			// meta.json is the remaining unreferenced metadata row and is stale.
+			t.Fatal("second eviction should remove the remaining stale metadata row")
+		}
+		if _, err := s.GetOAuthClient(ctx, "dyn-client"); err != nil {
+			t.Fatalf("dynamic client removed: %v", err)
+		}
+		evicted, err = s.EvictUnusedMetadataOAuthClient(ctx, stale)
+		if err != nil || evicted {
+			t.Fatalf("third eviction = %v, err = %v; want false, nil", evicted, err)
+		}
+	})
+}

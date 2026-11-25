@@ -730,3 +730,69 @@ func TestCIMDRefusedMirrorIsNotCachedAndResolvesToUnknown(t *testing.T) {
 		t.Fatalf("authorize status = %d, want 400 (not 500)", resp.StatusCode)
 	}
 }
+
+// TestCIMDMirrorCapEvictsStaleUnusedRowForNewDocument: at the cap, a stale
+// metadata row that nothing references is evicted to make room for a new
+// document. The new document is then mirrored and served.
+func TestCIMDMirrorCapEvictsStaleUnusedRowForNewDocument(t *testing.T) {
+	first := newMetadataServer()
+	f, firstCID := newCIMDFixture(t, first, true)
+	setDoc(first, cimdDoc(firstCID, nil))
+	if _, err := f.srv.clients.ResolveClient(f.ctx, firstCID); err != nil {
+		t.Fatalf("first mirror: %v", err)
+	}
+	// Age the first row past any cached copy's lifetime, so eviction is safe.
+	f.clock.Advance(cimdMaxTTL + time.Minute)
+
+	second := newMetadataServer()
+	ts := httptest.NewTLSServer(second)
+	t.Cleanup(ts.Close)
+	pool := x509.NewCertPool()
+	pool.AddCert(ts.Certificate())
+	secondCID := ts.URL + "/client.json"
+	setDoc(second, cimdDoc(secondCID, nil))
+	capped := newClientResolver(f.store, f.clock.Now, cimdOptions{allowPrivate: true, rootCAs: pool})
+	capped.(*compositeResolver).mirrorCap = 1
+	f.resetResolver(capped)
+
+	if _, err := f.srv.clients.ResolveClient(f.ctx, secondCID); err != nil {
+		t.Fatalf("new document not admitted by evicting a stale unused row: %v", err)
+	}
+	if _, err := f.store.GetOAuthClient(f.ctx, firstCID); !errors.Is(err, storage.ErrNotFound) {
+		t.Fatalf("stale unused row not evicted: err = %v", err)
+	}
+	if _, err := f.store.GetOAuthClient(f.ctx, secondCID); err != nil {
+		t.Fatalf("new document row missing: %v", err)
+	}
+}
+
+// TestCIMDMirrorCapRefusesWhenNothingIsEvictable: at the cap, if every row is
+// referenced or recently updated, a new document is refused, not admitted by
+// removing a row that a grant or a cached client still needs.
+func TestCIMDMirrorCapRefusesWhenNothingIsEvictable(t *testing.T) {
+	first := newMetadataServer()
+	f, firstCID := newCIMDFixture(t, first, true)
+	setDoc(first, cimdDoc(firstCID, nil))
+	if _, err := f.srv.clients.ResolveClient(f.ctx, firstCID); err != nil {
+		t.Fatalf("first mirror: %v", err)
+	}
+	// The row is recent: no clock advance, so it is inside the cache lifetime.
+
+	second := newMetadataServer()
+	ts := httptest.NewTLSServer(second)
+	t.Cleanup(ts.Close)
+	pool := x509.NewCertPool()
+	pool.AddCert(ts.Certificate())
+	secondCID := ts.URL + "/client.json"
+	setDoc(second, cimdDoc(secondCID, nil))
+	capped := newClientResolver(f.store, f.clock.Now, cimdOptions{allowPrivate: true, rootCAs: pool})
+	capped.(*compositeResolver).mirrorCap = 1
+	f.resetResolver(capped)
+
+	if _, err := f.srv.clients.ResolveClient(f.ctx, secondCID); err == nil {
+		t.Fatal("new document admitted although no row was evictable")
+	}
+	if _, err := f.store.GetOAuthClient(f.ctx, firstCID); err != nil {
+		t.Fatalf("recent row removed: %v", err)
+	}
+}
