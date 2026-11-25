@@ -188,6 +188,35 @@ func TestPurgeExpiredOAuthAuthRemovesOnlyExpiredRows(t *testing.T) {
 	}
 }
 
+// TestPasswordResetRevokesOAuthGrants: a password reset ends the user's remote
+// MCP grants, as deactivation does, so the connections must be re-authorized.
+func TestPasswordResetRevokesOAuthGrants(t *testing.T) {
+	ctx := context.Background()
+	s := openOAuthFixture(t)
+	seedApprovedGrant(t, s, "req-pw", "grant-pw", hex64('f'))
+	if err := s.IssueOAuthTokens(ctx, OAuthToken{TokenHash: hex64('a'), GrantID: "grant-pw", UserID: "alice", ClientID: "https://client.example/meta.json", Audience: "https://cb.example/mcp", Scopes: "mcp:read", CreatedAt: oauthNow, ExpiresAt: oauthLater}, nil, oauthNow); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := s.SetPasswordHash(ctx, "alice", "new-hash", oauthLater, AuditEvent{OccurredAt: oauthLater, Action: "user.password_reset", ResourceType: "user", Outcome: "success", DetailJSON: "{}"}); err != nil {
+		t.Fatal(err)
+	}
+	g, err := s.GetOAuthGrantByID(ctx, "grant-pw")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if g.RevokedAt == "" {
+		t.Fatal("password reset left the OAuth grant active")
+	}
+	tok, err := s.GetOAuthAccessToken(ctx, hex64('a'))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tok.RevokedAt == "" && tok.GrantRevokedAt == "" {
+		t.Fatal("access token still usable after password reset")
+	}
+}
+
 // TestDecideAndApproveRefusesUserDeactivatedAfterCheck: a user deactivated
 // after the handler's own check but before the approval write must get no
 // grant or code, and the request stays undecided, so nothing is stranded.
