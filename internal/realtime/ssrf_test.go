@@ -26,6 +26,10 @@ func TestEndpointPolicyClassifiesAddresses(t *testing.T) {
 		"224.0.0.1", "240.0.0.1",
 		"::1", "::", "fc00::1", "fd12::1", "fe80::1", "ff02::1",
 		"::ffff:10.0.0.1", "::ffff:169.254.169.254", "::ffff:127.0.0.1",
+		// NAT64, 6to4 and Teredo addresses can embed a private IPv4 address.
+		"64:ff9b::a9fe:a9fe", "64:ff9b::7f00:1", "64:ff9b:1::1",
+		"2002:0a00:0001::1", "2002:7f00:0001::1",
+		"2001:0:4136:e378:8000:63bf:f5ff:fffe",
 	}
 	for _, s := range blocked {
 		ip := netip.MustParseAddr(s)
