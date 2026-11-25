@@ -462,6 +462,51 @@ func TestExpiredCodeRejected(t *testing.T) {
 	}
 }
 
+// TestClientAssertionIsRefusedOnTokenAndRevoke: a JWT client assertion is a
+// confidential-client credential this server does not verify. Both endpoints
+// refuse it with 401 invalid_client, so a client that sends one learns why.
+func TestClientAssertionIsRefusedOnTokenAndRevoke(t *testing.T) {
+	f := newFixture(t)
+	assertion := url.Values{
+		"client_assertion":      {"eyJhbGciOiJSUzI1NiJ9.e30.c2ln"},
+		"client_assertion_type": {"urn:ietf:params:oauth:client-assertion-type:jwt-bearer"},
+	}
+	for _, tc := range []struct {
+		name     string
+		endpoint string
+		form     url.Values
+	}{
+		{"token", "/oauth/token", url.Values{
+			"grant_type": {"authorization_code"}, "code": {"x"}, "client_id": {testClientID},
+		}},
+		{"revoke", "/oauth/revoke", url.Values{
+			"token": {"cho_a_x"}, "client_id": {testClientID},
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			form := url.Values{}
+			for k, v := range tc.form {
+				form[k] = v
+			}
+			for k, v := range assertion {
+				form[k] = v
+			}
+			resp, err := http.PostForm(f.http.URL+tc.endpoint, form)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = resp.Body.Close() }()
+			var body map[string]any
+			if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+				t.Fatal(err)
+			}
+			if resp.StatusCode != http.StatusUnauthorized || body["error"] != "invalid_client" {
+				t.Fatalf("status=%d body=%v, want 401 invalid_client", resp.StatusCode, body)
+			}
+		})
+	}
+}
+
 func TestTokenRejectsConfidentialClientCredential(t *testing.T) {
 	f := newFixture(t)
 	status, _ := f.exchange(url.Values{
