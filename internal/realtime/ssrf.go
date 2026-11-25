@@ -56,8 +56,14 @@ var blockedPrefixes = []netip.Prefix{
 	netip.MustParsePrefix("2001::/32"),
 }
 
-// Allowed reports whether ip may be dialed under the policy.
+// Allowed reports whether ip may be dialed under the policy. A scoped IPv6
+// address (for example fe80::1%eth0) is refused under every policy: its zone
+// makes it unequal to the prefixes below, so it would otherwise bypass them.
+// Zone must be checked before Unmap, which discards it.
 func (p EndpointPolicy) Allowed(ip netip.Addr) bool {
+	if !ip.IsValid() || ip.Zone() != "" {
+		return false
+	}
 	ip = ip.Unmap()
 	if !ip.IsValid() {
 		return false

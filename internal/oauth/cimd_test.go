@@ -15,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/CallHarborMCP/callharbor/internal/realtime"
 	"github.com/CallHarborMCP/callharbor/internal/storage"
 )
 
@@ -267,6 +268,37 @@ func TestCIMDPlainHTTPClientIDIsUnknownAndNotFetched(t *testing.T) {
 	assertRejectedWithoutRedirect(t, f, strings.Replace(cid, "https://", "http://", 1), nil)
 	if meta.hits() != 0 {
 		t.Fatal("http:// client_id was fetched")
+	}
+}
+
+// TestCIMDZonedHostClientIDIsRejectedWithoutFetch: an IPv6 zone in the host
+// (percent-encoded or literal) is refused before any fetch, so the dial policy
+// never has to judge a zoned address.
+func TestCIMDZonedHostClientIDIsRejectedWithoutFetch(t *testing.T) {
+	meta := newMetadataServer()
+	f, _ := newCIMDFixture(t, meta, true)
+	for _, id := range []string{
+		"https://[::1%25lo]:443/x",
+		"https://[fe80::1%25eth0]/x",
+		"https://[fe80::1%eth0]/x",
+	} {
+		if isCIMDClientID(id) {
+			t.Errorf("isCIMDClientID(%q) = true, want false", id)
+		}
+		assertRejectedWithoutRedirect(t, f, id, nil)
+	}
+	if meta.hits() != 0 {
+		t.Fatal("zoned client_id was fetched")
+	}
+}
+
+// TestCIMDDialPolicyRefusesZonedAddress: even a policy that allows private
+// addresses refuses a zoned one at connect time.
+func TestCIMDDialPolicyRefusesZonedAddress(t *testing.T) {
+	for _, addr := range []string{"[fe80::1%eth0]:443", "[::1%lo]:443", "[fd00:ec2::254%eth0]:80"} {
+		if err := policyControl(realtime.EndpointPolicy{AllowPrivate: true})("tcp", addr, nil); !errors.Is(err, realtime.ErrSSRFBlocked) {
+			t.Errorf("dial %s with AllowPrivate: want ErrSSRFBlocked, got %v", addr, err)
+		}
 	}
 }
 

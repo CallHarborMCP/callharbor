@@ -66,13 +66,15 @@ type cimdMetadata struct {
 }
 
 // isCIMDClientID reports whether a client_id is a metadata-document URL: https,
-// a non-root path, and no fragment, userinfo or query.
+// a non-root path, and no fragment, userinfo or query. A host containing '%'
+// is refused: that is an IPv6 zone (fe80::1%eth0, percent-encoded as %25),
+// which the dial policy cannot judge reliably.
 func isCIMDClientID(raw string) bool {
 	if len(raw) > maxCIMDClientIDBytes {
 		return false
 	}
 	u, err := url.Parse(raw)
-	if err != nil || u.Scheme != "https" || u.Host == "" {
+	if err != nil || u.Scheme != "https" || u.Host == "" || strings.Contains(u.Host, "%") {
 		return false
 	}
 	return u.Path != "" && u.Path != "/" && u.Fragment == "" && u.User == nil && u.RawQuery == "" && !u.ForceQuery

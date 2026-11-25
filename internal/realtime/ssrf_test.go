@@ -53,6 +53,28 @@ func TestEndpointPolicyClassifiesAddresses(t *testing.T) {
 	}
 }
 
+// TestEndpointPolicyRefusesZonedAddresses: a scoped IPv6 address never matches
+// the blocked prefixes (its zone breaks Contains), so it must be refused by
+// an explicit zone check under both policies, and at dial time.
+func TestEndpointPolicyRefusesZonedAddresses(t *testing.T) {
+	zoned := []string{"::1%lo", "fe80::1%eth0", "fd00:ec2::254%eth0", "::%eth0", "2606:4700:4700::1111%eth0"}
+	for _, s := range zoned {
+		ip := netip.MustParseAddr(s)
+		if (EndpointPolicy{}).Allowed(ip) {
+			t.Errorf("default policy must refuse zoned %s", s)
+		}
+		if (EndpointPolicy{AllowPrivate: true}).Allowed(ip) {
+			t.Errorf("AllowPrivate must refuse zoned %s", s)
+		}
+		for _, p := range []EndpointPolicy{{}, {AllowPrivate: true}} {
+			err := p.control("tcp", "["+s+"]:443", nil)
+			if !errors.Is(err, ErrSSRFBlocked) {
+				t.Errorf("dial to [%s]:443 under %+v: want ErrSSRFBlocked, got %v", s, p, err)
+			}
+		}
+	}
+}
+
 // TestSSRFPolicyBlocksPrivateDialAtConnectTime proves the check runs on the
 // address actually dialed. A loopback server stands in for an internal host.
 // The default policy must refuse it before any request reaches the server.
