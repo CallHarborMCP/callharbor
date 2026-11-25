@@ -119,12 +119,28 @@ func parsePublicURL(raw string) (string, error) {
 	default:
 		return "", errors.New("scheme must be https (or http for loopback hosts)")
 	}
-	if p := u.Port(); p != "" {
-		if n, err := strconv.Atoi(p); err != nil || n < 1 || n > 65535 {
+	// The origin is normalized to one spelling: a lowercase host and no port
+	// when it is the scheme's default. Metadata and issuer checks compare it.
+	port := u.Port()
+	if port != "" {
+		if n, err := strconv.Atoi(port); err != nil || n < 1 || n > 65535 {
 			return "", errors.New("port must be between 1 and 65535")
 		}
 	}
-	return u.Scheme + "://" + u.Host, nil
+	origin := u.Scheme + "://" + strings.ToLower(host)
+	if strings.Contains(host, ":") {
+		origin = u.Scheme + "://[" + strings.ToLower(host) + "]" // IPv6 literal keeps its brackets
+	}
+	if port != "" && !isDefaultPort(u.Scheme, port) {
+		origin += ":" + port
+	}
+	return origin, nil
+}
+
+// isDefaultPort reports whether port is the default for scheme, which the
+// origin omits.
+func isDefaultPort(scheme, port string) bool {
+	return (scheme == "https" && port == "443") || (scheme == "http" && port == "80")
 }
 
 func isLoopbackHost(host string) bool {

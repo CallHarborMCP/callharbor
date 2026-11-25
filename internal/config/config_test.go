@@ -106,7 +106,7 @@ func TestLoadPublicURL(t *testing.T) {
 	valid := map[string]string{
 		"https://callharbor.example.com":  "https://callharbor.example.com",
 		"https://callharbor.example.com/": "https://callharbor.example.com",
-		"https://Example.com:8443/":       "https://Example.com:8443",
+		"https://Example.com:8443/":       "https://example.com:8443",
 		"http://127.0.0.1:8080":           "http://127.0.0.1:8080",
 		"http://localhost:8080/":          "http://localhost:8080",
 		"http://[::1]:8080":               "http://[::1]:8080",
@@ -143,6 +143,28 @@ func TestLoadPublicURL(t *testing.T) {
 			t.Errorf("Load(%q) error = nil, want rejection", in)
 		} else if !strings.Contains(err.Error(), EnvPublicURL) {
 			t.Errorf("Load(%q) error %q does not name %s", in, err, EnvPublicURL)
+		}
+	}
+}
+
+// TestLoadPublicURLNormalizesHostAndDefaultPort: the host is lowercased and a
+// scheme's default port is dropped, so one origin has one spelling. The
+// origin is compared and embedded in metadata, so these must match.
+func TestLoadPublicURLNormalizesHostAndDefaultPort(t *testing.T) {
+	cases := map[string]string{
+		"https://Callharbor.Example.COM:443":  "https://callharbor.example.com",
+		"https://callharbor.example.com:443/": "https://callharbor.example.com",
+		"http://LOCALHOST:80":                 "http://localhost",
+		"https://Example.com:8443":            "https://example.com:8443",
+	}
+	for in, want := range cases {
+		cfg, err := Load(env(map[string]string{EnvPublicURL: in}))
+		if err != nil {
+			t.Errorf("Load(%q) error = %v", in, err)
+			continue
+		}
+		if cfg.PublicURL != want {
+			t.Errorf("Load(%q).PublicURL = %q, want %q", in, cfg.PublicURL, want)
 		}
 	}
 }
