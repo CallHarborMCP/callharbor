@@ -51,6 +51,7 @@ The nonroot process must be able to write to the data directory. The image creat
 | `CALLHARBOR_LOG_LEVEL` | `info` | One of `debug`, `info`, `warn` or `error`. |
 | `CALLHARBOR_SHUTDOWN_TIMEOUT` | `15s` | Go duration greater than 0 and at most `5m`. |
 | `CALLHARBOR_PUBLIC_URL` | unset | External origin, for example `https://callharbor.example.com`. Stored in normalized form: the host is lowercased and a default port (`:443` or `:80`) is removed. Required for remote MCP authorization; see `docs/operations/oauth-mcp.md`. When unset, OAuth and MCP routes are not mounted. |
+| `CALLHARBOR_TRUSTED_PROXIES` | unset (no proxy trusted) | Comma-separated IP addresses and CIDR prefixes of reverse proxies whose `X-Forwarded-For` header is used to pick the client for rate limits. Invalid, empty or zoned entries stop startup. See the "Behind a reverse proxy" section of `docs/operations/oauth-mcp.md`. |
 
 An invalid value stops the container at startup with a message that names the variable. Logs are JSON lines on stdout.
 

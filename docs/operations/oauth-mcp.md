@@ -14,9 +14,19 @@ Set the public origin that clients and browsers use to reach CallHarbor:
 
 - The issuer is exactly this origin. The protected MCP resource is `<origin>/mcp`.
 - The issuer is never derived from `Host` or `X-Forwarded-*` headers. Behind a reverse proxy, set the variable to the external `https` origin.
-- The rate limits (authorization and registration) key on the TCP peer address and ignore `X-Forwarded-For`. Behind a reverse proxy every client therefore shares one key, so one busy client can exhaust the limit for all. Limits are per process and reset on restart.
+- The rate limits (authorization and registration) key on the client address. By default that is the TCP peer, and `X-Forwarded-For` is ignored. Behind a reverse proxy, list the proxy in `CALLHARBOR_TRUSTED_PROXIES` (see below) so each real client gets its own limit. Limits are per process and reset on restart.
 - When the variable is unset, no OAuth or MCP route is mounted and the server logs `OAuth and MCP are disabled until CALLHARBOR_PUBLIC_URL is set`. Local sign-in and the web UI keep working.
 - No master key is needed for OAuth. Access tokens, refresh tokens and authorization codes are random opaque values; only their SHA-256 hashes are stored in SQLite.
+
+### Behind a reverse proxy
+
+`CALLHARBOR_TRUSTED_PROXIES` is a comma-separated list of IP addresses and CIDR prefixes, for example `10.0.0.0/8, 192.0.2.7`. Whitespace is ignored. It is empty by default, which trusts no proxy. An invalid entry, an empty entry or a zoned address (such as `fe80::1%eth0`) stops the server at startup, and the message names the variable.
+
+- The server reads `X-Forwarded-For` only when the TCP peer is in the list. It walks the header from right to left, across all header values, and uses the first address that is not in the list as the client.
+- If the peer is not trusted, the header is ignored. If the header is missing, malformed or zoned, or every entry is a trusted proxy, the TCP peer is used.
+- `X-Real-IP` and `Forwarded` are never read.
+- Add only the addresses of the proxies that connect to CallHarbor, and make the proxy set `X-Forwarded-For` by appending the address it received the connection from. A wrong list is a security issue. If a client can reach CallHarbor directly, or the list contains a range such as `0.0.0.0/0` or `::/0` that covers clients, that client can write any address into the header and pick its own rate-limit bucket. If the proxy is missing from the list, every client shares the proxy's bucket and one busy client can exhaust the limit for all.
+- The external origin in `CALLHARBOR_PUBLIC_URL` is separate from this setting and is never derived from forwarded headers.
 
 ## Connect a client
 
@@ -56,7 +66,8 @@ Metadata, token, revocation and registration endpoints send `Access-Control-Allo
     - A failed fetch is remembered for 30 seconds (negative cache), so a bad URL does not cause one outbound request per attempt. The negative cache holds at most 1024 entries; expired entries are removed on each new failure, and the oldest is dropped when it is full.
     - Concurrent outbound fetches are limited to 8 across all clients. A fetch that cannot get a slot within the 5-second timeout is refused as an unknown client.
     - Each fetched document is written to the client table before it is cached, so a cached client always has a row. At most 10,000 metadata documents are mirrored. At that cap, a new document evicts the oldest metadata row that has not been updated for at least one hour and that no grant, request, code or token references. If no row qualifies, the new document is refused. A document already mirrored is always accepted.
-  - *Dynamic registration:* limited to 20 registrations per 10 minutes per client IP and 10,000 registered clients in total (`503 temporarily_unavailable` when full). For IPv6 the limit applies per /64 prefix, because one host usually controls a whole /64; IPv4 is limited per address. Registered names are unverified, and the consent screen says so.
+  - *Dynamic registration:* limited to 20 registrations per 10 minutes per client IP and 10,000 dynamic clients in total. For IPv6 the limit applies per /64 prefix, because one host usually controls a whole /64; IPv4 is limited per address. Registered names are unverified, and the consent screen says so.
+    - At the total cap, a new registration evicts the oldest dynamic client that is more than 24 hours old and that no grant, authorization request, code or token references. The eviction is written to the server log with the client IDs only. If no client qualifies, the registration is refused with `503 temporarily_unavailable`. Clients that are in use, or were registered within the last 24 hours, are never evicted.
 - **Authorization rate limit:** `GET /oauth/authorize` allows 60 requests per minute per client IP (IPv6 per /64). A limited request gets `429` with `Retry-After` and `temporarily_unavailable`, and no redirect is sent.
 - **Cleanup:** on each authorization request, up to 100 expired codes are deleted, then expired authorization requests that no code references. Expired or revoked tokens and grants are not purged; they are kept as audit history and for reuse detection.
 - **Password reset:** a password reset revokes all of the user's OAuth grants in the same transaction, as deactivation does. The connected client must be authorized again.
@@ -76,10 +87,11 @@ The library's full OpenID Provider is not used. It signs ID tokens with a JWT ke
 
 ## Verification status
 
-Tested automatically in CI (`go test`, Playwright) against the real application and SQLite:
+Tested automatically in CI (`go test`, Playwright). Most cases run through the real application or real HTTP handlers against SQLite:
 
 - The full remote-client flow through the running server: discovery, dynamic registration, sign-in, consent, code exchange with an independent `golang.org/x/oauth2` client, refresh rotation and revocation.
-- Negative cases: wrong or missing resource, audience mismatch between two instances, insufficient scope, redirect URI mismatch, code reuse and concurrent redemption, missing or `plain` PKCE, wrong verifier, expired and revoked tokens, refresh reuse, disabled users, denied consent, cross-user grant access, and missing session or CSRF on the consent API.
+- Negative cases: wrong or missing resource, audience mismatch between two instances, insufficient scope, redirect URI mismatch, code reuse and concurrent redemption, missing or `plain` PKCE, wrong verifier, revoked tokens, refresh reuse, disabled users (including users disabled with their grants left live), denied consent, cross-user grant access, and missing session or CSRF on the consent API.
+- Token expiry is tested at package level with an injected fake clock, not by waiting in the running application.
 - Client ID Metadata Documents served by a local TLS test server, including a document shaped like ChatGPT's published client metadata.
 - The consent screen and Connected apps page in a browser against the production build.
 
