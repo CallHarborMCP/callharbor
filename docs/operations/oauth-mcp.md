@@ -24,6 +24,7 @@ Set the public origin that clients and browsers use to reach CallHarbor:
 
 - The server reads `X-Forwarded-For` only when the TCP peer is in the list. It walks the header from right to left, across all header values, and uses the first address that is not in the list as the client.
 - If the peer is not trusted, the header is ignored. If the header is missing, malformed or zoned, or every entry is a trusted proxy, the TCP peer is used.
+- Each `X-Forwarded-For` entry must be a bare IP address, such as `198.51.100.7` or `2001:db8::7`. An entry that carries a port, such as `198.51.100.7:5000` or `[2001:db8::7]:5000`, is malformed. The whole header is then ignored and the request uses the shared TCP peer bucket. Configure the proxy to send bare addresses.
 - `X-Real-IP` and `Forwarded` are never read.
 - Add only the addresses of the proxies that connect to CallHarbor, and make the proxy set `X-Forwarded-For` by appending the address it received the connection from. A wrong list is a security issue. If a client can reach CallHarbor directly, or the list contains a range such as `0.0.0.0/0` or `::/0` that covers clients, that client can write any address into the header and pick its own rate-limit bucket. If the proxy is missing from the list, every client shares the proxy's bucket and one busy client can exhaust the limit for all.
 - The external origin in `CALLHARBOR_PUBLIC_URL` is separate from this setting and is never derived from forwarded headers.
