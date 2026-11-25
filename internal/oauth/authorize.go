@@ -6,6 +6,7 @@ import (
 	"net/url"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/CallHarborMCP/callharbor/internal/storage"
 	"github.com/zitadel/oidc/v3/pkg/oidc"
@@ -14,6 +15,10 @@ import (
 
 // authPurgeBatch bounds the expired authorization rows removed per request.
 const authPurgeBatch = 100
+
+// maxStateLength matches the oauth_auth_requests CHECK on state. A longer
+// value is refused before it reaches the database.
+const maxStateLength = 1024
 
 // handleAuthorize serves GET /oauth/authorize. Validation runs in the order
 // that keeps the redirect safe: the client and redirect_uri are checked
@@ -71,6 +76,10 @@ func (s *Server) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 	}
 	if e := checkPKCE(req); e != nil {
 		fail(e)
+		return
+	}
+	if utf8.RuneCountInString(req.State) > maxStateLength {
+		fail(oidc.ErrInvalidRequest().WithDescription("state is too long"))
 		return
 	}
 	scopes, serr := ValidateScopes(req.Scopes)
@@ -175,7 +184,29 @@ func checkPKCE(req *oidc.AuthRequest) *oidc.Error {
 	if err := op.ValidateAuthReqCodeChallengeMethod(req.CodeChallenge, req.CodeChallengeMethod); err != nil {
 		return asOIDCError(err)
 	}
+	if !validS256Challenge(req.CodeChallenge) {
+		return oidc.ErrInvalidRequest().WithDescription("code_challenge must be 43 base64url characters")
+	}
 	return nil
+}
+
+// validS256Challenge reports whether s has the shape of an S256 code_challenge:
+// 43 unpadded base64url characters, the encoding of a 32-byte SHA-256 digest
+// (RFC 7636 section 4.2). Storage checks only the length, so the alphabet is
+// checked here.
+func validS256Challenge(s string) bool {
+	if len(s) != 43 {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		switch {
+		case c >= 'A' && c <= 'Z', c >= 'a' && c <= 'z', c >= '0' && c <= '9', c == '-', c == '_':
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 // redirectError sends an OAuth error to a validated redirect_uri with state

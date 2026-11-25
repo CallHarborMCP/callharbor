@@ -285,6 +285,45 @@ func TestAuthorizeRejectsPlainPKCEMethod(t *testing.T) {
 	}
 }
 
+// TestAuthorizeMalformedChallengeIsInvalidRequestViaRedirect: an S256 challenge
+// is exactly 43 base64url characters (RFC 7636 section 4.2). A malformed one is
+// refused as invalid_request through the validated redirect, not as a database
+// CHECK failure that reaches the client as server_error.
+func TestAuthorizeMalformedChallengeIsInvalidRequestViaRedirect(t *testing.T) {
+	f := newFixture(t)
+	for name, challenge := range map[string]string{
+		"too short":      strings.Repeat("A", 42),
+		"too long":       strings.Repeat("A", 129),
+		"padding":        strings.Repeat("A", 42) + "=",
+		"non base64url":  strings.Repeat("A", 42) + "+",
+		"contains space": strings.Repeat("A", 20) + " " + strings.Repeat("A", 22),
+	} {
+		t.Run(name, func(t *testing.T) {
+			loc := location(t, get(t, f.authorizeURL(map[string]string{"code_challenge": challenge})))
+			if loc.Query().Get("error") != "invalid_request" {
+				t.Fatalf("error = %q, want invalid_request", loc.Query().Get("error"))
+			}
+			if loc.Query().Get("state") != "xyz" || loc.Query().Get("iss") != f.cfg.Issuer() {
+				t.Fatalf("error redirect missing state or iss: %q", loc.RawQuery)
+			}
+		})
+	}
+}
+
+// TestAuthorizeOverlongStateIsInvalidRequestViaRedirect: state is capped at
+// 1024 bytes, the same bound the schema enforces. A longer state is refused as
+// invalid_request through the validated redirect instead of a database failure.
+func TestAuthorizeOverlongStateIsInvalidRequestViaRedirect(t *testing.T) {
+	f := newFixture(t)
+	loc := location(t, get(t, f.authorizeURL(map[string]string{"state": strings.Repeat("s", 1025)})))
+	if loc.Query().Get("error") != "invalid_request" {
+		t.Fatalf("error = %q, want invalid_request", loc.Query().Get("error"))
+	}
+	if loc.Query().Get("iss") != f.cfg.Issuer() {
+		t.Fatal("overlong state error redirect missing iss")
+	}
+}
+
 func TestAuthorizeRejectsUnknownPKCEMethodWithoutDefaulting(t *testing.T) {
 	f := newFixture(t)
 	loc := location(t, get(t, f.authorizeURL(map[string]string{"code_challenge_method": "S512"})))
