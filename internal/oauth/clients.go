@@ -62,28 +62,25 @@ func NewClientResolver(store Store, clock Clock) ClientResolver {
 // newClientResolver is the shared constructor. Tests pass cimdOptions to reach
 // a loopback httptest server; production passes the zero value.
 func newClientResolver(store Store, clock Clock, opts cimdOptions) ClientResolver {
-	return &compositeResolver{
+	r := &compositeResolver{
 		store:     store,
-		cimd:      newCIMDResolver(clock, opts),
 		db:        storeResolver{store: store},
 		now:       clock,
 		mirrorCap: cimdMirrorCap,
 	}
+	r.cimd = newCIMDResolver(clock, opts, r.mirror)
+	return r
 }
 
-// ResolveClient implements ClientResolver.
+// ResolveClient implements ClientResolver. A metadata-document client reaches
+// here already mirrored: the fetch that produced it wrote its row first.
 func (r *compositeResolver) ResolveClient(ctx context.Context, clientID string) (Client, error) {
 	if !isCIMDClientID(clientID) {
 		return r.db.ResolveClient(ctx, clientID)
 	}
-	c, fetched, err := r.cimd.resolve(ctx, clientID)
+	c, _, err := r.cimd.resolve(ctx, clientID)
 	if err != nil {
 		return Client{}, ErrUnknownClient
-	}
-	if fetched {
-		if err := r.mirror(ctx, c); err != nil {
-			return Client{}, ErrUnknownClient
-		}
 	}
 	return c, nil
 }

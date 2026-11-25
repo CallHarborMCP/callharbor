@@ -35,6 +35,15 @@ const (
 	cimdFailTTL      = 30 * time.Second
 	cimdMaxNameRunes = 200
 	cimdMaxURIChars  = 2000
+	// cimdFailedCap bounds the negative cache. Failures are keyed by the
+	// client-supplied URL, so the map must not grow with attacker-chosen IDs.
+	cimdFailedCap = 1024
+	// cimdMaxConcurrentFetches bounds outbound metadata fetches across all
+	// clients. Each one holds a connection and a goroutine for up to cimdTimeout.
+	cimdMaxConcurrentFetches = 8
+	// maxCIMDClientIDBytes matches the oauth_clients.client_id CHECK. A longer
+	// URL is refused before it can be fetched or cached.
+	maxCIMDClientIDBytes = 2048
 )
 
 // cimdOptions holds test-only overrides. Production code always uses the zero
@@ -59,6 +68,9 @@ type cimdMetadata struct {
 // isCIMDClientID reports whether a client_id is a metadata-document URL: https,
 // a non-root path, and no fragment, userinfo or query.
 func isCIMDClientID(raw string) bool {
+	if len(raw) > maxCIMDClientIDBytes {
+		return false
+	}
 	u, err := url.Parse(raw)
 	if err != nil || u.Scheme != "https" || u.Host == "" {
 		return false
@@ -72,11 +84,18 @@ type cimdResolver struct {
 	client *http.Client
 	clock  Clock
 
+	// mirror persists a fetched client before it is cached or returned. A
+	// refused mirror fails the flight, so no caller holds a client with no row.
+	mirror func(context.Context, Client) error
+	// slots bounds outbound fetches across all clients. A flight takes one
+	// before it dials and returns it when the fetch ends.
+	slots chan struct{}
+
 	mu    sync.Mutex
 	cache map[string]cimdEntry
 	order []string // insertion order, oldest first, for eviction
 	// failed holds recent fetch failures, so a bad URL is not refetched on
-	// every request.
+	// every request. It is swept of expired entries and capped at cimdFailedCap.
 	failed map[string]time.Time
 	// flights holds the fetch in progress for each URL. Concurrent misses for
 	// one URL wait on the same fetch instead of starting their own.
@@ -97,7 +116,8 @@ type cimdFlight struct {
 }
 
 // newCIMDResolver builds the resolver. Production passes the zero cimdOptions.
-func newCIMDResolver(clock Clock, opts cimdOptions) *cimdResolver {
+// mirror persists a fetched client; it runs once per successful fetch.
+func newCIMDResolver(clock Clock, opts cimdOptions, mirror func(context.Context, Client) error) *cimdResolver {
 	policy := realtime.EndpointPolicy{AllowPrivate: opts.allowPrivate}
 	dialer := &net.Dialer{Timeout: cimdTimeout, Control: policyControl(policy)}
 	tr := &http.Transport{
@@ -116,6 +136,8 @@ func newCIMDResolver(clock Clock, opts cimdOptions) *cimdResolver {
 			},
 		},
 		clock:   clock,
+		mirror:  mirror,
+		slots:   make(chan struct{}, cimdMaxConcurrentFetches),
 		cache:   make(map[string]cimdEntry),
 		failed:  make(map[string]time.Time),
 		flights: make(map[string]*cimdFlight),
@@ -139,8 +161,9 @@ func policyControl(p realtime.EndpointPolicy) func(string, string, syscall.RawCo
 }
 
 // resolve returns the cached or freshly fetched client. fetched reports a cache
-// miss that hit the network, so the caller can persist it once. Failures are
-// returned as errors; the composite resolver maps them to ErrUnknownClient.
+// miss that hit the network, so callers can tell a fresh mirror from a hit.
+// Failures are returned as errors; the composite resolver maps them to
+// ErrUnknownClient.
 func (r *cimdResolver) resolve(ctx context.Context, clientID string) (Client, bool, error) {
 	now := r.clock()
 	r.mu.Lock()
@@ -169,14 +192,22 @@ func (r *cimdResolver) resolve(ctx context.Context, clientID string) (Client, bo
 // errCIMDRecentlyFailed reports a URL whose last fetch failed recently.
 var errCIMDRecentlyFailed = errors.New("oauth: metadata document recently failed")
 
-// run performs one fetch, publishes the result to the cache or the negative
-// cache, and releases the waiters.
+// errCIMDBusy reports that no fetch slot freed up within cimdTimeout. It is a
+// transient refusal: the URL is not negatively cached for it.
+var errCIMDBusy = errors.New("oauth: metadata fetch capacity reached")
+
+// run performs one fetch, mirrors the client, publishes the result to the cache
+// or the negative cache, and releases the waiters. The mirror runs before the
+// cache write, so a client is cached only once its row exists.
 func (r *cimdResolver) run(clientID string, f *cimdFlight, now time.Time) {
-	c, ttl, err := r.fetch(context.Background(), clientID)
+	c, ttl, err := r.fetchLimited(clientID)
+	if err == nil {
+		err = r.mirror(context.Background(), c)
+	}
 	r.mu.Lock()
 	delete(r.flights, clientID)
-	if err != nil {
-		r.failed[clientID] = now.Add(cimdFailTTL)
+	if err != nil && !errors.Is(err, errCIMDBusy) {
+		r.recordFailure(clientID, now.Add(cimdFailTTL))
 	}
 	r.mu.Unlock()
 	if err == nil {
@@ -184,6 +215,45 @@ func (r *cimdResolver) run(clientID string, f *cimdFlight, now time.Time) {
 	}
 	f.client, f.ttl, f.err = c, ttl, err
 	close(f.done)
+}
+
+// fetchLimited runs one fetch while holding a fetch slot. Waiting for a slot
+// shares the cimdTimeout budget, so a flight never outlives one timeout period.
+func (r *cimdResolver) fetchLimited(clientID string) (Client, time.Duration, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), cimdTimeout)
+	defer cancel()
+	select {
+	case r.slots <- struct{}{}:
+	case <-ctx.Done():
+		return Client{}, 0, errCIMDBusy
+	}
+	defer func() { <-r.slots }()
+	return r.fetch(ctx, clientID)
+}
+
+// recordFailure remembers a failed URL until expires. Callers hold mu. Every
+// insert first sweeps expired entries. If the map is still at the cap, the
+// entry that expires soonest is dropped, so a flood of distinct URLs cannot
+// grow it past cimdFailedCap. The sweep is linear in the cap, which is small.
+func (r *cimdResolver) recordFailure(clientID string, expires time.Time) {
+	now := r.clock()
+	for k, until := range r.failed {
+		if !now.Before(until) {
+			delete(r.failed, k)
+		}
+	}
+	for len(r.failed) >= cimdFailedCap {
+		var soonestKey string
+		var soonest time.Time
+		first := true
+		for k, until := range r.failed {
+			if first || until.Before(soonest) {
+				soonestKey, soonest, first = k, until, false
+			}
+		}
+		delete(r.failed, soonestKey)
+	}
+	r.failed[clientID] = expires
 }
 
 // wait blocks until the flight finishes or ctx ends. fetched is true only for

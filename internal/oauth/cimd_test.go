@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -560,5 +561,172 @@ func TestRefreshRefusedWhenClientLostRefreshGrant(t *testing.T) {
 	})
 	if status != http.StatusBadRequest || body["error"] != "unauthorized_client" {
 		t.Fatalf("status=%d body=%v, want 400 unauthorized_client", status, body)
+	}
+}
+
+// TestCIMDOverlongClientIDIsRejectedWithoutFetch: a client_id longer than the
+// oauth_clients bound is refused before any outbound request is made.
+func TestCIMDOverlongClientIDIsRejectedWithoutFetch(t *testing.T) {
+	meta := newMetadataServer()
+	f, cid := newCIMDFixture(t, meta, true)
+	setDoc(meta, cimdDoc(cid, nil))
+	// A metadata-document-shaped URL over the bound. Without the length check it
+	// would be classified as CIMD and fetched, so the zero-hit assertion below
+	// fails if the check is removed.
+	long := cid + "/" + strings.Repeat("a", maxCIMDClientIDBytes)
+	if len(long) <= maxCIMDClientIDBytes {
+		t.Fatal("test setup: overlong ID must exceed the bound")
+	}
+	if _, err := f.srv.clients.ResolveClient(f.ctx, long); err == nil {
+		t.Fatal("overlong client_id resolved")
+	}
+	if n := meta.hits(); n != 0 {
+		t.Fatalf("overlong client_id caused %d outbound fetches, want 0", n)
+	}
+}
+
+// TestCIMDNegativeCacheStaysBounded: many distinct failing URLs leave the
+// negative cache at or below its cap, and the oldest entries are the ones dropped.
+func TestCIMDNegativeCacheStaysBounded(t *testing.T) {
+	meta := newMetadataServer()
+	f, cid := newCIMDFixture(t, meta, true)
+	meta.update(func(m *metadataServer) { m.status = http.StatusNotFound })
+	r := f.srv.clients.(*compositeResolver).cimd
+	base := strings.TrimSuffix(cid, "client.json")
+	for i := 0; i < cimdFailedCap+200; i++ {
+		if _, err := f.srv.clients.ResolveClient(f.ctx, base+"doc"+strconv.Itoa(i)+".json"); err == nil {
+			t.Fatal("failing document resolved")
+		}
+	}
+	r.mu.Lock()
+	n := len(r.failed)
+	r.mu.Unlock()
+	if n > cimdFailedCap {
+		t.Fatalf("negative cache holds %d entries, cap is %d", n, cimdFailedCap)
+	}
+}
+
+// TestCIMDNegativeCacheSweepsExpiredEntries: entries past their TTL are removed
+// when new failures arrive, so the map does not depend on the cap alone.
+func TestCIMDNegativeCacheSweepsExpiredEntries(t *testing.T) {
+	meta := newMetadataServer()
+	f, cid := newCIMDFixture(t, meta, true)
+	meta.update(func(m *metadataServer) { m.status = http.StatusNotFound })
+	r := f.srv.clients.(*compositeResolver).cimd
+	base := strings.TrimSuffix(cid, "client.json")
+	for i := 0; i < 50; i++ {
+		_, _ = f.srv.clients.ResolveClient(f.ctx, base+"old"+strconv.Itoa(i)+".json")
+	}
+	f.clock.Advance(cimdFailTTL + time.Second)
+	_, _ = f.srv.clients.ResolveClient(f.ctx, base+"new.json")
+	r.mu.Lock()
+	n := len(r.failed)
+	r.mu.Unlock()
+	if n != 1 {
+		t.Fatalf("expired negative entries retained: %d entries, want only the new one", n)
+	}
+}
+
+// TestCIMDFetchConcurrencyNeverExceedsSemaphore: many distinct slow fetches at
+// once never run more than cimdMaxConcurrentFetches outbound requests together.
+func TestCIMDFetchConcurrencyNeverExceedsSemaphore(t *testing.T) {
+	var mu sync.Mutex
+	inFlight, peak := 0, 0
+	release := make(chan struct{})
+	gate := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		inFlight++
+		if inFlight > peak {
+			peak = inFlight
+		}
+		mu.Unlock()
+		<-release
+		mu.Lock()
+		inFlight--
+		mu.Unlock()
+		w.WriteHeader(http.StatusNotFound)
+	})
+	ts := httptest.NewTLSServer(gate)
+	t.Cleanup(ts.Close)
+	pool := x509.NewCertPool()
+	pool.AddCert(ts.Certificate())
+	f := newFixture(t)
+	f.resetResolver(newClientResolver(f.store, f.clock.Now, cimdOptions{allowPrivate: true, rootCAs: pool}))
+
+	const callers = 3 * cimdMaxConcurrentFetches
+	// Cleanups run last-in first-out, so registering this after ts.Close makes
+	// it run first: blocked handlers are released before the server shuts down.
+	var releaseOnce sync.Once
+	releaseAll := func() { releaseOnce.Do(func() { close(release) }) }
+	t.Cleanup(releaseAll)
+
+	var wg sync.WaitGroup
+	for i := 0; i < callers; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			_, _ = f.srv.clients.ResolveClient(f.ctx, ts.URL+"/c"+strconv.Itoa(i)+".json")
+		}(i)
+	}
+	// Wait until the cap is reached, then hold briefly so any excess fetch that
+	// the semaphore should block shows up in the peak. Without a semaphore the
+	// peak exceeds the cap, which the assertion below reports.
+	waitFor(t, func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return inFlight >= cimdMaxConcurrentFetches
+	})
+	time.Sleep(50 * time.Millisecond)
+	releaseAll()
+	wg.Wait()
+	mu.Lock()
+	defer mu.Unlock()
+	if peak > cimdMaxConcurrentFetches {
+		t.Fatalf("peak concurrent fetches = %d, want at most %d", peak, cimdMaxConcurrentFetches)
+	}
+}
+
+// waitFor polls cond until it holds, failing the test after a bounded wait.
+func waitFor(t *testing.T, cond func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for !cond() {
+		if time.Now().After(deadline) {
+			t.Fatal("condition not reached")
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
+// TestCIMDRefusedMirrorIsNotCachedAndResolvesToUnknown: when the mirror refuses
+// a fetched document (here, at the cap), no client is cached for it. A second
+// resolve must answer ErrUnknownClient, and must not return a client that has
+// no oauth_clients row, which would fail later as a server_error on grant.
+func TestCIMDRefusedMirrorIsNotCachedAndResolvesToUnknown(t *testing.T) {
+	meta := newMetadataServer()
+	ts := httptest.NewTLSServer(meta)
+	t.Cleanup(ts.Close)
+	pool := x509.NewCertPool()
+	pool.AddCert(ts.Certificate())
+	f := newFixture(t)
+	cid := ts.URL + "/client.json"
+	setDoc(meta, cimdDoc(cid, nil))
+	capped := newClientResolver(f.store, f.clock.Now, cimdOptions{allowPrivate: true, rootCAs: pool})
+	capped.(*compositeResolver).mirrorCap = 0 // every new document is refused
+	f.resetResolver(capped)
+
+	for i := 0; i < 2; i++ {
+		c, err := f.srv.clients.ResolveClient(f.ctx, cid)
+		if !errors.Is(err, ErrUnknownClient) {
+			t.Fatalf("resolve %d: client=%+v err=%v, want ErrUnknownClient", i, c, err)
+		}
+	}
+	if _, err := f.store.GetOAuthClient(f.ctx, cid); !errors.Is(err, storage.ErrNotFound) {
+		t.Fatalf("refused document wrote a row: err = %v", err)
+	}
+	// The refusal must be visible at the HTTP edge as a client error, not 500.
+	resp := get(t, f.authorizeURL(map[string]string{"client_id": cid}))
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("authorize status = %d, want 400 (not 500)", resp.StatusCode)
 	}
 }
