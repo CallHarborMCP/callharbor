@@ -76,12 +76,16 @@ type ItemPlayout struct {
 
 type chunk struct {
 	mark      string
+	seq       uint64
 	src       SourceRef
 	dur       time.Duration
 	playStart time.Time
 	cleared   bool
 	expired   bool
 }
+
+// seqRange is an inclusive run of trimmed mark sequence numbers.
+type seqRange struct{ lo, hi uint64 }
 
 // PlayoutLedger tracks chunks sent to one telephony leg. It is not safe for
 // concurrent use; the owning media loop serialises access.
@@ -92,8 +96,13 @@ type PlayoutLedger struct {
 	seq       uint64
 	queueEnd  time.Time
 	pending   []*chunk
-	items     map[SourceRef]*ItemPlayout
-	order     []SourceRef
+	// trimmed holds the sequence numbers of expired chunks that trimExpired
+	// dropped from pending, as sorted, disjoint inclusive ranges. An echo for
+	// one of them is a genuine late echo, not a forged or unknown mark, so it
+	// is accepted without touching the accounting, which was settled at expiry.
+	trimmed []seqRange
+	items   map[SourceRef]*ItemPlayout
+	order   []SourceRef
 }
 
 // NewPlayoutLedger creates a ledger. tolerance bounds how much earlier than
@@ -135,7 +144,7 @@ func (l *PlayoutLedger) Send(src SourceRef, n int, now time.Time) (string, error
 	}
 	l.queueEnd = start.Add(d)
 	l.seq++
-	c := &chunk{mark: "ch-" + strconv.FormatUint(l.seq, 10), src: src, dur: d, playStart: start}
+	c := &chunk{mark: "ch-" + strconv.FormatUint(l.seq, 10), seq: l.seq, src: src, dur: d, playStart: start}
 	l.pending = append(l.pending, c)
 	l.item(src).Sent += d
 	return c.mark, nil
@@ -151,6 +160,12 @@ func (l *PlayoutLedger) Echo(name string, now time.Time) (MarkOutcome, error) {
 		}
 	}
 	if idx < 0 {
+		// Not pending: either trimmed (a genuine late echo, see trimExpired) or
+		// unknown. The trimmed echo is accepted once, as MarkEarly, and its
+		// accounting is not touched again: Unconfirmed was recorded at expiry.
+		if seq, ok := parseMarkSeq(name); ok && l.takeTrimmed(seq) {
+			return MarkEarly, nil
+		}
 		return 0, fmt.Errorf("%w %q", ErrUnknownMark, name)
 	}
 	c := l.pending[idx]
@@ -252,7 +267,8 @@ func (l *PlayoutLedger) Expire(now time.Time) error {
 const MaxExpiredPending = 256
 
 // trimExpired drops the oldest expired chunks once more than MaxExpiredPending
-// of them are waiting. Unexpired chunks are never dropped.
+// of them are waiting. Unexpired chunks are never dropped. Each dropped
+// sequence is recorded in trimmed, so its late echo is still classified.
 func (l *PlayoutLedger) trimExpired() {
 	expired := 0
 	for _, c := range l.pending {
@@ -268,6 +284,7 @@ func (l *PlayoutLedger) trimExpired() {
 	for _, c := range l.pending {
 		if c.expired && excess > 0 {
 			excess--
+			l.addTrimmed(c.seq)
 			continue
 		}
 		kept = append(kept, c)
@@ -276,6 +293,55 @@ func (l *PlayoutLedger) trimExpired() {
 		l.pending[i] = nil
 	}
 	l.pending = kept
+}
+
+// addTrimmed records one dropped sequence, merging it into the ranges.
+// Trimming is oldest-first, so sequences arrive in ascending order and the
+// common case extends the last range.
+func (l *PlayoutLedger) addTrimmed(seq uint64) {
+	if n := len(l.trimmed); n > 0 && l.trimmed[n-1].hi+1 == seq {
+		l.trimmed[n-1].hi = seq
+		return
+	}
+	l.trimmed = append(l.trimmed, seqRange{lo: seq, hi: seq})
+}
+
+// takeTrimmed reports whether seq is a trimmed sequence and removes it, so a
+// second echo for the same mark is not classified again.
+func (l *PlayoutLedger) takeTrimmed(seq uint64) bool {
+	for i, r := range l.trimmed {
+		if seq < r.lo || seq > r.hi {
+			continue
+		}
+		switch {
+		case r.lo == r.hi:
+			l.trimmed = append(l.trimmed[:i], l.trimmed[i+1:]...)
+		case seq == r.lo:
+			l.trimmed[i].lo++
+		case seq == r.hi:
+			l.trimmed[i].hi--
+		default:
+			// Split the range around seq.
+			tail := seqRange{lo: seq + 1, hi: r.hi}
+			l.trimmed[i].hi = seq - 1
+			l.trimmed = append(l.trimmed[:i+1], append([]seqRange{tail}, l.trimmed[i+1:]...)...)
+		}
+		return true
+	}
+	return false
+}
+
+// parseMarkSeq extracts the sequence number from a mark name issued by Send.
+func parseMarkSeq(name string) (uint64, bool) {
+	const prefix = "ch-"
+	if len(name) <= len(prefix) || name[:len(prefix)] != prefix {
+		return 0, false
+	}
+	seq, err := strconv.ParseUint(name[len(prefix):], 10, 64)
+	if err != nil || seq == 0 {
+		return 0, false
+	}
+	return seq, true
 }
 
 // Pending reports chunks still awaiting an echo.

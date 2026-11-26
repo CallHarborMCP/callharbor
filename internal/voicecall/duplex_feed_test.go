@@ -30,6 +30,12 @@ const dxFeedSeqBase = 1_000_000
 // dxFeeder streams inbound frames on one Telnyx stream, as Telnyx does for the
 // whole call. The websocket connection documents every method except Read as
 // safe for concurrent use, so the feeder runs beside the test's own sends.
+//
+// Back-to-back feeding (pace zero) is bounded to one frame in flight: a single
+// goroutine writes synchronously, and each Send returns only once the socket
+// has accepted the frame, so the feeder never queues frames of its own. How
+// many frames the server has read but not yet processed is not observable from
+// the test, so no numeric bound on the server's queue is claimed here.
 type dxFeeder struct {
 	ctx     context.Context
 	s       *telnyxfake.Stream
