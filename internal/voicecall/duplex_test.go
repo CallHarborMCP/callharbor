@@ -7,6 +7,7 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math"
 	"net/http"
@@ -145,7 +146,7 @@ func (p *dxRealtime) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			if !heard && dxLoud(frame) {
 				heard = true
 				p.started <- time.Now()
-				send(map[string]any{"type": "input_audio_buffer.speech_started", "event_id": "evt_speech", "audio_start_ms": 0, "item_id": "item_dx"})
+				send(map[string]any{"type": "input_audio_buffer.speech_started", "event_id": "evt_speech", "audio_start_ms": 0, "item_id": "item_user_dx"})
 				for _, ch := range p.stale {
 					send(delta("item_dx", ch))
 				}
@@ -198,7 +199,17 @@ func dxAdvance(clk *dxClock, pl *telnyxfake.Playout, d time.Duration) {
 // path: BridgeSink, voicecall.AudioBridge, and voice.RunWith over the real
 // adapter. It returns the Telnyx side of the stream, the run's result channel,
 // and a context bounding every Telnyx-side read.
-func dxStart(t *testing.T, connect func(ctx context.Context) (realtime.Session, error), caps realtime.Capabilities, clk *dxClock, silence time.Duration) (*telnyxfake.Stream, <-chan error, context.Context) {
+func dxStart(t *testing.T, connect func(ctx context.Context) (realtime.Session, error), caps realtime.Capabilities, clk *dxClock, silence time.Duration) (*telnyxfake.Stream, <-chan error, context.Context, context.CancelFunc) {
+	t.Helper()
+	return dxStartWith(t, connect, caps, clk, silence, nil)
+}
+
+// dxStartWith is dxStart with an observer on the run's event sink. observe, if
+// non-nil, is called for every provider event after the bridge has seen it and
+// before the event is played, in the same goroutine as the downlink. A test
+// uses it to learn that the client has processed an event (see the sentinel in
+// TestDuplexLivePathBargeIn).
+func dxStartWith(t *testing.T, connect func(ctx context.Context) (realtime.Session, error), caps realtime.Capabilities, clk *dxClock, silence time.Duration, observe func(realtime.Event)) (*telnyxfake.Stream, <-chan error, context.Context, context.CancelFunc) {
 	t.Helper()
 	pub, priv, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
@@ -212,6 +223,7 @@ func dxStart(t *testing.T, connect func(ctx context.Context) (realtime.Session, 
 	runCtx, stopRun := context.WithCancel(context.Background())
 	t.Cleanup(stopRun)
 	errs := make(chan error, 1)
+	stopRunFn := stopRun
 
 	var me *telnyx.MediaEndpoint
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -239,7 +251,11 @@ func dxStart(t *testing.T, connect func(ctx context.Context) (realtime.Session, 
 			return nil, err
 		}
 		go func() {
-			_, err := voice.RunWith(runCtx, sess, ab, ab.EventSink(nil), voice.Options{Caps: caps, Now: clk.Now, SilenceTimeout: silence})
+			sink := ab.EventSink(nil)
+			if observe != nil {
+				sink = ab.EventSink(observe)
+			}
+			_, err := voice.RunWith(runCtx, sess, ab, sink, voice.Options{Caps: caps, Now: clk.Now, SilenceTimeout: silence})
 			errs <- err
 		}()
 		return sink, nil
@@ -259,7 +275,25 @@ func dxStart(t *testing.T, connect func(ctx context.Context) (realtime.Session, 
 	if err := s.Send(ctx, []byte(start)); err != nil {
 		t.Fatal(err)
 	}
-	return s, errs, ctx
+	return s, errs, ctx, stopRunFn
+}
+
+// dxStopRun ends the production run from the Telnyx side: the stream is closed
+// and the run's context is cancelled, the same way a stopped leg ends the run.
+// It waits, bounded, for Run to return, and asserts the terminal error. A run
+// that ends for any reason other than that cancellation fails the test.
+func dxStopRun(t *testing.T, s *telnyxfake.Stream, errs <-chan error, stop context.CancelFunc) {
+	t.Helper()
+	_ = s.Close()
+	stop()
+	select {
+	case err := <-errs:
+		if err != nil && !errors.Is(err, context.Canceled) {
+			t.Fatalf("run ended with %v, want cancellation", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("run did not return after the leg stopped")
+	}
 }
 
 // dxInbound is one caller media frame as Telnyx sends it.
@@ -340,14 +374,13 @@ func TestDuplexRealtimeBargeInProductionPath(t *testing.T) {
 	endpoint := "ws" + strings.TrimPrefix(srv.URL, "http") + "/v1/realtime"
 
 	clk := newDxClock()
-	s, errs, ctx := dxStart(t, func(ctx context.Context) (realtime.Session, error) {
+	s, errs, ctx, stop := dxStart(t, func(ctx context.Context) (realtime.Session, error) {
 		sess, err := realtimews.Connect(ctx, realtimews.Config{Endpoint: endpoint, APIKey: "sk-test", Model: "gpt-realtime-2.1", Voice: "marin", Instructions: "Test.", Format: dxLeg})
 		if err != nil {
 			return nil, err
 		}
 		return sess, nil
 	}, realtime.RealtimeCapabilities, clk, 0)
-	_ = errs
 
 	pl := telnyxfake.NewPlayout(8000, clk.Now())
 	seq := 0
@@ -411,8 +444,11 @@ func TestDuplexRealtimeBargeInProductionPath(t *testing.T) {
 		if tr.item != "item_dx" || tr.index != 0 {
 			t.Fatalf("truncate targeted %s[%d], want item_dx[0]", tr.item, tr.index)
 		}
-		if tr.endMS < 0 || tr.endMS > 1000 {
-			t.Fatalf("audio_end_ms = %d, outside [0, 1000] sent", tr.endMS)
+		// Exactly 200 ms of the item reached the caller before the onset: the
+		// emulator echoed the marks for 10 chunks at 200 ms and nothing more had
+		// finished. audio_end_ms is the cut-time position, floored to whole ms.
+		if want := int64(200); tr.endMS != want {
+			t.Fatalf("audio_end_ms = %d, want exactly %d (200 ms played before the onset)", tr.endMS, want)
 		}
 	case <-ctx.Done():
 		t.Fatal("cut item was never truncated")
@@ -445,9 +481,7 @@ func TestDuplexRealtimeBargeInProductionPath(t *testing.T) {
 	if got := pl.Played(); string(got) != string(want) {
 		t.Fatalf("played %d bytes, want exact 1600-byte prefix plus %d-byte continuation", len(got), len(nextSent))
 	}
-	if err := s.Close(); err != nil {
-		t.Logf("close media stream: %v", err)
-	}
+	dxStopRun(t, s, errs, stop)
 }
 
 // dxLive is an independent fake of the documented GPT-Live primary WebSocket
@@ -457,15 +491,25 @@ func TestDuplexRealtimeBargeInProductionPath(t *testing.T) {
 // triggered by a caller turn that ends, which the fake detects from the
 // audio the client appends: a loud run followed by silence.
 type dxLive struct {
-	t       *testing.T
-	mu      sync.Mutex
-	turns   [][][]byte // reply chunks per caller turn, index = turn
-	stale   [][]byte   // audio streamed at the first speech onset, belonging to the cut turn
-	recvd   []string   // client event types, in order
-	closeEv chan struct{}
-	turnEnd chan int // one value per caller turn that ends, with the turn index
-	speech  chan time.Time
+	t     *testing.T
+	mu    sync.Mutex
+	turns [][][]byte // reply chunks per caller turn, index = turn
+	stale [][]byte   // audio streamed at the first speech onset, belonging to the cut turn
+	// sentinel, when set, is sent right after the stale audio. It is a
+	// documented output transcript delta, which the client hands to its event
+	// sink before it plays the audio that precedes it. Waiting for it proves
+	// the stale audio has been processed.
+	sentinel bool
+	recvd    []string // client event types, in order
+	closeEv  chan struct{}
+	turnEnd  chan int // one value per caller turn that ends, with the turn index
+	speech   chan time.Time
 }
+
+// dxProviderTurnFrames is the silent frames after which the fake provider ends
+// a caller turn. It is a scripted provider value, not derived from the local
+// detector's hangover (audio.VADHangover).
+const dxProviderTurnFrames = 20
 
 func (p *dxLive) record(typ string) {
 	p.mu.Lock()
@@ -502,7 +546,7 @@ func (p *dxLive) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// dxHangover silent frames. The fake replies at the end of each turn with
 	// the next scripted reply; during the first turn it also streams stale
 	// audio while the caller is still speaking, which the client must suppress.
-	const hangover = 20
+	hangover := dxProviderTurnFrames
 	turn := -1 // index of the current caller turn, -1 before any speech
 	inSpeech := false
 	silent := 0
@@ -536,14 +580,17 @@ func (p *dxLive) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				if !inSpeech {
 					inSpeech = true
 					turn++
-					if turn == 0 {
-						p.speech <- time.Now()
-					}
 					if turn == 1 {
-						// Stale audio from the cut turn, streamed while the caller
-						// is speaking over it. The client must not play any of it.
+						// The barge-in onset: the first loud frame of the turn that
+						// speaks over the reply. Stamp it for the latency metric,
+						// then stream the stale audio of the cut reply, which the
+						// client must not play.
+						p.speech <- time.Now()
 						for _, ch := range p.stale {
 							send(delta(ch))
+						}
+						if p.sentinel {
+							send(map[string]any{"type": "session.output_transcript.delta", "event_id": "evt_sentinel", "delta": "sentinel", "start_ms": 0, "end_ms": 0})
 						}
 					}
 				}
@@ -575,7 +622,9 @@ func (p *dxLive) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// dxTurnTone and dxTurnSilence drive the caller side of a turn in 20 ms frames.
+// dxHangoverFrames is the scripted caller's silence that ends its turn, in
+// 20 ms frames. It is a fixed script value, not derived from audio.VADHangover,
+// so the fakes do not change timing when CallHarbor's detector constants do.
 const dxHangoverFrames = 20
 
 // TestDuplexLivePathBargeIn drives live_ws through the production path.
@@ -601,25 +650,36 @@ func TestDuplexLivePathBargeIn(t *testing.T) {
 	turn1 := dxChunks(10, 6)
 	turn2 := dxChunks(10, 7)
 	prov := &dxLive{
-		t:       t,
-		stale:   dxChunks(3, 5),
-		turns:   [][][]byte{turn0, turn1, turn2},
-		closeEv: make(chan struct{}, 1),
-		turnEnd: make(chan int, 8),
-		speech:  make(chan time.Time, 4),
+		t:        t,
+		stale:    dxChunks(3, 5),
+		sentinel: true,
+		turns:    [][][]byte{turn0, turn1, turn2},
+		closeEv:  make(chan struct{}, 1),
+		turnEnd:  make(chan int, 8),
+		speech:   make(chan time.Time, 4),
 	}
 	srv := httptest.NewServer(http.HandlerFunc(prov.ServeHTTP))
 	t.Cleanup(srv.Close)
 	endpoint := "ws" + strings.TrimPrefix(srv.URL, "http") + "/v1/live/sessions"
 
+	// sentinelSeen is closed when the client's downlink processes the sentinel.
+	// The stale audio precedes it on the same read path, so by then the stale
+	// chunks have been handed to the bridge (sink runs before Play).
+	sentinelSeen := make(chan struct{})
+	var sentinelOnce sync.Once
+
 	clk := newDxClock()
-	s, errs, ctx := dxStart(t, func(ctx context.Context) (realtime.Session, error) {
+	s, errs, ctx, stop := dxStartWith(t, func(ctx context.Context) (realtime.Session, error) {
 		sess, err := livews.Connect(ctx, livews.Config{Endpoint: endpoint, APIKey: "sk-test", Model: "gpt-live-1.1", Voice: "marin", Instructions: "Test.", Format: dxLeg})
 		if err != nil {
 			return nil, err
 		}
 		return sess, nil
-	}, realtime.LiveCapabilities, clk, 0)
+	}, realtime.LiveCapabilities, clk, 0, func(ev realtime.Event) {
+		if ev.RawType == "session.output_transcript.delta" {
+			sentinelOnce.Do(func() { close(sentinelSeen) })
+		}
+	})
 
 	pl := telnyxfake.NewPlayout(8000, clk.Now())
 	seq := 0
@@ -664,14 +724,19 @@ func TestDuplexLivePathBargeIn(t *testing.T) {
 	// Phase 2: play 100 ms of turn0 (5 chunks), then the caller barges in.
 	dxAdvance(clk, pl, 100*time.Millisecond)
 	dxEcho(t, s, ctx, pl, &seq)
-	sentAt := time.Now()
+	var sentAt time.Time
 	for i := 0; i < 3; i++ {
+		if i == 0 {
+			// Taken immediately before the first barge-in frame is written, so
+			// "first barge-in frame -> clear" measures what its label says.
+			sentAt = time.Now()
+		}
 		if err := s.Send(ctx, dxInbound(t, dxTone(), seqNext())); err != nil {
 			t.Fatal(err)
 		}
 	}
 
-	// Frames already written before the onset (turn0 chunks and their marks)
+	// Frames already written before the onset (opening-turn audio and its marks)
 	// may still be ahead of clear on the stream. Each is fed to the emulator
 	// as normal. The first frame that is not turn0 audio or its marks must be
 	// clear, and nothing from turn0 may come after it.
@@ -696,15 +761,26 @@ func TestDuplexLivePathBargeIn(t *testing.T) {
 	}
 	dxEcho(t, s, ctx, pl, &seq)
 
-	startedAt := <-prov.speech
-	t.Logf("BARGEIN_LATENCY live frame->clear ms=%.2f", dxMS(clearAt.Sub(sentAt)))
-	t.Logf("BARGEIN_LATENCY live provider-received-onset->clear ms=%.2f", dxMS(clearAt.Sub(startedAt)))
+	// The provider's receive stamp (prov.speech) is not a latency bound: its
+	// goroutine can parse the onset after the client has already read clear, so
+	// a difference against it can be negative. Only the frame-based figure is
+	// reported.
+	<-prov.speech
+	t.Logf("BARGEIN_LATENCY live first-barge-in-frame->clear ms=%.2f", dxMS(clearAt.Sub(sentAt)))
 	if d := clearAt.Sub(sentAt); d > 500*time.Millisecond {
 		t.Fatalf("barge-in clear took %v, bound 500ms", d)
 	}
 
-	// Phase 3: finish the barge-in turn. The caller's silence ends the turn at
-	// the provider, which replies with turn1. Nothing may play before it.
+	// Phase 3: finish the barge-in turn. The stale audio of the cut reply is in
+	// flight ahead of the sentinel. Wait until the client has processed the
+	// sentinel, so every stale chunk has reached the bridge before the caller's
+	// silence can reopen the anonymous gate. Without this wait the silence
+	// frames race the downlink, and stale chunks can pass the reopened gate.
+	select {
+	case <-sentinelSeen:
+	case <-ctx.Done():
+		t.Fatal("the client never processed the stale-audio sentinel")
+	}
 	for i := 0; i < dxHangoverFrames; i++ {
 		if err := s.Send(ctx, dxInbound(t, dxSilence(), seqNext())); err != nil {
 			t.Fatal(err)
@@ -715,30 +791,62 @@ func TestDuplexLivePathBargeIn(t *testing.T) {
 	case <-ctx.Done():
 		t.Fatal("barge-in turn never ended at the provider")
 	}
-	playContinuation := func(chunks [][]byte) {
+	// expected is what the bridge sends for a scripted chunk: the production
+	// decode and encode of the leg format. It is not always the raw bytes, since
+	// the mu-law round trip can change a code point.
+	expected := func(c []byte) []byte {
+		lin, err := audio.Decode(nil, dxLeg, c)
+		if err != nil {
+			t.Fatal(err)
+		}
+		out, err := audio.Encode(nil, dxLeg, lin)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return out
+	}
+	// playContinuation receives one reply, checking each media frame's payload
+	// against the expected chunk, in order, and each mark's position. A stale or
+	// foreign chunk fails here by identity, not by frame type.
+	playContinuation := func(phase string, chunks [][]byte) {
 		t.Helper()
-		for i := 0; i < 2*len(chunks); i++ {
-			raw := dxRecv(t, s, ctx)
-			want := "media"
-			if i%2 == 1 {
-				want = "mark"
-			}
-			if got, _ := dxFrame(t, raw); got != want {
-				t.Fatalf("continuation frame %d: got %s, want %s (stale turn0 audio?)", i, got, want)
-			}
-			if err := pl.Receive(raw); err != nil {
-				t.Fatal(err)
+		for i := 0; i < len(chunks); i++ {
+			for _, wantMark := range []bool{false, true} {
+				raw := dxRecv(t, s, ctx)
+				got, payload := dxFrame(t, raw)
+				if wantMark {
+					if got != "mark" {
+						t.Fatalf("%s: chunk %d: got %s, want mark", phase, i, got)
+					}
+				} else {
+					if got != "media" {
+						t.Fatalf("%s: chunk %d: got %s, want media", phase, i, got)
+					}
+					if want := expected(chunks[i]); !bytes.Equal(payload, want) {
+						t.Fatalf("%s: chunk %d payload is not the expected reply chunk (played %d bytes)", phase, i, len(pl.Played()))
+					}
+				}
+				if err := pl.Receive(raw); err != nil {
+					t.Fatal(err)
+				}
 			}
 		}
 		dxAdvance(clk, pl, time.Duration(len(chunks))*20*time.Millisecond)
 		dxEcho(t, s, ctx, pl, &seq)
 	}
-	playContinuation(turn1)
-	// turn1 has fully played before the caller speaks again, so the next onset is
-	// an ordinary turn and not a barge-in on turn1. The emulator is the authority
-	// on what Telnyx is still playing, so its queue must be empty here.
-	if got, want := len(pl.Played()), 160*(len(turn0[:5])+len(turn1)); got < want {
-		t.Fatalf("played %d bytes before the next caller turn, want at least %d (turn0 prefix + turn1)", got, want)
+	playContinuation("phase 3 (turn1)", turn1)
+	// turn1 has fully played, so the emulator queue is empty and the played audio
+	// is exactly turn0's 100 ms prefix followed by all of turn1. The next caller
+	// onset is then an ordinary turn, not a barge-in on turn1.
+	var wantPrefixTurn1 []byte
+	for _, ch := range turn0[:5] {
+		wantPrefixTurn1 = append(wantPrefixTurn1, expected(ch)...)
+	}
+	for _, ch := range turn1 {
+		wantPrefixTurn1 = append(wantPrefixTurn1, expected(ch)...)
+	}
+	if got := pl.Played(); !bytes.Equal(got, wantPrefixTurn1) {
+		t.Fatalf("before phase 4: played %d bytes, want exactly turn0 prefix + turn1 (%d bytes)", len(got), len(wantPrefixTurn1))
 	}
 
 	// Phase 4: a second caller turn brings turn2, proving the gate stays open
@@ -749,7 +857,7 @@ func TestDuplexLivePathBargeIn(t *testing.T) {
 	case <-ctx.Done():
 		t.Fatal("second continuation turn never ended at the provider")
 	}
-	playContinuation(turn2)
+	playContinuation("phase 4 (turn2)", turn2)
 
 	// Played audio: exactly the 100 ms prefix of turn0, then all of turn1 and
 	// turn2. Nothing from the cut tail, and nothing from stale audio.
@@ -774,7 +882,7 @@ func TestDuplexLivePathBargeIn(t *testing.T) {
 			t.Fatalf("client sent %s on live_ws, which has no such event", typ)
 		}
 	}
-	_ = errs
+	dxStopRun(t, s, errs, stop)
 }
 
 // dxSilence is one 20 ms frame of digital silence (μ-law 0xFF).

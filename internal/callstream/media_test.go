@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -178,4 +179,37 @@ func mustBrief(t *testing.T, m map[string]any) string {
 		t.Fatal(err)
 	}
 	return string(b)
+}
+
+// The end reason recorded for a media run is decided by endReason. Each run end
+// maps to its own reason, so a silence timeout is never recorded as a media
+// failure or a duration cap.
+func TestEndReasonMapping(t *testing.T) {
+	cases := []struct {
+		name   string
+		capped bool
+		err    error
+		want   string
+	}{
+		{"duration cap", true, nil, ReasonMaxDuration},
+		{"duration cap wins over an error", true, errors.New("boom"), ReasonMaxDuration},
+		{"caller silence", false, voice.ErrCallerSilence, ReasonCallerSilence},
+		{"wrapped caller silence", false, fmt.Errorf("run: %w", voice.ErrCallerSilence), ReasonCallerSilence},
+		{"other run failure", false, errors.New("provider closed"), ReasonMediaFailed},
+		{"clean provider close", false, nil, ReasonAISessionClosed},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := endReason(tc.capped, tc.err); got != tc.want {
+				t.Fatalf("endReason(%v, %v) = %q, want %q", tc.capped, tc.err, got, tc.want)
+			}
+		})
+	}
+}
+
+// caller_silence is the reason string the operations doc names.
+func TestCallerSilenceReasonString(t *testing.T) {
+	if ReasonCallerSilence != "caller_silence" {
+		t.Fatalf("ReasonCallerSilence = %q, want caller_silence", ReasonCallerSilence)
+	}
 }

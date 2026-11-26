@@ -47,11 +47,10 @@ func gateChunk() []byte {
 	return c
 }
 
-// Regression: audio without an item ID must not bypass a closed turn gate.
-// Before the fix a cut turn was reopened by CallerSpoke and empty-ID audio
-// was only gated when a live cut flag was set, so unidentified chunks could
-// slip through in some interleavings. The gate is closed by Interrupt and
-// reopened only by ReopenTurn.
+// Audio without an item ID must not bypass a closed turn gate, across
+// interleavings of caller frames, cuts and agent audio. The gate is closed by a
+// cut and reopened by a caller speech end edge in Media (or by the turn bound).
+// This asserts the current behaviour; it is not a record of a fixed defect.
 func TestAnonymousAudioStaysGatedAcrossInterleavings(t *testing.T) {
 	ctx := context.Background()
 	chunk := gateChunk()
@@ -158,9 +157,10 @@ func TestInterruptReportsCutValues(t *testing.T) {
 		t.Fatal(err)
 	}
 	// The second chunk starts at t0+20ms (the first finishes then). At 30 ms the
-	// first chunk has fully played and only 10 ms of the second is audible. The
-	// item's played estimate is the audible sum: 20 ms confirmed by real time plus
-	// 10 ms in flight, so the cut reports 30 ms played of 40 ms sent.
+	// first chunk has fully played, though no echo has arrived for it, and 10 ms
+	// of the second is audible. The cut reports the cut-time position: the
+	// finished-but-unechoed 20 ms plus 10 ms in flight, so 30 ms of 40 ms sent.
+	// Reporting only echo-confirmed audio would have said 0 here.
 	clock = t0.Add(30 * time.Millisecond)
 	cut, err := s.Interrupt(ctx)
 	if err != nil {
@@ -175,8 +175,8 @@ func TestInterruptReportsCutValues(t *testing.T) {
 	if cut.Sent != 40*time.Millisecond {
 		t.Fatalf("sent = %v, want 40ms", cut.Sent)
 	}
-	if cut.Played != 10*time.Millisecond {
-		t.Fatalf("played = %v, want 10ms: only the in-flight chunk is cut, the finished one was already played", cut.Played)
+	if cut.Played != 30*time.Millisecond {
+		t.Fatalf("played = %v, want 30ms: 20ms finished (unechoed) plus 10ms in flight", cut.Played)
 	}
 }
 
@@ -200,7 +200,7 @@ func TestInterruptAfterPlayoutIsNotAudible(t *testing.T) {
 }
 
 // Pending marks are capped. Once the cap is reached, further agent audio is
-// refused with backpressure and nothing is sent for it.
+// refused with ErrPlayoutBackpressure and nothing is sent for it.
 func TestPendingMarkCapIsEnforced(t *testing.T) {
 	ctx := context.Background()
 	t0 := time.Date(2026, 11, 26, 9, 0, 0, 0, time.UTC)
@@ -217,17 +217,41 @@ func TestPendingMarkCapIsEnforced(t *testing.T) {
 	if lastErr == nil {
 		t.Fatal("pending marks grew past the cap with no backpressure")
 	}
-	if want := telnyx.ErrStreamBackpressure; lastErr != want {
-		t.Fatalf("err = %v, want ErrStreamBackpressure", lastErr)
+	if want := telnyx.ErrPlayoutBackpressure; lastErr != want {
+		t.Fatalf("err = %v, want ErrPlayoutBackpressure", lastErr)
 	}
 	if sent != telnyx.MaxPendingMarks {
 		t.Fatalf("accepted %d chunks, want exactly the cap %d", sent, telnyx.MaxPendingMarks)
 	}
 	before := len(*events)
-	if err := s.AgentAudio(ctx, audio.SourceRef{ItemID: "over"}, gateChunk()); err != telnyx.ErrStreamBackpressure {
+	if err := s.AgentAudio(ctx, audio.SourceRef{ItemID: "over"}, gateChunk()); err != telnyx.ErrPlayoutBackpressure {
 		t.Fatalf("over-cap err = %v", err)
 	}
 	if len(*events) != before {
 		t.Fatal("over-cap audio reached Telnyx")
+	}
+}
+
+// Expired marks do not count toward the cap. Marks that Telnyx never echoes
+// expire after the ledger grace; their chunks are then no longer awaited, so
+// the stream accepts agent audio again instead of staying refused.
+func TestExpiredMarksDoNotCountTowardCap(t *testing.T) {
+	ctx := context.Background()
+	t0 := time.Date(2026, 11, 26, 9, 0, 0, 0, time.UTC)
+	clock := t0
+	s, _ := newGateSink(t, func() time.Time { return clock })
+	for i := 0; i < telnyx.MaxPendingMarks; i++ {
+		if err := s.AgentAudio(ctx, audio.SourceRef{ItemID: fmt.Sprintf("e-%d", i)}, gateChunk()); err != nil {
+			t.Fatalf("chunk %d refused before the cap: %v", i, err)
+		}
+	}
+	if err := s.AgentAudio(ctx, audio.SourceRef{ItemID: "full"}, gateChunk()); err != telnyx.ErrPlayoutBackpressure {
+		t.Fatalf("at the cap err = %v, want ErrPlayoutBackpressure", err)
+	}
+	// Every queued chunk finishes and its echo never comes: past the grace the
+	// marks expire and no longer hold the cap.
+	clock = t0.Add(time.Duration(telnyx.MaxPendingMarks)*20*time.Millisecond + time.Hour)
+	if err := s.AgentAudio(ctx, audio.SourceRef{ItemID: "after"}, gateChunk()); err != nil {
+		t.Fatalf("expired marks still hold the cap: %v", err)
 	}
 }

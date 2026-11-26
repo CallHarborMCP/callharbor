@@ -139,7 +139,6 @@ func (b *AudioBridge) Interrupt(ctx context.Context) (voice.Cut, error) {
 	return voice.Cut{ItemID: c.ItemID, ContentIndex: c.ContentIndex, Played: c.Played, Sent: c.Sent, Audible: c.Audible}, nil
 }
 
-// CallerSpeech returns the bounded channel of caller speech edges.
 // InterruptTurn cuts agent audio only while the caller is still in turn. A
 // refused cut returns ok false and sends nothing to Telnyx.
 func (b *AudioBridge) InterruptTurn(ctx context.Context, turn uint64) (voice.Cut, bool, error) {
@@ -150,10 +149,8 @@ func (b *AudioBridge) InterruptTurn(ctx context.Context, turn uint64) (voice.Cut
 	return voice.Cut{ItemID: c.ItemID, ContentIndex: c.ContentIndex, Played: c.Played, Sent: c.Sent, Audible: c.Audible}, true, nil
 }
 
+// CallerSpeech returns the bounded channel of caller speech edges.
 func (b *AudioBridge) CallerSpeech() <-chan voice.SpeechEvent { return b.speech }
-
-// ReopenTurn reopens the anonymous agent-audio turn after the caller stops.
-func (b *AudioBridge) ReopenTurn() { b.sink.ReopenTurn() }
 
 // PlayoutEnd reports when queued agent audio finishes. Without it the engine
 // cannot tell that agent audio is audible, so local barge-in on live_ws never

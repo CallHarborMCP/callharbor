@@ -224,10 +224,8 @@ func TestSilenceOptionsValidation(t *testing.T) {
 	}
 }
 
-// TestStaleOnsetAfterEndDoesNotCutNewReply is the regression for the Live
-// continuation flake. A caller onset is queued, the caller then stops (end edge),
-// and a new reply starts playing before the engine reads the onset. The onset
-// belongs to a turn that already ended, so it must not cut the new reply.
+// The stale-onset regression lives at the transport: see
+// internal/telephony/telnyx/turn_test.go (TestStaleStartAfterEndDoesNotCutNewReply).
 
 // turnBridge is a speech bridge whose cut honours the caller turn, as the
 // transport does. It counts turn-scoped cut requests and the cuts they make.

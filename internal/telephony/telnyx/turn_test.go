@@ -239,3 +239,105 @@ func TestInterruptTurnRejectsOlderTurn(t *testing.T) {
 		t.Fatal("an older turn number cut the current turn")
 	}
 }
+
+// Stuck line noise: the detector stays in a turn that never ends, so no End
+// edge arrives. The anonymous gate must not stay closed past MaxCallerTurn, or
+// the agent would be mute until max_duration. Once the bound passes, the next
+// caller frame force-ends the turn and reopens the gate.
+func TestStuckCallerTurnIsForceEndedAndReopensGate(t *testing.T) {
+	h := newTurnHarness(t)
+	h.agent(turnTone())
+	h.speak()
+	start := h.startEdge()
+	// Close the anonymous gate with a real cut while the turn is open.
+	if _, ok, err := h.sink.InterruptTurn(context.Background(), start.Turn); err != nil || !ok {
+		t.Fatalf("barge-in on the open turn was refused: ok=%v err=%v", ok, err)
+	}
+	before := h.countSent("media")
+	h.agent(turnTone())
+	if n := h.countSent("media") - before; n != 0 {
+		// The reply queued after the cut must be gated while the turn is open.
+		t.Fatalf("gated reply reached Telnyx: %d media frames", n)
+	}
+
+	// Loud frames keep arriving for longer than the bound with no silence.
+	for h.now.Sub(start.At) < telnyx.MaxCallerTurn {
+		h.frame(turnTone())
+	}
+	if h.countEdges(false) != 0 {
+		t.Fatal("the turn ended before the bound; the test premise is wrong")
+	}
+	h.frame(turnTone())
+	if h.countEdges(false) != 1 {
+		t.Fatalf("stuck turn was not force-ended: end edges=%d", h.countEdges(false))
+	}
+	// The gate is open again: the next reply plays.
+	before = h.countSent("media")
+	h.agent(turnTone())
+	if n := h.countSent("media") - before; n == 0 {
+		t.Fatal("reply after the forced turn end was still gated")
+	}
+}
+
+// countEdges counts delivered edges of one kind.
+func (h *turnHarness) countEdges(started bool) int {
+	n := 0
+	for _, e := range h.edges {
+		if e.Started == started {
+			n++
+		}
+	}
+	return n
+}
+
+// The anonymous gate reopens on a real caller speech end edge, through Media,
+// and not before it: a cut with no end edge keeps empty-ID audio gated.
+func TestAnonymousGateReopensOnlyOnEndEdge(t *testing.T) {
+	h := newTurnHarness(t)
+	h.agent(turnTone())
+	h.speak()
+	start := h.startEdge()
+	if _, ok, err := h.sink.InterruptTurn(context.Background(), start.Turn); err != nil || !ok {
+		t.Fatalf("barge-in refused: ok=%v err=%v", ok, err)
+	}
+	before := h.countSent("media")
+	h.agent(turnTone())
+	if n := h.countSent("media") - before; n != 0 {
+		t.Fatalf("empty-ID audio passed the closed gate: %d frames", n)
+	}
+	h.hang() // real caller end edge
+	before = h.countSent("media")
+	h.agent(turnTone())
+	if n := h.countSent("media") - before; n == 0 {
+		t.Fatal("empty-ID audio still gated after the caller's end edge")
+	}
+}
+
+// Documented clipping on live_ws: a provider reply that is sent before the
+// caller's local end edge is dropped while the anonymous gate is closed. The
+// test fixes the order of the reply and the end edge, so it is deterministic.
+// This is the documented behaviour and a live-unverified risk, not a desired
+// one; FEASIBILITY.md records it as a release blocker.
+func TestEarlyReplyBeforeEndEdgeIsClipped(t *testing.T) {
+	h := newTurnHarness(t)
+	h.agent(turnTone())
+	h.speak()
+	start := h.startEdge()
+	if _, ok, err := h.sink.InterruptTurn(context.Background(), start.Turn); err != nil || !ok {
+		t.Fatalf("barge-in refused: ok=%v err=%v", ok, err)
+	}
+	// The caller is still in turn (no end edge yet). The provider's reply to the
+	// cut turn arrives now, before the local end edge, and is gated out.
+	before := h.countSent("media")
+	h.agent(turnTone())
+	if n := h.countSent("media") - before; n != 0 {
+		t.Fatalf("early reply reached Telnyx while the gate was closed: %d frames", n)
+	}
+	// The end edge arrives. Audio sent after it plays.
+	h.hang()
+	before = h.countSent("media")
+	h.agent(turnTone())
+	if n := h.countSent("media") - before; n == 0 {
+		t.Fatal("reply after the end edge was still gated")
+	}
+}

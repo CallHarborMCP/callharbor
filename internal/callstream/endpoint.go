@@ -157,12 +157,28 @@ func (m *Media) sinkFactory(upgrade storage.MediaCall) telnyx.SinkFactory {
 		if err != nil {
 			return nil, err
 		}
+		// buildSink owns release on every error path, so it is not called again.
 		sink, err := m.buildSink(ctx, st, start, send, release)
 		if err != nil {
-			release()
 			return nil, err
 		}
 		return sink, nil
+	}
+}
+
+// endReason maps the end of a media run to the reason CallHarbor records when
+// it hangs up the leg. The duration cap, the caller silence watchdog, any other
+// run failure, and a clean provider close are distinct reasons.
+func endReason(capped bool, runErr error) string {
+	switch {
+	case capped:
+		return ReasonMaxDuration
+	case errors.Is(runErr, voice.ErrCallerSilence):
+		return ReasonCallerSilence
+	case runErr != nil:
+		return ReasonMediaFailed
+	default:
+		return ReasonAISessionClosed
 	}
 }
 
@@ -177,19 +193,21 @@ func isLive(status string) bool {
 }
 
 // buildSink resolves the AI session and attaches the bridge. The caller holds
-// the per-call session claim: on error it releases the claim, and on success
-// attach releases it when the run ends.
+// the per-call session claim. buildSink releases it on every error path, and on
+// success attach releases it when the run ends, so the caller never releases.
 func (m *Media) buildSink(ctx context.Context, st storage.MediaCall, start telnyx.Frame, send telnyx.Send, release func()) (telnyx.MediaSink, error) {
 	// The provider format is the configured wire format. The leg format is
 	// the stream's own start format; the bridge converts between them.
 	format := m.Format
 	prof, err := m.Resolver.Resolve(ctx, st.OwnerUserID, st.AIProfileID)
 	if err != nil {
+		release()
 		m.failSetup(ctx, st.ID, ReasonAIDialFailed)
 		return nil, fmt.Errorf("resolve ai profile: %w", err)
 	}
 	prof.Instructions, err = Render(prof.Instructions, st.BriefJSON, m.MaxBytes)
 	if err != nil {
+		release()
 		reason := ReasonAIDialFailed
 		if errors.Is(err, ErrInstructionsTooLarge) {
 			reason = ReasonBriefTooLarge
@@ -197,19 +215,23 @@ func (m *Media) buildSink(ctx context.Context, st storage.MediaCall, start telny
 		m.failSetup(ctx, st.ID, reason)
 		return nil, err
 	}
+	// Capabilities are resolved before any provider connection is opened, so an
+	// unsupported protocol fails here without dialing. Setup failures end the
+	// call through failSetup and release the claim exactly once.
+	caps, err := realtime.For(prof.Protocol)
+	if err != nil {
+		release()
+		m.failSetup(ctx, st.ID, ReasonCapabilityMismatch)
+		return nil, err
+	}
 	sess, err := m.Dialers.Dial(ctx, prof, realtime.Requirements{Format: format})
 	if err != nil {
+		release()
 		reason := ReasonAIDialFailed
 		if errors.Is(err, realtime.ErrCapability) {
 			reason = ReasonCapabilityMismatch
 		}
 		m.failSetup(ctx, st.ID, reason)
-		return nil, err
-	}
-	caps, err := realtime.For(prof.Protocol)
-	if err != nil {
-		_ = sess.Close()
-		release()
 		return nil, err
 	}
 	return m.attach(sess, st, start.Format, format, caps, send, release)
@@ -266,16 +288,7 @@ func (m *Media) attach(sess realtime.Session, st storage.MediaCall, leg, provide
 		if m.sessions.stopping() {
 			return
 		}
-		switch {
-		case capped:
-			m.endLocally(context.WithoutCancel(runCtx), st.ID, ReasonMaxDuration)
-		case errors.Is(runErr, voice.ErrCallerSilence):
-			m.endLocally(context.WithoutCancel(runCtx), st.ID, ReasonCallerSilence)
-		case runErr != nil:
-			m.endLocally(context.WithoutCancel(runCtx), st.ID, ReasonMediaFailed)
-		default:
-			m.endLocally(context.WithoutCancel(runCtx), st.ID, ReasonAISessionClosed)
-		}
+		m.endLocally(context.WithoutCancel(runCtx), st.ID, endReason(capped, runErr))
 	}()
 	return stream, nil
 }

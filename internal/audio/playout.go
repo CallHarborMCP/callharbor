@@ -243,6 +243,48 @@ func (l *PlayoutLedger) Expire(now time.Time) error {
 // Pending reports chunks still awaiting an echo.
 func (l *PlayoutLedger) Pending() int { return len(l.pending) }
 
+// PendingLive counts marks still awaiting an echo that have not expired. An
+// expired mark is kept only so a late echo can be classified; it no longer
+// represents audio the stream is waiting on, so it does not count toward a
+// playout cap.
+func (l *PlayoutLedger) PendingLive() int {
+	n := 0
+	for _, c := range l.pending {
+		if !c.expired {
+			n++
+		}
+	}
+	return n
+}
+
+// Position reports the audible position of one source at now, for a truncate
+// at a cut. It is Estimated plus the full duration of chunks that finished at
+// real-rate but whose echo has not arrived yet, capped at Sent. Estimated alone
+// lags by those chunks, because only an echo moves a chunk into Confirmed.
+//
+// This is derived from the send-time queue, so it can overstate by network and
+// jitter latency: a chunk counted as finished may still be in transit to the
+// caller. It is never more than Sent.
+func (l *PlayoutLedger) Position(src SourceRef, now time.Time) time.Duration {
+	it, ok := l.items[src]
+	if !ok {
+		return 0
+	}
+	pos := it.Estimated
+	for _, c := range l.pending {
+		if c.src != src || c.cleared || c.expired {
+			continue
+		}
+		if !now.Before(c.playStart.Add(c.dur)) {
+			pos += c.dur
+		}
+	}
+	if pos > it.Sent {
+		pos = it.Sent
+	}
+	return pos
+}
+
 // Item returns the accounting for one source.
 func (l *PlayoutLedger) Item(src SourceRef) (ItemPlayout, bool) {
 	it, ok := l.items[src]

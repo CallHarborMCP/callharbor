@@ -1,8 +1,6 @@
 package voicecall
 
 import (
-	"bytes"
-	"context"
 	"testing"
 	"time"
 
@@ -114,43 +112,4 @@ func TestCallerSpeechNeverBlocks(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("enqueueSpeech blocked on a full queue with no reader")
 	}
-}
-
-// TestReopenTurnReopensAnonymousGate checks the production reopen through the
-// voicecall bridge. A cut closes the anonymous gate, so empty-ID agent audio is
-// dropped. ReopenTurn must let the next empty-ID chunk reach Telnyx.
-func TestReopenTurnReopensAnonymousGate(t *testing.T) {
-	ctx := context.Background()
-	ab, rec := newBridge(t)
-	chunk := bytes.Repeat([]byte{0x7F}, 160)
-
-	if _, err := ab.Interrupt(ctx); err != nil {
-		t.Fatalf("Interrupt: %v", err)
-	}
-	before := rec.mediaCount()
-	if err := ab.Play(ctx, chunk); err != nil {
-		t.Fatalf("Play while gated: %v", err)
-	}
-	if got := rec.mediaCount(); got != before {
-		t.Fatalf("empty-ID audio reached Telnyx while the anonymous gate was closed (%d -> %d)", before, got)
-	}
-
-	ab.ReopenTurn()
-	if err := ab.Play(ctx, chunk); err != nil {
-		t.Fatalf("Play after ReopenTurn: %v", err)
-	}
-	if got := rec.mediaCount(); got != before+1 {
-		t.Fatalf("empty-ID audio after ReopenTurn: media frames %d -> %d, want one more", before, got)
-	}
-}
-
-// mediaCount is the number of media frames the recorder has seen.
-func (r *recorder) mediaCount() int {
-	n := 0
-	for _, e := range r.events() {
-		if e == "media" {
-			n++
-		}
-	}
-	return n
 }

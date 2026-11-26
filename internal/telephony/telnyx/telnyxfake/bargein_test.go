@@ -21,9 +21,12 @@ import (
 	"github.com/CallHarborMCP/callharbor/internal/voicebridge"
 )
 
-// liveHangoverFrames is the number of silent 20 ms frames the detector needs
-// before it reports the end of caller speech.
-const liveHangoverFrames = int(audio.VADHangover / audio.VADFrame)
+// liveHangoverFrames is the number of silent 20 ms frames the scripted caller
+// sends to end its turn. It is a fixed script value, deliberately not derived
+// from audio.VADHangover: the fake must not change its timing when CallHarbor's
+// detector constants change. If the detector stops ending a turn after this
+// many frames, the end-edge assertions fail, which is the intended signal.
+const liveHangoverFrames = 20
 
 // liveTurnResumeAppend is the 1-based provider append that completes the
 // caller's turn in runBargeInStreaming. Appends are: 1 tone (before the cut),
@@ -319,7 +322,7 @@ func runBargeInStreaming(t *testing.T, leg audio.Format, localTurns bool, expect
 	// full hangover of silence ends the speech on the detector's end edge, which
 	// reopens the turn before the provider append that triggers the reply.
 	send(toneFrame(leg), 960)
-	for i := 0; i < int(audio.VADHangover/audio.VADFrame); i++ {
+	for i := 0; i < liveHangoverFrames; i++ {
 		send(silenceFrame(leg), 1280+320*i)
 	}
 

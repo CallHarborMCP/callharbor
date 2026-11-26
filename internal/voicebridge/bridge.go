@@ -96,9 +96,6 @@ func (b *Bridge) TakeSpeech() []audio.SpeechTransition {
 	return out
 }
 
-// CallerSpeaking reports whether the caller detector is inside an utterance.
-func (b *Bridge) CallerSpeaking() bool { return b.vad.Speaking() }
-
 // Playing reports whether agent audio is still queued or audible at now.
 func (b *Bridge) Playing(now time.Time) bool {
 	return b.ledger.QueueEnd().After(now)
@@ -148,6 +145,11 @@ func (b *Bridge) Interrupt(now time.Time) (audible bool) {
 	return b.ledger.Clear(now)
 }
 
+// Position reports an item's audible position at now (see audio.PlayoutLedger.Position).
+func (b *Bridge) Position(src audio.SourceRef, now time.Time) time.Duration {
+	return b.ledger.Position(src, now)
+}
+
 // Expire reports playout marks that never echoed within the ledger grace.
 func (b *Bridge) Expire(now time.Time) error {
 	return b.ledger.Expire(now)
@@ -163,3 +165,6 @@ func (b *Bridge) Items() []audio.ItemPlayout { return b.ledger.Items() }
 
 // Pending reports marks still awaiting an echo.
 func (b *Bridge) Pending() int { return b.ledger.Pending() }
+
+// PendingLive reports marks awaiting an echo that have not yet expired.
+func (b *Bridge) PendingLive() int { return b.ledger.PendingLive() }

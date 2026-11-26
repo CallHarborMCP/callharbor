@@ -301,18 +301,30 @@ type activity struct {
 	mu       sync.Mutex
 	speaking bool
 	lastEdge time.Time
-	clock    PlayoutClock
+	// lastPlayed is the latest playout end observed to be in the past. Agent
+	// audio that finished at lastPlayed was the last agent activity, so silence
+	// is measured from there, not from the caller's edge alone.
+	lastPlayed time.Time
+	clock      PlayoutClock
 }
 
 func newActivity(start time.Time, clock PlayoutClock) *activity {
-	return &activity{lastEdge: start, clock: clock}
+	return &activity{lastEdge: start, lastPlayed: start, clock: clock}
 }
 
 func (a *activity) onSpeech(ev SpeechEvent) {
 	a.mu.Lock()
+	defer a.mu.Unlock()
+	// Before the caller's edge takes effect, record any agent audio that had
+	// already finished by this edge. A reply that ended before the caller spoke
+	// again is then never forgotten, whatever the watchdog's poll cadence.
+	if a.clock != nil {
+		if end := a.clock.PlayoutEnd(); end.Before(ev.At) && end.After(a.lastPlayed) {
+			a.lastPlayed = end
+		}
+	}
 	a.speaking = ev.Started
 	a.lastEdge = ev.At
-	a.mu.Unlock()
 }
 
 // audible reports whether queued agent audio is still playing at now.
@@ -322,13 +334,25 @@ func (a *activity) audible(now time.Time) bool {
 
 // silentFor returns how long neither the caller nor the agent has been
 // active. It is zero while the caller is speaking or agent audio is playing.
+// Otherwise the silence runs from the later of the caller's last edge and the
+// moment queued agent audio last finished, so a long reply is not counted as
+// silence and a pause after it is measured from the end of the reply.
 func (a *activity) silentFor(now time.Time) time.Duration {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	if a.speaking || a.audible(now) {
 		return 0
 	}
-	if d := now.Sub(a.lastEdge); d > 0 {
+	if a.clock != nil {
+		if end := a.clock.PlayoutEnd(); end.Before(now) && end.After(a.lastPlayed) {
+			a.lastPlayed = end
+		}
+	}
+	since := a.lastEdge
+	if a.lastPlayed.After(since) {
+		since = a.lastPlayed
+	}
+	if d := now.Sub(since); d > 0 {
 		return d
 	}
 	return 0

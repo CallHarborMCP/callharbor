@@ -49,7 +49,7 @@ func TestDuplexRealtimeCallerSilenceEnds(t *testing.T) {
 	endpoint := "ws" + strings.TrimPrefix(srv.URL, "http") + "/v1/realtime"
 
 	clk := newDxClock()
-	_, errs, ctx := dxStart(t, func(ctx context.Context) (realtime.Session, error) {
+	_, errs, ctx, _ := dxStart(t, func(ctx context.Context) (realtime.Session, error) {
 		return realtimews.Connect(ctx, realtimews.Config{Endpoint: endpoint, APIKey: "sk-test", Model: "gpt-realtime-2.1", Voice: "marin", Instructions: "Test.", Format: dxLeg})
 	}, realtime.RealtimeCapabilities, clk, dxSilenceTimeout)
 
@@ -72,7 +72,7 @@ func TestDuplexLiveCallerSilenceEnds(t *testing.T) {
 	endpoint := "ws" + strings.TrimPrefix(srv.URL, "http") + "/v1/live/sessions"
 
 	clk := newDxClock()
-	_, errs, ctx := dxStart(t, func(ctx context.Context) (realtime.Session, error) {
+	_, errs, ctx, _ := dxStart(t, func(ctx context.Context) (realtime.Session, error) {
 		return livews.Connect(ctx, livews.Config{Endpoint: endpoint, APIKey: "sk-test", Model: "gpt-live-1.1", Voice: "marin", Instructions: "Test.", Format: dxLeg})
 	}, realtime.LiveCapabilities, clk, dxSilenceTimeout)
 

@@ -151,13 +151,17 @@ type BridgeSink struct {
 	hasLast bool
 	cut     map[string]bool
 	// anonClosed gates agent audio that carries no item ID. It is closed by
-	// Interrupt and reopened only by ReopenTurn, never by caller audio, so an
-	// unidentified chunk cannot bypass a cut.
+	// a cut, and reopened by the caller's speech end edge (in Media) or by the
+	// turn-length bound. Caller audio alone never reopens it, and no
+	// unidentified chunk can bypass a closed gate.
 	anonClosed bool
 	// turn counts caller turns; inTurn is true from a Start edge to its End.
 	// InterruptTurn cuts only while the caller is still in the turn it names.
+	// turnStart is when the open turn began; a turn that stays open past
+	// MaxCallerTurn is force-ended so a stuck detector cannot hold the gate.
 	turn       uint64
 	inTurn     bool
+	turnStart  time.Time
 	now        func() time.Time
 	ToProvider func(provider []byte) error
 	OnDTMF     func(digit string)
@@ -169,8 +173,20 @@ type BridgeSink struct {
 
 // MaxPendingMarks caps playout marks awaiting an echo. Telnyx echoes every
 // mark, so a stalled leg grows this count; past the cap the stream refuses
-// more agent audio with ErrStreamBackpressure rather than growing memory.
+// more agent audio with ErrPlayoutBackpressure rather than growing memory.
+// Expired marks do not count toward the cap.
 const MaxPendingMarks = 4096
+
+// ErrPlayoutBackpressure is returned by AgentAudio when MaxPendingMarks
+// unexpired marks are awaiting echoes. It is an outbound playout limit, not an
+// inbound message failure, so it is distinct from ErrStreamBackpressure.
+var ErrPlayoutBackpressure = errors.New("telnyx: playout marks awaiting echo exceed cap")
+
+// MaxCallerTurn bounds one caller turn. A turn the local detector never ends
+// (stuck noise, a media pause) is force-ended after this long, reopening the
+// anonymous gate. It is a live-unverified constant: a genuine turn longer than
+// this is also force-ended, so a long monologue reopens the gate early.
+const MaxCallerTurn = 15 * time.Second
 
 // SpeechEvent is one caller speech edge with its wall-clock time.
 type SpeechEvent struct {
@@ -223,11 +239,15 @@ func (s *BridgeSink) Media(f Frame) error {
 	// audio is audible at this instant. Both are decided under s.mu, so a later
 	// InterruptTurn sees exactly the state this edge saw.
 	stamped := make([]SpeechEvent, 0, len(edges))
+	if ev, ok := s.expireTurnLocked(now); ok {
+		stamped = append(stamped, ev)
+	}
 	for _, e := range edges {
 		switch e {
 		case audio.SpeechStart:
 			s.turn++
 			s.inTurn = true
+			s.turnStart = now
 			stamped = append(stamped, SpeechEvent{Started: true, At: now, Turn: s.turn, Audible: s.bridge.Playing(now)})
 		case audio.SpeechEnd:
 			s.inTurn = false
@@ -252,6 +272,20 @@ func (s *BridgeSink) Media(f Frame) error {
 		return s.ToProvider(p)
 	}
 	return nil
+}
+
+// expireTurnLocked force-ends a caller turn that has stayed open past
+// MaxCallerTurn. A turn the detector never ends (stuck line noise, or a media
+// pause that leaves the hangover unreached) would otherwise hold the anonymous
+// gate closed until max_duration, and the silence watchdog would never fire.
+// The caller holds mu. It returns the synthetic End edge it produced, if any.
+func (s *BridgeSink) expireTurnLocked(now time.Time) (SpeechEvent, bool) {
+	if !s.inTurn || now.Sub(s.turnStart) < MaxCallerTurn {
+		return SpeechEvent{}, false
+	}
+	s.inTurn = false
+	s.anonClosed = false
+	return SpeechEvent{Started: false, At: now, Turn: s.turn}, true
 }
 
 // Mark records a playout echo from Telnyx.
@@ -288,11 +322,12 @@ func (s *BridgeSink) Close() error { return nil }
 // concurrent Interrupt cannot put clear between them or before them.
 //
 // Gating: an item ID that was cut suppresses that item. Audio without an item
-// ID is suppressed while the anonymous turn is closed; the gate is closed by
-// Interrupt and reopened only by ReopenTurn. Because the check is by the
-// presence of an item ID alone, no unidentified chunk can bypass a closed gate.
+// ID is suppressed while the anonymous turn is closed. A cut closes the gate,
+// and the caller's speech end edge (or the turn-length bound) reopens it, both
+// inside Media. Because the check is by the presence of an item ID alone, no
+// unidentified chunk can bypass a closed gate.
 //
-// A full pending-mark ledger returns ErrStreamBackpressure before anything is
+// A full pending-mark ledger returns ErrPlayoutBackpressure before anything is
 // sent, so the stream never writes media it cannot account for.
 func (s *BridgeSink) AgentAudio(ctx context.Context, src audio.SourceRef, provider []byte) error {
 	s.wmu.Lock()
@@ -310,9 +345,9 @@ func (s *BridgeSink) AgentAudio(ctx context.Context, src audio.SourceRef, provid
 	// Overdue marks are only counted here; the expiry error is not a stream
 	// failure, and the unconfirmed audio is already accounted for in the ledger.
 	_ = s.bridge.Expire(now)
-	if s.bridge.Pending() >= MaxPendingMarks {
+	if s.bridge.PendingLive() >= MaxPendingMarks {
 		s.mu.Unlock()
-		return ErrStreamBackpressure
+		return ErrPlayoutBackpressure
 	}
 	s.last, s.hasLast = src, true
 	payload, mark, err := s.bridge.AgentAudio(src, provider, now)
@@ -334,12 +369,11 @@ func (s *BridgeSink) AgentAudio(ctx context.Context, src audio.SourceRef, provid
 	return s.send(ctx, markMsg)
 }
 
-// Interrupt records a barge-in cut and sends Telnyx the clear command. The
-// cut and clear are ordered after any agent media already being written. It
-// returns what was cut so the engine can truncate the provider's record of the
-// item to the audio the caller actually heard.
 // Interrupt cuts agent audio unconditionally: queued audio is dropped, the
-// anonymous gate closes, and Telnyx is sent a clear.
+// anonymous gate closes, and Telnyx is sent a clear. The cut and clear are
+// ordered after any agent media already being written. It returns what was cut
+// so the engine can truncate the provider's record of the item to the audio the
+// caller actually heard.
 func (s *BridgeSink) Interrupt(ctx context.Context) (Cut, error) {
 	s.wmu.Lock()
 	defer s.wmu.Unlock()
@@ -382,7 +416,7 @@ func (s *BridgeSink) cutLocked() Cut {
 	// item's estimate, which is the value truncate must report.
 	if cut.ItemID != "" {
 		if it, ok := s.bridge.Item(s.last); ok {
-			cut.Played, cut.Sent = it.Estimated, it.Sent
+			cut.Played, cut.Sent = s.bridge.Position(s.last, s.now()), it.Sent
 		}
 	}
 	return cut
@@ -398,8 +432,8 @@ func (s *BridgeSink) PlayoutEnd() time.Time {
 
 // ReopenTurn opens the anonymous turn after the caller has finished speaking,
 // so the model's next reply, which carries no item ID, can play. Identified
-// items cut earlier stay suppressed. The engine calls it only when the caller
-// is no longer speaking.
+// items cut earlier stay suppressed. Media already calls this on every speech
+// end edge; it is exported for transports that learn of the end elsewhere.
 func (s *BridgeSink) ReopenTurn() {
 	s.mu.Lock()
 	s.anonClosed = false
