@@ -42,6 +42,17 @@ type fakeTelnyx struct {
 	// dialGate, when set, holds POST /v2/calls until it is closed, so a test can
 	// prove make_call answers before the provider has even answered the dial.
 	dialGate chan struct{}
+	// unexpected holds "METHOD path" for every request outside the handled
+	// Telnyx routes. Such a request means the app reached for a Telnyx feature
+	// CallHarbor does not implement (#114 telephony-only boundary).
+	unexpected []string
+}
+
+// unexpectedRequests returns a copy of every unexpected "METHOD path" request.
+func (f *fakeTelnyx) unexpectedRequests() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]string(nil), f.unexpected...)
 }
 
 // setBadDialBody switches the dial response to a 2xx with no control id.
@@ -123,6 +134,12 @@ func newFakeTelnyx(t *testing.T, controlID string) *fakeTelnyx {
 		f.mu.Unlock()
 		writeFakeJSON(w, map[string]any{"data": map[string]any{}})
 	})
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		f.mu.Lock()
+		f.unexpected = append(f.unexpected, r.Method+" "+r.URL.Path)
+		f.mu.Unlock()
+		http.NotFound(w, r)
+	})
 	f.srv = httptest.NewServer(mux)
 	t.Cleanup(f.srv.Close)
 	return f
@@ -150,6 +167,50 @@ func (f *fakeTelnyx) dialBodies() []map[string]any {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return append([]map[string]any(nil), f.dials...)
+}
+
+// dialBodyAllowlist is the complete set of keys a dial body may carry (#114
+// telephony-only boundary). It is duplicated from the telnyx package's
+// boundary test because that package's tests cannot be imported here. Keep
+// both lists in step.
+var dialBodyAllowlist = map[string]bool{
+	"connection_id": true, "to": true, "from": true, "webhook_url": true,
+	"webhook_url_method": true, "command_id": true, "client_state": true,
+	"timeout_secs": true, "time_limit_secs": true, "stream_url": true,
+	"stream_track": true, "stream_codec": true, "stream_bidirectional_mode": true,
+	"stream_bidirectional_codec": true, "stream_bidirectional_sampling_rate": true,
+	"stream_bidirectional_target_legs": true, "stream_auth_token": true,
+	"stream_establish_before_call_originate": true,
+}
+
+// dialBodyForbiddenKeys are pinned CallRequest add-on keys (AMD, transcription,
+// recording, assistants, deepfake detection and similar). None may be sent.
+var dialBodyForbiddenKeys = []string{
+	"answering_machine_detection", "answering_machine_detection_config",
+	"assistant", "transcription", "transcription_config", "record",
+	"record_channels", "record_format", "record_max_length", "record_timeout_secs",
+	"record_track", "record_trim", "record_custom_file_name",
+	"conversation_relay_config", "dialogflow_config", "enable_dialogflow",
+	"deepfake_detection", "sound_modifications", "audio_url", "media_name",
+	"send_silence_when_idle",
+}
+
+// assertDialBodiesTelephonyOnly fails for any dial body with a key outside the
+// allowlist or any forbidden add-on key.
+func assertDialBodiesTelephonyOnly(t *testing.T, bodies []map[string]any) {
+	t.Helper()
+	for i, body := range bodies {
+		for k := range body {
+			if !dialBodyAllowlist[k] {
+				t.Errorf("dial %d key %q is outside the telephony-only allowlist", i, k)
+			}
+		}
+		for _, bad := range dialBodyForbiddenKeys {
+			if _, ok := body[bad]; ok {
+				t.Errorf("dial %d carries forbidden add-on key %q", i, bad)
+			}
+		}
+	}
 }
 
 // fakeAI is a loopback realtime_ws or live_ws provider. It records, in arrival

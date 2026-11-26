@@ -28,11 +28,12 @@ type DialParams struct {
 	ClientState []byte
 	TimeoutSecs int
 	TimeLimit   int
-	AMD         string
 }
 
 // DialRequest is the JSON body; field names and enums follow the pinned
-// Telnyx OpenAPI CallRequest schema.
+// Telnyx OpenAPI CallRequest schema. It deliberately carries only call-control
+// and stream fields: no Telnyx add-ons (AMD, transcription, recording,
+// assistants, deepfake detection, etc.) per the telephony-only boundary (#114).
 type DialRequest struct {
 	ConnectionID                    string `json:"connection_id"`
 	To                              string `json:"to"`
@@ -43,7 +44,6 @@ type DialRequest struct {
 	ClientState                     string `json:"client_state,omitempty"`
 	TimeoutSecs                     int    `json:"timeout_secs,omitempty"`
 	TimeLimitSecs                   int    `json:"time_limit_secs,omitempty"`
-	AnsweringMachineDetection       string `json:"answering_machine_detection,omitempty"`
 	StreamURL                       string `json:"stream_url"`
 	StreamTrack                     string `json:"stream_track"`
 	StreamCodec                     string `json:"stream_codec"`
@@ -97,22 +97,16 @@ func BuildDialRequest(p DialParams) (DialRequest, error) {
 	if p.TimeoutSecs < 0 {
 		return DialRequest{}, fmt.Errorf("%w: timeout_secs negative", ErrInvalidDial)
 	}
-	switch p.AMD {
-	case "", "disabled", "detect", "detect_beep", "detect_words", "greeting_end", "premium":
-	default:
-		return DialRequest{}, fmt.Errorf("%w: answering_machine_detection %q", ErrInvalidDial, p.AMD)
-	}
 	r := DialRequest{
-		ConnectionID:              p.ConnectionID,
-		To:                        p.To,
-		From:                      p.From,
-		WebhookURL:                p.WebhookURL,
-		WebhookURLMethod:          "POST",
-		CommandID:                 p.CommandID,
-		TimeoutSecs:               p.TimeoutSecs,
-		TimeLimitSecs:             p.TimeLimit,
-		AnsweringMachineDetection: p.AMD,
-		StreamURL:                 p.StreamURL,
+		ConnectionID:     p.ConnectionID,
+		To:               p.To,
+		From:             p.From,
+		WebhookURL:       p.WebhookURL,
+		WebhookURLMethod: "POST",
+		CommandID:        p.CommandID,
+		TimeoutSecs:      p.TimeoutSecs,
+		TimeLimitSecs:    p.TimeLimit,
+		StreamURL:        p.StreamURL,
 		// inbound_track = audio from the callee. Telnyx does not document
 		// whether outbound_track contains injected bidirectional audio, so it
 		// is not used as played-audio evidence.

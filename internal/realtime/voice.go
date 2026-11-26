@@ -121,9 +121,11 @@ func For(p Protocol) (Capabilities, error) {
 }
 
 // V1CallerTranscript is the caller transcript availability CallHarbor V1
-// presents for c. Separately billed transcription is never enabled (owner
-// decision recorded in docs/protocol/FEASIBILITY.md §4), so it is reported as
-// Unavailable: caller audio is recorded, caller text is shown as unavailable.
+// presents for c. Separately billed transcription is prohibited by the product
+// scope (.agents/PRODUCT_SCOPE.md), so it is reported as Unavailable: caller
+// audio is recorded, caller text is shown as unavailable. The interim
+// realtime_ws decision was a CEO-agent decision, not owner authorization (see
+// docs/protocol/FEASIBILITY.md §4.1).
 func (c Capabilities) V1CallerTranscript() Availability {
 	if c.CallerTranscript == Native {
 		return Native
