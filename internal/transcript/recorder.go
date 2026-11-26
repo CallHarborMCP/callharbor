@@ -171,8 +171,6 @@ func truncateUTF8(s string, n int) string {
 //
 // Total, with every cap reached: about 25 MiB plus text. The per-call text
 // budget is the dominant term and is itself bounded at 4 MiB.
-//   - replay IDs: maxSeenEvents (8192) rolling window, ~0.5 MiB.
-//   - pending events: MaxEvents (4000) until the next flush writes them.
 //
 // A 7200 s call produces far fewer turns and text than these ceilings, so the
 // bound is not reached in practice; it is what keeps a runaway provider bounded.
@@ -333,7 +331,12 @@ func (r *Recorder) Observe(ev realtime.Event) {
 			return
 		}
 		text := ev.Text
-		if room := min(MaxTurnText-t.doneBytes, MaxCallText-r.callText); len(text) > room {
+		// A replacement final text replaces the previous one, so the previous
+		// length is released from the call budget first. The allowance is then
+		// computed against what the call still holds, not the old text.
+		r.callText -= t.doneBytes
+		room := min(MaxTurnText, MaxCallText-r.callText)
+		if len(text) > room {
 			// Final text counts against the same text budget as deltas. It is
 			// cut at a rune boundary and flagged, never silently truncated.
 			text = truncateUTF8(text, max(room, 0))
@@ -589,7 +592,8 @@ func (r *Recorder) addFragmentLocked(t *turn, ev realtime.Event, now int64) {
 
 // rememberEventLocked records a provider event id for replay detection. Only the
 // most recent maxSeenEvents ids are kept, so a long call holds bounded memory.
-// Live turns settle only at close, so a per-turn release cannot bound them.
+// Live turns settle only at close, so a per-turn release cannot bound them
+// (tracked in #117).
 func (r *Recorder) rememberEventLocked(id string) {
 	if len(r.seenOrder) >= maxSeenEvents {
 		delete(r.seenEvents, r.seenOrder[0])

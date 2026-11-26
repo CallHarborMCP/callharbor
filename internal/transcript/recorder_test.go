@@ -673,6 +673,29 @@ func TestOversizedEventIDIsNotStored(t *testing.T) {
 	}
 }
 
+// A second final text for the same turn replaces the first. The first text's
+// length is released from the call budget, so a legitimate replacement of the
+// same size is stored whole and not truncated against the old text.
+func TestReplacementFinalTextIsNotTruncatedByOldLength(t *testing.T) {
+	h := newHarness(t, realtime.RealtimeCapabilities)
+	first := strings.Repeat("a", MaxTurnText-100)
+	second := strings.Repeat("b", MaxTurnText-100)
+	h.rec.Observe(realtime.Event{Kind: realtime.EventAgentTranscriptDone, EventID: "ev_1", ItemID: "item_r", Text: first})
+	h.rec.Observe(realtime.Event{Kind: realtime.EventAgentTranscriptDone, EventID: "ev_2", ItemID: "item_r", Text: second})
+	h.setPlayout(audio.SourceRef{ItemID: "item_r"}, played(300*ms))
+	h.close(t)
+	a := h.store.latest()
+	if len(a) != 1 || a[0].Text != second {
+		t.Fatalf("replacement stored as %d bytes, want the whole %d-byte text", len(a[0].Text), len(second))
+	}
+	if hasFlag(a[0].Quality, FlagTruncatedText) {
+		t.Fatalf("replacement flagged text_truncated: %v", a[0].Quality)
+	}
+	if h.rec.callText != len(second) {
+		t.Fatalf("call text budget = %d, want %d (old length released)", h.rec.callText, len(second))
+	}
+}
+
 // Final text past the per-turn text budget is truncated and flagged text_truncated.
 func TestOversizedDoneTextIsTruncatedAndFlagged(t *testing.T) {
 	h := newHarness(t, realtime.RealtimeCapabilities)
