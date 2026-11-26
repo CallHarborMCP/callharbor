@@ -193,7 +193,9 @@ func TestSilenceWatchdogEndsRunWithSentinel(t *testing.T) {
 	br := &speechBridge{cutBridge: &cutBridge{fakeBridge: newFakeBridge()}, speech: make(chan SpeechEvent, 8), now: now}
 	res := make(chan error, 1)
 	go func() {
-		_, err := RunWith(context.Background(), sess, br, nil, Options{SilenceTimeout: 30 * time.Second, Now: now})
+		// Native speech start: this test covers silence accounting only, so the
+		// local barge-in setup check (which needs a TurnInterrupter) does not apply.
+		_, err := RunWith(context.Background(), sess, br, nil, Options{Caps: realtime.RealtimeCapabilities, SilenceTimeout: 30 * time.Second, Now: now})
 		res <- err
 	}()
 	// The silence window starts when the run starts. Advance the injected clock

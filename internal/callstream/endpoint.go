@@ -238,23 +238,27 @@ func (m *Media) buildSink(ctx context.Context, st storage.MediaCall, start telny
 }
 
 // attach builds the bridge and runs the voice session over it. Every error
-// path closes the session, so no provider connection outlives a refused stream.
-// On success the run owns release and calls it after the run's end is handled,
-// so shutdown's wait covers the final local hangup too.
+// path closes the session and releases the claim, so no provider connection or
+// session claim outlives a refused stream. On success the run owns release and
+// calls it after the run's end is handled, so shutdown's wait covers the final
+// local hangup too.
 func (m *Media) attach(sess realtime.Session, st storage.MediaCall, leg, provider audio.Format, caps realtime.Capabilities, send telnyx.Send, release func()) (telnyx.MediaSink, error) {
 	bridge, err := voicebridge.New(leg, provider, 5*time.Millisecond, 2*time.Second)
 	if err != nil {
 		_ = sess.Close()
+		release()
 		return nil, err
 	}
 	bridgeSink, err := telnyx.NewBridgeSink(bridge, send)
 	if err != nil {
 		_ = sess.Close()
+		release()
 		return nil, err
 	}
 	ab, err := voicecall.NewAudioBridge(bridgeSink)
 	if err != nil {
 		_ = sess.Close()
+		release()
 		return nil, err
 	}
 	// The run is bound to the stream. Closing the stream cancels it, and

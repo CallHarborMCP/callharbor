@@ -86,6 +86,18 @@ func ceilFrames(d time.Duration) int {
 // Speaking reports whether the detector is inside an utterance.
 func (v *VAD) Speaking() bool { return v.speaking }
 
+// Reset returns the detector to its silent start state, as if no utterance were
+// open. It is used when the owner ends an utterance by policy (the forced turn
+// bound) rather than by the detector's own hangover. A partial frame and the
+// onset and hangover counters are cleared, so the next Start edge is judged
+// from fresh audio.
+func (v *VAD) Reset() {
+	v.acc = v.acc[:0]
+	v.speakingN = 0
+	v.silentN = 0
+	v.speaking = false
+}
+
 // Process consumes samples and returns the transitions they produce, in
 // order. Partial frames carry over to the next call. A frame is judged only
 // once complete, so the result does not depend on how samples are chunked.

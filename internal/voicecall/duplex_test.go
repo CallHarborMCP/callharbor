@@ -245,10 +245,13 @@ type dxHandle struct {
 	// callstream behaviour). Without it the sink's Close is a no-op.
 	stopOnClose bool
 	sinkDone    chan struct{}
+	// result receives the voice.Result of the run, so a test can assert the
+	// outcome (for example UsageConfirmed after a provider close).
+	result chan voice.Result
 }
 
 func newDxHandle() *dxHandle {
-	return &dxHandle{ready: make(chan struct{}), dtmf: make(chan string, 4), sinkDone: make(chan struct{})}
+	return &dxHandle{ready: make(chan struct{}), dtmf: make(chan string, 4), sinkDone: make(chan struct{}), result: make(chan voice.Result, 1)}
 }
 
 // dxSync sends a DTMF frame and waits until CallHarbor has processed it.
@@ -341,7 +344,10 @@ func dxStartWith(t *testing.T, connect func(ctx context.Context) (realtime.Sessi
 			if observe != nil {
 				sink = ab.EventSink(observe)
 			}
-			_, err := voice.RunWith(runCtx, sess, ab, sink, voice.Options{Caps: caps, Now: clk.Now, SilenceTimeout: silence})
+			res, err := voice.RunWith(runCtx, sess, ab, sink, voice.Options{Caps: caps, Now: clk.Now, SilenceTimeout: silence})
+			if h != nil {
+				h.result <- res
+			}
 			errs <- err
 		}()
 		if h != nil && h.stopOnClose {
@@ -1002,13 +1008,13 @@ func TestDuplexLivePathBargeIn(t *testing.T) {
 	// turn2. Nothing from the cut tail, and nothing from stale audio.
 	var want []byte
 	for _, ch := range turn0[:5] {
-		want = append(want, ch...)
+		want = append(want, dxExpect(t, ch)...)
 	}
 	for _, ch := range turn1 {
-		want = append(want, ch...)
+		want = append(want, dxExpect(t, ch)...)
 	}
 	for _, ch := range turn2 {
-		want = append(want, ch...)
+		want = append(want, dxExpect(t, ch)...)
 	}
 	if got := pl.Played(); !bytes.Equal(got, want) {
 		t.Fatalf("played %d bytes, want exact 100ms turn0 prefix + turn1 + turn2 (%d bytes)", len(got), len(want))

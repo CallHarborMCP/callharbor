@@ -188,3 +188,59 @@ func TestCodecErrorsAndHelpers(t *testing.T) {
 		t.Error("zero rate timeline")
 	}
 }
+
+// A stalled leg must not grow the pending list without bound. Expired marks
+// are kept for late echoes only up to MaxExpiredPending; past that the oldest
+// are dropped. The accounting is unchanged: every expired chunk's Unconfirmed
+// time is recorded once at expiry, and an unexpired mark is never dropped.
+func TestPlayoutLedgerExpiredMarksAreBounded(t *testing.T) {
+	l := newTestLedger(t)
+	src := SourceRef{ItemID: "stalled"}
+	const sent = MaxExpiredPending + 40
+	for i := 0; i < sent; i++ {
+		mustSend(t, l, src, 160, t0)
+	}
+	// Every chunk is overdue at the far time, so all of them expire.
+	far := t0.Add(time.Hour)
+	if err := l.Expire(far); !errors.Is(err, ErrPlayoutTimedOut) {
+		t.Fatalf("Expire = %v, want ErrPlayoutTimedOut", err)
+	}
+	if got := l.Pending(); got != MaxExpiredPending {
+		t.Fatalf("pending after stall = %d, want bounded to %d", got, MaxExpiredPending)
+	}
+	it, _ := l.Item(src)
+	if want := time.Duration(sent) * 20 * time.Millisecond; it.Unconfirmed != want || it.Sent != want {
+		t.Fatalf("unconfirmed %v sent %v, want both %v (each chunk counted once)", it.Unconfirmed, it.Sent, want)
+	}
+	// Expiring again must not recount what was already counted.
+	if err := l.Expire(far.Add(time.Second)); err != nil {
+		t.Fatalf("re-expire recounted: %v", err)
+	}
+	if it2, _ := l.Item(src); it2.Unconfirmed != it.Unconfirmed {
+		t.Fatalf("unconfirmed changed on re-expire: %v -> %v", it.Unconfirmed, it2.Unconfirmed)
+	}
+}
+
+// Unexpired marks are never dropped by the bound, so live audio stays fully
+// accounted for and still counts toward PendingLive.
+func TestPlayoutLedgerTrimKeepsUnexpiredMarks(t *testing.T) {
+	l := newTestLedger(t)
+	src := SourceRef{ItemID: "live"}
+	for i := 0; i < MaxExpiredPending+4; i++ {
+		mustSend(t, l, src, 160, t0)
+	}
+	if err := l.Expire(t0.Add(time.Hour)); !errors.Is(err, ErrPlayoutTimedOut) {
+		t.Fatalf("Expire = %v, want ErrPlayoutTimedOut", err)
+	}
+	// A new live chunk, sent after the stall, is unexpired.
+	live := mustSend(t, l, src, 160, t0.Add(time.Hour))
+	if l.PendingLive() != 1 {
+		t.Fatalf("PendingLive = %d, want the one live mark", l.PendingLive())
+	}
+	if err := l.Expire(t0.Add(time.Hour)); err != nil {
+		t.Fatalf("live mark expired early: %v", err)
+	}
+	if _, err := l.Echo(live, t0.Add(time.Hour+time.Second)); err != nil {
+		t.Fatalf("live mark was dropped: %v", err)
+	}
+}

@@ -104,6 +104,11 @@ func (b *Bridge) Playing(now time.Time) bool {
 // PlayoutEnd is the time the queued agent audio finishes at real-time rate.
 func (b *Bridge) PlayoutEnd() time.Time { return b.ledger.QueueEnd() }
 
+// ResetCallerSpeech ends the detector's open utterance by policy, so the next
+// caller onset is judged from fresh audio and can emit a Start edge. Pending
+// speech edges that were not yet taken are kept; the owner takes them.
+func (b *Bridge) ResetCallerSpeech() { b.vad.Reset() }
+
 // AgentAudio converts one provider output chunk to telephony wire bytes and
 // records it in the playout ledger. The caller must transmit the returned
 // media payload followed by the returned mark name.

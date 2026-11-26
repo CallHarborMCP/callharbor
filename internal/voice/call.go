@@ -168,22 +168,49 @@ func RunWith(ctx context.Context, sess realtime.Session, bridge AudioBridge, sin
 	var silenced bool
 	var silencedMu sync.Mutex
 
-	var bgWG sync.WaitGroup
+	localBarge := opts.Caps.SpeechStartEvents != realtime.Native
+	ti, canTurnCut := bridge.(TurnInterrupter)
+	sb, hasSpeech := bridge.(SpeechBridge)
+	// Local barge-in is driven by caller speech edges, so it can only occur
+	// with a SpeechBridge. Such a bridge without a TurnInterrupter would fail at
+	// the first barge-in; reject it here instead.
+	if localBarge && hasSpeech && !canTurnCut {
+		// Fail at setup, not at the first barge-in. The session is closed on
+		// every return, so the failed setup does not leak the connection.
+		return Result{}, errors.Join(errors.New("voice: local barge-in requires a turn-scoped interrupt"), sess.Close())
+	}
+
+	// Everything that writes to the session (the uplink and the turn-cut speech
+	// path) runs under sessCtx and sessWG, so a local stop can stop and join all
+	// of it before the protocol close is requested. Nothing may write to the
+	// session concurrently with RequestClose.
+	sessCtx, stopSess := context.WithCancel(runCtx)
+	defer stopSess()
+	var sessWG sync.WaitGroup
 	var upErr error
-	bgWG.Add(1)
+	sessWG.Add(1)
 	go func() {
-		defer bgWG.Done()
-		upErr = pumpUplink(runCtx, sess, bridge)
-		if upErr != nil {
-			cancel()
+		defer sessWG.Done()
+		err := pumpUplink(sessCtx, sess, bridge)
+		// Cancellation is the normal end of the uplink, and an uplink failure
+		// after a local stop is a consequence of the stop, not a fault.
+		if err == nil || errors.Is(err, context.Canceled) || stopCtx.Err() != nil {
+			return
 		}
+		upErr = err
+		cancel()
 	}()
-	if sb, ok := bridge.(SpeechBridge); ok {
-		localBarge := opts.Caps.SpeechStartEvents != realtime.Native
-		bgWG.Add(1)
+	joinSession := func() {
+		stopSess()
+		sessWG.Wait()
+	}
+
+	var bgWG sync.WaitGroup
+	if hasSpeech {
+		sessWG.Add(1)
 		go func() {
-			defer bgWG.Done()
-			pumpSpeech(runCtx, sb, bridge, sess, opts, act, localBarge, &speechErr)
+			defer sessWG.Done()
+			pumpSpeech(sessCtx, sb, ti, sess, opts, act, localBarge, &speechErr)
 		}()
 	}
 	if opts.SilenceTimeout > 0 {
@@ -199,9 +226,10 @@ func RunWith(ctx context.Context, sess realtime.Session, bridge AudioBridge, sin
 		}()
 	}
 
-	res, downErr := runDownlink(runCtx, stopCtx, sess, bridge, sink)
+	res, downErr := runDownlink(runCtx, stopCtx, sess, bridge, sink, joinSession)
 
 	cancel()
+	joinSession()
 	bgWG.Wait()
 
 	closeErr := sess.Close()
@@ -210,14 +238,16 @@ func RunWith(ctx context.Context, sess realtime.Session, bridge AudioBridge, sin
 	wasSilenced := silenced
 	silencedMu.Unlock()
 
-	if upErr != nil && !errors.Is(upErr, context.Canceled) {
+	// A local stop (silence watchdog) reports its own reason first. Uplink
+	// errors that follow a stop are not reported; see the uplink goroutine.
+	if wasSilenced {
+		return res, ErrCallerSilence
+	}
+	if upErr != nil {
 		return res, fmt.Errorf("voice: uplink: %w", upErr)
 	}
 	if err := speechErr.get(); err != nil {
 		return res, fmt.Errorf("voice: caller speech: %w", err)
-	}
-	if wasSilenced {
-		return res, ErrCallerSilence
 	}
 	if downErr != nil {
 		return res, downErr
@@ -233,7 +263,7 @@ func RunWith(ctx context.Context, sess realtime.Session, bridge AudioBridge, sin
 // and keeps reading until session.closed arrives or GracefulCloseTimeout
 // passes. Reads run on a context detached from cancellation, because cancelling
 // a socket read closes the connection and would prevent the graceful close.
-func runDownlink(runCtx, callerCtx context.Context, sess realtime.Session, bridge AudioBridge, sink EventSink) (Result, error) {
+func runDownlink(runCtx, callerCtx context.Context, sess realtime.Session, bridge AudioBridge, sink EventSink, joinSession func()) (Result, error) {
 	readCtx, stopRead := context.WithCancel(context.WithoutCancel(runCtx))
 	defer stopRead()
 	type step struct {
@@ -250,6 +280,10 @@ func runDownlink(runCtx, callerCtx context.Context, sess realtime.Session, bridg
 		return s.res, s.err
 	case <-runCtx.Done():
 	}
+	// Stop and join the session writers (uplink and turn-cut path) before any
+	// close is requested, so no caller audio is appended after session.close and
+	// no write is in flight when the close handshake starts.
+	joinSession()
 	if callerCtx.Err() == nil {
 		stopRead()
 		<-done
@@ -283,13 +317,27 @@ func runDownlink(runCtx, callerCtx context.Context, sess realtime.Session, bridg
 	}
 }
 
+// uplinkWriteTimeout bounds one caller-audio append. The write deliberately
+// does not inherit cancellation: coder/websocket closes the whole connection
+// when a write's context ends mid-frame, which would make a local stop unable
+// to complete the protocol close.
+const uplinkWriteTimeout = 5 * time.Second
+
+// pumpUplink forwards caller audio to the provider until ctx ends. A chunk is
+// appended only while ctx is live, so nothing is appended after a stop.
 func pumpUplink(ctx context.Context, sess realtime.Session, bridge AudioBridge) error {
 	for {
 		chunk, err := bridge.NextCallerAudio(ctx)
 		if err != nil {
 			return err
 		}
-		if err := sess.AppendAudio(ctx, chunk); err != nil {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		wctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), uplinkWriteTimeout)
+		err = sess.AppendAudio(wctx, chunk)
+		cancel()
+		if err != nil {
 			return realtime.Transport(err)
 		}
 	}
@@ -364,8 +412,7 @@ func (a *activity) silentFor(now time.Time) time.Duration {
 // here: the transport does it synchronously in the media path, before the
 // provider can reply to the caller's turn. An onset while the agent is silent
 // is an ordinary turn and cuts nothing.
-func pumpSpeech(ctx context.Context, sb SpeechBridge, bridge AudioBridge, sess realtime.Session, opts Options, act *activity, localBarge bool, fail *firstError) {
-	ti, canTurnCut := bridge.(TurnInterrupter)
+func pumpSpeech(ctx context.Context, sb SpeechBridge, ti TurnInterrupter, sess realtime.Session, opts Options, act *activity, localBarge bool, fail *firstError) {
 	for {
 		select {
 		case <-ctx.Done():
@@ -378,11 +425,8 @@ func pumpSpeech(ctx context.Context, sb SpeechBridge, bridge AudioBridge, sess r
 			// The transport decided, with the edge, that agent audio was audible.
 			// The cut is still conditional on the caller remaining in this turn:
 			// a Start edge that was delayed past its own End is refused there, so
-			// a reply that began after the caller stopped is never cut.
-			if !canTurnCut {
-				fail.set(errors.New("voice: local barge-in requires a turn-scoped interrupt"))
-				return
-			}
+			// a reply that began after the caller stopped is never cut. RunWith
+			// has already rejected local barge-in without a TurnInterrupter.
 			cut, ok, err := ti.InterruptTurn(ctx, ev.Turn)
 			if err != nil {
 				if ctx.Err() == nil {
@@ -391,7 +435,12 @@ func pumpSpeech(ctx context.Context, sb SpeechBridge, bridge AudioBridge, sess r
 				return
 			}
 			if ok {
-				if err := truncateCut(ctx, sess, cut); err != nil && ctx.Err() == nil {
+				// The truncate is a session write: detach it from a stop so a
+				// cancelled write cannot close the socket before session.close.
+				wctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), uplinkWriteTimeout)
+				err := truncateCut(wctx, sess, cut)
+				cancel()
+				if err != nil && ctx.Err() == nil {
 					fail.set(err)
 					return
 				}

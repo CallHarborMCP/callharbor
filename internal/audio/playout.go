@@ -221,7 +221,10 @@ func (l *PlayoutLedger) Clear(now time.Time) (cut bool) {
 func (l *PlayoutLedger) QueueEnd() time.Time { return l.queueEnd }
 
 // Expire marks chunks whose echo is overdue at now and returns
-// ErrPlayoutTimedOut if any were found. Overdue chunks count as Unconfirmed.
+// ErrPlayoutTimedOut if any were found. Overdue chunks count as Unconfirmed,
+// once, when they are marked expired. An expired chunk stays in the pending
+// list so a late echo is still classified in FIFO order; the list is bounded
+// by MaxExpiredPending, see trimExpired.
 func (l *PlayoutLedger) Expire(now time.Time) error {
 	var n int
 	for _, c := range l.pending {
@@ -234,10 +237,45 @@ func (l *PlayoutLedger) Expire(now time.Time) error {
 			n++
 		}
 	}
+	l.trimExpired()
 	if n > 0 {
 		return fmt.Errorf("%w: %d chunk(s)", ErrPlayoutTimedOut, n)
 	}
 	return nil
+}
+
+// MaxExpiredPending bounds the expired chunks kept for late echoes on one leg.
+// A stalled leg would otherwise grow the pending list for as long as it stalls.
+// Past the bound the oldest expired chunks are dropped. Their Unconfirmed time
+// was recorded at expiry, so the accounting is unchanged; only a very late echo
+// for a dropped chunk is no longer recognised, and it is reported as unknown.
+const MaxExpiredPending = 256
+
+// trimExpired drops the oldest expired chunks once more than MaxExpiredPending
+// of them are waiting. Unexpired chunks are never dropped.
+func (l *PlayoutLedger) trimExpired() {
+	expired := 0
+	for _, c := range l.pending {
+		if c.expired {
+			expired++
+		}
+	}
+	excess := expired - MaxExpiredPending
+	if excess <= 0 {
+		return
+	}
+	kept := l.pending[:0]
+	for _, c := range l.pending {
+		if c.expired && excess > 0 {
+			excess--
+			continue
+		}
+		kept = append(kept, c)
+	}
+	for i := len(kept); i < len(l.pending); i++ {
+		l.pending[i] = nil
+	}
+	l.pending = kept
 }
 
 // Pending reports chunks still awaiting an echo.

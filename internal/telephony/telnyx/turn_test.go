@@ -279,6 +279,39 @@ func TestStuckCallerTurnIsForceEndedAndReopensGate(t *testing.T) {
 	}
 }
 
+// The forced end must reset the local detector. A detector left speaking by a
+// stuck turn would emit no Start edge for the caller's continuing speech, so
+// barge-in and turn reopening would never see it, and silence accounting would
+// count from the forced end while the caller is still talking. Loud audio that
+// continues after the forced end must therefore yield a fresh Start edge with a
+// new turn number. The noise is not stopped with silence, because the
+// detector's own hangover would hide the defect.
+func TestForcedTurnEndResetsDetectorSoContinuedSpeechStarts(t *testing.T) {
+	h := newTurnHarness(t)
+	h.speak()
+	first := h.startEdge()
+	for h.now.Sub(first.At) < telnyx.MaxCallerTurn {
+		h.frame(turnTone())
+	}
+	// Still loud: the forced end fires on this frame.
+	h.frame(turnTone())
+	if h.countEdges(false) != 1 {
+		t.Fatalf("stuck turn was not force-ended: end edges=%d", h.countEdges(false))
+	}
+	startsBefore := h.countEdges(true)
+	// The caller keeps speaking after the forced end. Ample loud frames are
+	// sent, enough for a fresh onset to be judged.
+	for i := 0; i < 10; i++ {
+		h.frame(turnTone())
+	}
+	if h.countEdges(true) == startsBefore {
+		t.Fatal("continued speech after the forced end produced no Start edge: detector still speaking")
+	}
+	if got := h.startEdge(); got.Turn == first.Turn {
+		t.Fatalf("continued speech reused turn %d", got.Turn)
+	}
+}
+
 // countEdges counts delivered edges of one kind.
 func (h *turnHarness) countEdges(started bool) int {
 	n := 0

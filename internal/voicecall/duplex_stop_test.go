@@ -34,6 +34,21 @@ func dxSentClose(evs []string) bool {
 	return false
 }
 
+// dxAppendAfterClose reports whether any caller-audio append was sent after the
+// first session.close. A stop must end uplink writes before the close request.
+func dxAppendAfterClose(evs []string) bool {
+	closed := false
+	for _, e := range evs {
+		switch {
+		case e == "session.close":
+			closed = true
+		case closed && e == "session.input_audio.append":
+			return true
+		}
+	}
+	return false
+}
+
 // dxExpect returns what the bridge sends for a scripted chunk: the production
 // decode and encode of the leg format.
 func dxExpect(t *testing.T, c []byte) []byte {
@@ -185,11 +200,9 @@ func TestDuplexRealtimeStopMidBargeIn(t *testing.T) {
 	dxEcho(t, s, ctx, pl, &seq)
 	<-prov.started
 
-	// The caller hangs up while the cut is in progress.
-	seq++
-	if err := s.Send(ctx, dxStopFrame(seq)); err != nil {
-		t.Fatal(err)
-	}
+	// The caller hangs up while the cut is in progress. Inbound audio keeps
+	// flowing up to the stop, as Telnyx streams it.
+	dxStopWithInboundAudio(t, s, ctx)
 	if err := dxAwaitStopped(t, s, errs, prov.closed, h, ctx); !errors.Is(err, context.Canceled) {
 		t.Fatalf("run ended with %v, want context.Canceled after Telnyx stop", err)
 	}
@@ -249,24 +262,27 @@ func TestDuplexLiveStopMidBargeIn(t *testing.T) {
 	dxReceiveUntilClear(t, s, ctx, pl)
 	dxEcho(t, s, ctx, pl, &seq)
 
-	// The caller hangs up while the cut is in progress.
-	if err := s.Send(ctx, dxStopFrame(seqNext())); err != nil {
-		t.Fatal(err)
-	}
-	// The stop cancels the run. Production has two valid ends: the graceful
-	// session.close completes and the run returns nil, or the socket is torn down
-	// first and the run returns context.Canceled. Any other error fails. Nil is
-	// only valid when the provider was asked to close.
+	// The caller hangs up while the cut is in progress. Telnyx keeps streaming
+	// inbound audio up to the stop, so the stop is sent while the feed runs.
+	dxStopWithInboundAudio(t, s, ctx)
+	// The stop must end the run with a clean provider close: nil, session.close
+	// sent before the connection ends, and no append after session.close.
 	err := dxAwaitStopped(t, s, errs, prov.closed, h, ctx)
 	evs := prov.events()
-	switch {
-	case err == nil:
-		if !dxSentClose(evs) {
-			t.Fatalf("run returned nil without a session.close request (provider events %v)", evs)
-		}
-	case errors.Is(err, context.Canceled):
-	default:
-		t.Fatalf("run ended with %v, want nil after a graceful close or context.Canceled", err)
+	if err != nil {
+		t.Fatalf("run ended with %v, want nil after a graceful close (provider events %v)", err, evs)
+	}
+	if !dxSentClose(evs) {
+		t.Fatalf("run returned nil without a session.close request (provider events %v)", evs)
+	}
+	if dxAppendAfterClose(evs) {
+		t.Fatalf("audio was appended after session.close (provider events %v)", evs)
+	}
+	// The fake answers session.close with session.closed carrying usage 1 s, so
+	// the run must report a clean, usage-confirmed close.
+	res := <-h.result
+	if !res.Closed || !res.UsageConfirmed || res.UsageSeconds != 1 {
+		t.Fatalf("result = %+v, want Closed with confirmed usage of 1s", res)
 	}
 	for _, typ := range evs {
 		if typ == "conversation.item.truncate" || typ == "response.cancel" {

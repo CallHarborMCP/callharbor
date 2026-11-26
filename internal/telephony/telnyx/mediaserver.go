@@ -285,6 +285,10 @@ func (s *BridgeSink) expireTurnLocked(now time.Time) (SpeechEvent, bool) {
 	}
 	s.inTurn = false
 	s.anonClosed = false
+	// The detector is reset with the turn. Otherwise it stays in its speaking
+	// state, which blocks new Start edges, and the silence accounting counts
+	// from this forced end while the caller is still making noise.
+	s.bridge.ResetCallerSpeech()
 	return SpeechEvent{Started: false, At: now, Turn: s.turn}, true
 }
 
