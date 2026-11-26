@@ -14,7 +14,6 @@ const (
 	EventCallInitiated    = "call.initiated"
 	EventCallAnswered     = "call.answered"
 	EventCallHangup       = "call.hangup"
-	EventMachineDetection = "call.machine.detection.ended"
 	EventStreamingStarted = "streaming.started"
 	EventStreamingStopped = "streaming.stopped"
 	EventStreamingFailed  = "streaming.failed"
@@ -38,7 +37,6 @@ type WebhookEvent struct {
 	HangupCause   string
 	HangupSource  string
 	SIPCause      string
-	AMDResult     string
 	StreamID      string
 	FailureReason string
 }
@@ -63,7 +61,6 @@ type webhookPayload struct {
 	HangupCause    string `json:"hangup_cause"`
 	HangupSource   string `json:"hangup_source"`
 	SIPHangupCause string `json:"sip_hangup_cause"`
-	Result         string `json:"result"`
 	StreamID       string `json:"stream_id"`
 	FailureReason  string `json:"failure_reason"`
 }
@@ -72,8 +69,7 @@ var ErrInvalidWebhook = errors.New("telnyx: invalid webhook")
 
 var knownEvents = map[string]bool{
 	EventCallInitiated: true, EventCallAnswered: true, EventCallHangup: true,
-	EventMachineDetection: true, EventStreamingStarted: true,
-	EventStreamingStopped: true, EventStreamingFailed: true,
+	EventStreamingStarted: true, EventStreamingStopped: true, EventStreamingFailed: true,
 }
 
 // ParseWebhook decodes an already signature-verified webhook body.
@@ -111,7 +107,7 @@ func ParseWebhook(raw []byte) (WebhookEvent, error) {
 	if len(d.Payload) == 0 || json.Unmarshal(d.Payload, &p) != nil {
 		return WebhookEvent{}, fmt.Errorf("%w: payload", ErrInvalidWebhook)
 	}
-	if p.CallControlID == "" && ev.Type != EventMachineDetection {
+	if p.CallControlID == "" {
 		return WebhookEvent{}, fmt.Errorf("%w: missing call_control_id", ErrInvalidWebhook)
 	}
 	if p.CallLegID == "" && p.CallControlID == "" {
@@ -123,7 +119,6 @@ func ParseWebhook(raw []byte) (WebhookEvent, error) {
 	ev.ClientState = p.ClientState
 	ev.From, ev.To = p.From, p.To
 	ev.HangupCause, ev.HangupSource, ev.SIPCause = p.HangupCause, p.HangupSource, p.SIPHangupCause
-	ev.AMDResult = p.Result
 	ev.StreamID, ev.FailureReason = p.StreamID, p.FailureReason
 	return ev, nil
 }

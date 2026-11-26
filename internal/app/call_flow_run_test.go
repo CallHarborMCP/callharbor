@@ -86,6 +86,14 @@ func TestCallFlowEndToEnd(t *testing.T) {
 			const agentChunk = "QUFBQUFBQUFBQQ=="
 			ai.sendAgentAudio(t, agentChunk)
 			assertStreamMediaPayload(t, mediaConn, agentChunk)
+
+			// Telephony-only boundary (#114): every dial body must stay within the
+			// telephony allowlist with no add-on keys. Unexpected Telnyx requests
+			// are failed by the fake's cleanup.
+			assertDialBodiesTelephonyOnly(t, tel.dialBodies())
+			if ai.sawTranscriptionRequest() {
+				t.Error("provider session setup requested billed transcription (#114 forbids it)")
+			}
 		})
 	}
 }

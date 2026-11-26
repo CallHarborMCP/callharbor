@@ -93,7 +93,6 @@ func validDial() DialParams {
 		ClientState:  []byte(`{"call":"7f3a"}`),
 		TimeoutSecs:  30,
 		TimeLimit:    1800,
-		AMD:          "detect",
 	}
 }
 
@@ -159,7 +158,6 @@ func TestBuildDialRequestRejectsInvalid(t *testing.T) {
 		"pcmu 16k":          func(p *DialParams) { p.Codec = audio.Format{Encoding: audio.PCMU, SampleRate: 16000} },
 		"no command id":     func(p *DialParams) { p.CommandID = "" },
 		"time limit":        func(p *DialParams) { p.TimeLimit = 10 },
-		"amd":               func(p *DialParams) { p.AMD = "maybe" },
 		"auth token size":   func(p *DialParams) { p.StreamAuthToken = strings.Repeat("a", 4001) },
 	}
 	for name, mut := range cases {
@@ -202,11 +200,6 @@ func TestOfficialWebhookExamplesValidateAndParse(t *testing.T) {
 				t.Errorf("hangup fields %+v", ev)
 			}
 		}},
-		"callMachineDetectionEnded": {"CallMachineDetectionEndedEvent", EventMachineDetection, func(t *testing.T, ev WebhookEvent) {
-			if ev.AMDResult != "human" {
-				t.Errorf("amd result %q", ev.AMDResult)
-			}
-		}},
 		"callStreamingStarted": {"CallStreamingStartedEvent", EventStreamingStarted, nil},
 		"callStreamingStopped": {"CallStreamingStoppedEvent", EventStreamingStopped, nil},
 		"callStreamingFailed": {"CallStreamingFailedEvent", EventStreamingFailed, func(t *testing.T, ev WebhookEvent) {
@@ -231,13 +224,33 @@ func TestOfficialWebhookExamplesValidateAndParse(t *testing.T) {
 			if ev.Type != tc.typ || !ev.Known || ev.ID == "" || ev.OccurredAt.IsZero() {
 				t.Fatalf("parsed %+v", ev)
 			}
-			if ev.Type != EventMachineDetection && ev.CallControlID == "" {
+			if ev.CallControlID == "" {
 				t.Fatal("missing call_control_id")
 			}
 			if tc.check != nil {
 				tc.check(t, ev)
 			}
 		})
+	}
+}
+
+// The official call.machine.detection.ended example still matches the pinned
+// schema (the upstream reference is unchanged), but CallHarbor no longer
+// consumes it: it parses as unknown and never drives state.
+func TestMachineDetectionWebhookIsUnknownAfterTelephonyOnly(t *testing.T) {
+	b := loadWebhook(t, "callMachineDetectionEnded")
+	if err := compileSchema(t, "/components/schemas/CallMachineDetectionEndedEvent").Validate(instance(t, b)); err != nil {
+		t.Fatalf("official example does not match official schema: %v", err)
+	}
+	ev, err := ParseWebhook(b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ev.Known || ev.Type != "call.machine.detection.ended" {
+		t.Fatalf("parsed %+v, want unknown call.machine.detection.ended", ev)
+	}
+	if _, ok := ev.Signal(); ok {
+		t.Fatal("machine detection webhook mapped to a state signal")
 	}
 }
 
