@@ -71,7 +71,7 @@ func fixtureStore() *fakeStore {
 // verifier in place of the OAuth verifier.
 func testServer(t *testing.T, store *fakeStore, logger *slog.Logger, tokens testTokens) *httptest.Server {
 	t.Helper()
-	h := New(service.New(store), "test", logger)
+	h := New(service.New(store).WithTranscripts(store), "test", logger)
 	ts := httptest.NewServer(auth.RequireBearerToken(tokens.verifier(), nil)(h))
 	t.Cleanup(ts.Close)
 	return ts

@@ -15,10 +15,15 @@ import (
 
 // SourceRef ties an outbound chunk to the voice-provider output it came from.
 type SourceRef struct {
-	// ItemID is the provider output identifier (Realtime item_id, or a
-	// locally assigned utterance id for protocols without one).
+	// ItemID is the provider output identifier (Realtime item_id). It is empty
+	// for protocols without one (GPT-Live).
 	ItemID       string
 	ContentIndex int
+	// Utterance is a locally assigned agent utterance number for audio without
+	// an ItemID, so playout can be accounted per utterance. It is zero when
+	// ItemID is set. It never takes part in barge-in gating, which is decided
+	// by ItemID alone.
+	Utterance uint64
 }
 
 // MarkOutcome classifies an echoed mark.

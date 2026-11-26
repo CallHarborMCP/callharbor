@@ -36,6 +36,15 @@ type AudioBridge struct {
 	mu       sync.Mutex
 	lastItem audio.SourceRef
 	hasItem  bool
+	// utterance numbers agent audio that carries no provider item ID
+	// (GPT-Live). It starts at 1 and advances on every caller speech end edge,
+	// so the reply to each caller turn is accounted as its own utterance.
+	utterance uint64
+
+	// OnCut, when set, receives every cut that was performed, with the caller
+	// turn that caused it (zero for a provider speech-start barge-in). It runs
+	// on the goroutine that cut and must not block. Set it before the run.
+	OnCut func(c telnyx.Cut, callerTurn uint64)
 }
 
 var (
@@ -59,6 +68,8 @@ func NewAudioBridge(sink *telnyx.BridgeSink) (*AudioBridge, error) {
 		caller: make(chan []byte, callerQueue),
 		speech: make(chan voice.SpeechEvent, speechQueue),
 		done:   make(chan struct{}),
+
+		utterance: 1,
 	}
 	sink.ToProvider = b.enqueueCaller
 	sink.OnCallerSpeech = b.enqueueSpeech
@@ -71,6 +82,13 @@ func NewAudioBridge(sink *telnyx.BridgeSink) (*AudioBridge, error) {
 // accounting. An end edge is never dropped: the engine's turn state depends on
 // it, so a lost end would leave the caller's turn open.
 func (b *AudioBridge) enqueueSpeech(ev telnyx.SpeechEvent) {
+	if !ev.Started {
+		// The caller's turn ended: anonymous agent audio from here on is the
+		// next utterance. This runs on the media path, before the reply arrives.
+		b.mu.Lock()
+		b.utterance++
+		b.mu.Unlock()
+	}
 	out := voice.SpeechEvent{Started: ev.Started, At: ev.At, Turn: ev.Turn, Audible: ev.Audible}
 	for {
 		select {
@@ -136,6 +154,7 @@ func (b *AudioBridge) Interrupt(ctx context.Context) (voice.Cut, error) {
 	if err != nil {
 		return voice.Cut{}, err
 	}
+	b.observeCut(c, 0)
 	return voice.Cut{ItemID: c.ItemID, ContentIndex: c.ContentIndex, Played: c.Played, Sent: c.Sent, Audible: c.Audible}, nil
 }
 
@@ -146,7 +165,37 @@ func (b *AudioBridge) InterruptTurn(ctx context.Context, turn uint64) (voice.Cut
 	if err != nil || !ok {
 		return voice.Cut{}, ok, err
 	}
+	b.observeCut(c, turn)
 	return voice.Cut{ItemID: c.ItemID, ContentIndex: c.ContentIndex, Played: c.Played, Sent: c.Sent, Audible: c.Audible}, true, nil
+}
+
+func (b *AudioBridge) observeCut(c telnyx.Cut, turn uint64) {
+	if b.OnCut != nil {
+		b.OnCut(c, turn)
+	}
+}
+
+// Utterance returns the current local utterance number for agent audio that
+// carries no provider item ID.
+func (b *AudioBridge) Utterance() uint64 {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.utterance
+}
+
+// Playout returns the playout accounting of one agent audio source. It is safe
+// to call from any goroutine.
+func (b *AudioBridge) Playout(src audio.SourceRef) (audio.ItemPlayout, bool) {
+	return b.sink.Playout(src)
+}
+
+// SourceOf returns the playout source of an agent event: the provider item
+// when it has one, otherwise the current local utterance.
+func (b *AudioBridge) SourceOf(ev realtime.Event) audio.SourceRef {
+	if ev.ItemID != "" {
+		return audio.SourceRef{ItemID: ev.ItemID, ContentIndex: ev.ContentIndex}
+	}
+	return audio.SourceRef{Utterance: b.Utterance()}
 }
 
 // CallerSpeech returns the bounded channel of caller speech edges.
@@ -171,12 +220,13 @@ func (b *AudioBridge) currentItem() audio.SourceRef {
 	return b.lastItem
 }
 
-// EventSink returns a voice.EventSink that tracks the provider item of each
-// audio event and forwards every event to next when it is non-nil.
+// EventSink returns a voice.EventSink that tracks the source of each audio
+// event and forwards every event to next when it is non-nil. Audio without a
+// provider item ID is tagged with the current local utterance.
 func (b *AudioBridge) EventSink(next voice.EventSink) voice.EventSink {
 	return func(ev realtime.Event) {
 		if ev.Kind == realtime.EventAudio {
-			b.Item(audio.SourceRef{ItemID: ev.ItemID, ContentIndex: ev.ContentIndex})
+			b.Item(b.SourceOf(ev))
 		}
 		if next != nil {
 			next(ev)

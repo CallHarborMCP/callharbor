@@ -240,9 +240,9 @@
     },
     {
       "name": "get_transcript",
-      "status": "planned",
+      "status": "implemented",
       "scope": "mcp:read",
-      "description": "Planned. Not registered. Calling it returns an unknown-tool error.",
+      "description": "Return one page of a call transcript owned by the caller, in seq order, up to 100 turns per page. Each turn carries its speaker, finality, timing, fidelity and provenance; unknown provenance is null. quality_flags lists the call's summary flags plus transcript_in_progress while the media run is open and no_media_session when the call never reached one. Pass next_cursor back as cursor for the next page. Foreign or missing calls return not_found.",
       "inputSchema": {
         "type": "object",
         "required": ["call_id"],
@@ -254,7 +254,7 @@
       },
       "outputSchema": {
         "type": "object",
-        "required": ["call_id", "turns", "quality_flags", "next_cursor"],
+        "required": ["call_id", "turns", "quality_flags", "finalized", "next_cursor"],
         "additionalProperties": false,
         "properties": {
           "call_id": { "type": "string" },
@@ -262,22 +262,34 @@
             "type": "array",
             "items": {
               "type": "object",
-              "required": ["seq", "speaker", "finality", "started_ms", "ended_ms", "text"],
+              "required": ["seq", "revision", "speaker", "finality", "started_ms", "ended_ms", "text", "fidelity", "timing_source", "source_ids", "correlation_id", "provider_item_id", "generated_ms", "played_ms", "played_is_estimate", "quality_flags"],
               "additionalProperties": false,
               "properties": {
-                "seq": { "type": "integer" },
+                "seq": { "type": "integer", "minimum": 1 },
+                "revision": { "type": "integer", "minimum": 1 },
                 "speaker": { "type": "string", "enum": ["assistant", "callee", "system"] },
                 "finality": { "type": "string", "enum": ["partial", "final"] },
                 "started_ms": { "type": "integer", "minimum": 0 },
-                "ended_ms": { "type": ["integer", "null"] },
-                "text": { "type": "string" }
+                "ended_ms": { "type": ["integer", "null"], "minimum": 0 },
+                "text": { "type": "string" },
+                "fidelity": { "type": "string", "enum": ["played", "interrupted_text_includes_unplayed", "playout_unconfirmed", "not_played", "provider_asr_approximate", "unavailable"] },
+                "timing_source": { "type": "string", "enum": ["provider", "local_receive"] },
+                "source_ids": { "type": "array", "items": { "type": "string" } },
+                "correlation_id": { "type": ["string", "null"], "maxLength": 128 },
+                "provider_item_id": { "type": ["string", "null"] },
+                "generated_ms": { "type": ["integer", "null"], "minimum": 0 },
+                "played_ms": { "type": ["integer", "null"], "minimum": 0 },
+                "played_is_estimate": { "type": "boolean" },
+                "quality_flags": { "type": "array", "items": { "type": "string" } }
               }
             }
           },
           "quality_flags": { "type": "array", "items": { "type": "string" } },
+          "finalized": { "type": "boolean" },
           "next_cursor": { "type": "string" }
         }
-      }
+      },
+      "readOnly": true
     },
     {
       "name": "get_recording",

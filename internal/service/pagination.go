@@ -66,24 +66,9 @@ func decodeCursor(token string) (*storage.CallCursor, error) {
 	if token == "" {
 		return nil, nil
 	}
-	if len(token) > MaxCursorLength {
-		return nil, invalidInput("cursor exceeds %d bytes", MaxCursorLength)
-	}
-	raw, err := base64.RawURLEncoding.DecodeString(token)
-	if err != nil {
-		return nil, invalidInput("cursor is malformed")
-	}
-	dec := json.NewDecoder(bytes.NewReader(raw))
-	dec.DisallowUnknownFields()
 	var p cursorPayload
-	if err := dec.Decode(&p); err != nil {
-		return nil, invalidInput("cursor is malformed")
-	}
-	if dec.More() {
-		return nil, invalidInput("cursor is malformed")
-	}
-	if _, err := dec.Token(); err == nil {
-		return nil, invalidInput("cursor is malformed")
+	if err := decodeOpaque(token, &p); err != nil {
+		return nil, err
 	}
 	if p.V != cursorV1 || p.I == "" || len(p.I) > MaxIDLength {
 		return nil, invalidInput("cursor is malformed")
@@ -94,4 +79,29 @@ func decodeCursor(token string) (*storage.CallCursor, error) {
 	}
 	stored := ts.UTC().Format(storageTimeLayout)
 	return &storage.CallCursor{CreatedAt: stored, ID: p.I}, nil
+}
+
+// decodeOpaque base64url-decodes an opaque cursor token into dst. It accepts
+// exactly one JSON object with no unknown fields, so a tampered, truncated or
+// foreign token is invalid input. Every cursor type shares this strictness.
+func decodeOpaque(token string, dst any) error {
+	if len(token) > MaxCursorLength {
+		return invalidInput("cursor exceeds %d bytes", MaxCursorLength)
+	}
+	raw, err := base64.RawURLEncoding.DecodeString(token)
+	if err != nil {
+		return invalidInput("cursor is malformed")
+	}
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(dst); err != nil {
+		return invalidInput("cursor is malformed")
+	}
+	if dec.More() {
+		return invalidInput("cursor is malformed")
+	}
+	if _, err := dec.Token(); err == nil {
+		return invalidInput("cursor is malformed")
+	}
+	return nil
 }

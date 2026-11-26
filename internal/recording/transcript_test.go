@@ -20,6 +20,7 @@ func TestAgentEntryFidelity(t *testing.T) {
 		{"cut before audible", audio.ItemPlayout{Sent: 800 * ms, Discarded: 800 * ms, Interrupted: true}, FidelityNotPlayed},
 		{"unconfirmed", audio.ItemPlayout{Sent: 800 * ms, Confirmed: 600 * ms, Unconfirmed: 200 * ms}, FidelityUnconfirmed},
 		{"still pending", audio.ItemPlayout{Sent: 800 * ms, Confirmed: 600 * ms}, FidelityUnconfirmed},
+		{"no audio sent", audio.ItemPlayout{}, FidelityNotPlayed},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

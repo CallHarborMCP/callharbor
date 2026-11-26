@@ -208,9 +208,12 @@ type SpeechEvent struct {
 type Cut struct {
 	ItemID       string
 	ContentIndex int
-	Played       time.Duration
-	Sent         time.Duration
-	Audible      bool
+	// Source is the full source of the last chunk sent before the cut,
+	// including a local utterance number. It is zero when nothing was sent.
+	Source  audio.SourceRef
+	Played  time.Duration
+	Sent    time.Duration
+	Audible bool
 }
 
 // NewBridgeSink binds a bridge to a Telnyx stream.
@@ -409,7 +412,7 @@ func (s *BridgeSink) InterruptTurn(ctx context.Context, turn uint64) (Cut, bool,
 func (s *BridgeSink) cutLocked() Cut {
 	var cut Cut
 	if s.hasLast {
-		cut.ItemID, cut.ContentIndex = s.last.ItemID, s.last.ContentIndex
+		cut.ItemID, cut.ContentIndex, cut.Source = s.last.ItemID, s.last.ContentIndex, s.last
 		if s.last.ItemID != "" {
 			s.cut[s.last.ItemID] = true
 		}
@@ -432,6 +435,14 @@ func (s *BridgeSink) PlayoutEnd() time.Time {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.bridge.PlayoutEnd()
+}
+
+// Playout returns the playout accounting for one source. It takes the sink
+// lock, so it is safe to call from any goroutine while the stream runs.
+func (s *BridgeSink) Playout(src audio.SourceRef) (audio.ItemPlayout, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.bridge.Item(src)
 }
 
 // ReopenTurn opens the anonymous turn after the caller has finished speaking,

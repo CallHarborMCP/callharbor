@@ -19,6 +19,10 @@ type fakeStore struct {
 	ai        []storage.AIProfile
 	calls     []storage.Call
 
+	turns   map[string][]storage.TranscriptTurn  // by call id
+	summary map[string]storage.TranscriptSummary // by call id
+	audits  []storage.AuditEvent
+
 	telErr  error
 	aiErr   error
 	listErr error
@@ -94,6 +98,51 @@ func (f *fakeStore) GetCall(_ context.Context, owner, id string) (storage.Call, 
 		}
 	}
 	return storage.Call{}, storage.ErrCallNotFound
+}
+
+// ListTranscriptTurns returns no turns unless owner owns the call, the same as
+// the storage layer.
+func (f *fakeStore) ListTranscriptTurns(_ context.Context, owner, callID string, afterSeq, limit int) ([]storage.TranscriptTurn, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if !f.ownsCall(owner, callID) {
+		return []storage.TranscriptTurn{}, nil
+	}
+	var out []storage.TranscriptTurn
+	for _, t := range f.turns[callID] {
+		if t.Seq > afterSeq && len(out) < limit {
+			out = append(out, t)
+		}
+	}
+	return out, nil
+}
+
+// GetTranscriptSummary returns the empty summary unless owner owns the call.
+func (f *fakeStore) GetTranscriptSummary(_ context.Context, owner, callID string) (storage.TranscriptSummary, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if !f.ownsCall(owner, callID) {
+		return storage.TranscriptSummary{QualityFlags: []string{}}, nil
+	}
+	return f.summary[callID], nil
+}
+
+// InsertAudit records the event so tests can check what was audited.
+func (f *fakeStore) InsertAudit(_ context.Context, e storage.AuditEvent) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.audits = append(f.audits, e)
+	return nil
+}
+
+// ownsCall reports whether owner holds the call. Callers hold f.mu.
+func (f *fakeStore) ownsCall(owner, callID string) bool {
+	for _, c := range f.calls {
+		if c.ID == callID && c.OwnerUserID == owner {
+			return true
+		}
+	}
+	return false
 }
 
 // sortCalls orders newest first by (created_at, id), matching the keyset.

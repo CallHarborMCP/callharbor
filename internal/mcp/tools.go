@@ -17,10 +17,11 @@ import (
 // operations are documented in api/mcp/tools.json with status "planned" and
 // are never registered, so a call to them fails as an unknown tool.
 const (
-	ToolGetProfiles = "get_profiles"
-	ToolListCalls   = "list_calls"
-	ToolGetCall     = "get_call"
-	ToolMakeCall    = "make_call"
+	ToolGetProfiles   = "get_profiles"
+	ToolListCalls     = "list_calls"
+	ToolGetCall       = "get_call"
+	ToolGetTranscript = "get_transcript"
+	ToolMakeCall      = "make_call"
 )
 
 // GetProfilesInput takes no arguments.
@@ -62,6 +63,12 @@ type MakeCallInput struct {
 // GetCallInput names one call.
 type GetCallInput struct {
 	CallID string `json:"call_id"`
+}
+
+// GetTranscriptInput names one call and an optional page cursor.
+type GetTranscriptInput struct {
+	CallID string `json:"call_id"`
+	Cursor string `json:"cursor,omitempty"`
 }
 
 // ListCallsOutput is one page of calls.
@@ -169,6 +176,24 @@ func registerTools(srv *mcp.Server, svc *service.Service, logger *slog.Logger) {
 		res, err := svc.GetCall(ctx, actor, in.CallID)
 		if err != nil {
 			return nil, service.CallView{}, toolFailure(logger, err)
+		}
+		return nil, res, nil
+	})
+
+	addTool(srv, &mcp.Tool{
+		Name:         ToolGetTranscript,
+		Description:  "Return one page of a call transcript owned by the caller, in seq order, up to 100 turns per page. Each turn carries its speaker, finality, timing, fidelity and provenance; unknown provenance is null. quality_flags lists the call's summary flags plus transcript_in_progress while the media run is open and no_media_session when the call never reached one. Pass next_cursor back as cursor for the next page. Foreign or missing calls return not_found.",
+		Annotations:  &mcp.ToolAnnotations{ReadOnlyHint: true},
+		InputSchema:  inputOf(ToolGetTranscript),
+		OutputSchema: outputOf(ToolGetTranscript),
+	}, func(ctx context.Context, req *mcp.CallToolRequest, in GetTranscriptInput) (*mcp.CallToolResult, service.TranscriptPage, error) {
+		actor, err := actorFromRequest(req)
+		if err != nil {
+			return nil, service.TranscriptPage{}, toolFailure(logger, err)
+		}
+		res, err := svc.GetTranscript(ctx, actor, service.GetTranscriptInput{CallID: in.CallID, Cursor: in.Cursor})
+		if err != nil {
+			return nil, service.TranscriptPage{}, toolFailure(logger, err)
 		}
 		return nil, res, nil
 	})

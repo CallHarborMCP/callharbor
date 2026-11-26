@@ -69,6 +69,9 @@ func AgentEntry(text string, sourceIDs []string, p audio.ItemPlayout) (Entry, er
 	}
 	e := Entry{Speaker: SpeakerAgent, Text: text, SourceIDs: sourceIDs, Generated: p.Sent}
 	switch {
+	case p.Sent == 0:
+		// No audio for this text reached the leg, so none of it was heard.
+		e.Fidelity = FidelityNotPlayed
 	case p.Interrupted:
 		e.Played, e.PlayedIsEstimate = p.Estimated, true
 		if p.Estimated == 0 {

@@ -271,6 +271,24 @@ func (f *fakeAI) handle(ctx context.Context, c *websocket.Conn, m map[string]any
 	}
 }
 
+// sendRaw pushes one provider server message down the open session.
+func (f *fakeAI) sendRaw(t *testing.T, msg map[string]any) {
+	t.Helper()
+	f.mu.Lock()
+	c := f.live
+	f.mu.Unlock()
+	if c == nil {
+		t.Fatal("no provider session open")
+	}
+	b, err := json.Marshal(msg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := c.Write(context.Background(), websocket.MessageText, b); err != nil {
+		t.Fatalf("send provider event: %v", err)
+	}
+}
+
 // sendAgentAudio pushes one agent audio chunk down the open session, in the
 // active protocol's output-audio event. The chunk is base64 PCMU.
 func (f *fakeAI) sendAgentAudio(t *testing.T, payload string) {

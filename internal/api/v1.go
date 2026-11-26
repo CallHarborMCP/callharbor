@@ -32,6 +32,7 @@ var Routes = []Route{
 	{Method: http.MethodGet, Path: "/api/v1/calls"},
 	{Method: http.MethodPost, Path: "/api/v1/calls"},
 	{Method: http.MethodGet, Path: "/api/v1/calls/{call_id}"},
+	{Method: http.MethodGet, Path: "/api/v1/calls/{call_id}/transcript"},
 	{Method: http.MethodGet, Path: "/api/v1/telephony-profiles"},
 	{Method: http.MethodPost, Path: "/api/v1/telephony-profiles"},
 	{Method: http.MethodGet, Path: "/api/v1/telephony-profiles/{profile_id}"},
@@ -48,7 +49,6 @@ var Routes = []Route{
 // one returns 404 from the mux. Routes holds only available paths; the two
 // lists are disjoint, and the tests enforce that.
 var PlannedRoutes = []Route{
-	{Method: http.MethodGet, Path: "/api/v1/calls/{call_id}/transcript"},
 	{Method: http.MethodGet, Path: "/api/v1/calls/{call_id}/recording"},
 	{Method: http.MethodGet, Path: "/api/v1/calls/{call_id}/recording/audio"},
 	{Method: http.MethodPost, Path: "/api/v1/calls/{call_id}/hangup"},
@@ -80,10 +80,11 @@ func NewHandler(auth *identity.Handler, svc *service.Service, tel *telephonyprof
 // source. They grant nothing: each one is the same 404 an unknown call gets.
 func (h *Handler) Register(mux *http.ServeMux) {
 	handlers := map[string]http.HandlerFunc{
-		"GET /api/v1/profiles":        h.getProfiles,
-		"GET /api/v1/calls":           h.listCalls,
-		"POST /api/v1/calls":          h.createCall,
-		"GET /api/v1/calls/{call_id}": h.getCall,
+		"GET /api/v1/profiles":                   h.getProfiles,
+		"GET /api/v1/calls":                      h.listCalls,
+		"POST /api/v1/calls":                     h.createCall,
+		"GET /api/v1/calls/{call_id}":            h.getCall,
+		"GET /api/v1/calls/{call_id}/transcript": h.getCallTranscript,
 
 		"GET /api/v1/telephony-profiles":                                  h.listTelephonyProfiles,
 		"POST /api/v1/telephony-profiles":                                 h.createTelephonyProfile,
@@ -186,6 +187,23 @@ func (h *Handler) getCall(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	res, err := h.svc.GetCall(r.Context(), actor, r.PathValue("call_id"))
+	if err != nil {
+		h.fail(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, res)
+}
+
+// getCallTranscript serves one page of a call's transcript. The cursor is
+// opaque and bounded by the service, which rejects an oversized or malformed
+// token as invalid_input before it reads the store.
+func (h *Handler) getCallTranscript(w http.ResponseWriter, r *http.Request) {
+	actor, ok := h.actor(w, r)
+	if !ok {
+		return
+	}
+	in := service.GetTranscriptInput{CallID: r.PathValue("call_id"), Cursor: r.URL.Query().Get("cursor")}
+	res, err := h.svc.GetTranscript(r.Context(), actor, in)
 	if err != nil {
 		h.fail(w, err)
 		return

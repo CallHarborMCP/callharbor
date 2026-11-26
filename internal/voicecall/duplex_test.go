@@ -1020,36 +1020,44 @@ func TestDuplexLivePathBargeIn(t *testing.T) {
 		t.Fatalf("played %d bytes, want exact 100ms turn0 prefix + turn1 + turn2 (%d bytes)", len(got), len(want))
 	}
 
-	// Ledger classification. Live has no item ID, so every chunk shares one
-	// anonymous item. Confirmed is exact: 100 ms of turn0 plus turn1 and turn2
-	// (500 ms, 4000 bytes at 8000 B/s), matching the played byte stream above.
-	// Sent is the 800 ms of scripted reply audio, plus any stale cut-reply chunk
-	// that reached the bridge before the cut landed. That race is real on this
-	// path: a stale chunk sent before the clear is queued, then discarded by it.
-	// So Sent is bounded, not exact, and the ledger must still close: everything
-	// sent is either estimated as played or discarded.
+	// Ledger classification. Live has no item ID, so each reply is accounted
+	// under the local utterance number the bridge assigned when the caller's
+	// turn ended: turn0 is utterance 2 (after the opening turn), turn1 is 3
+	// (after the barge-in turn) and turn2 is 4. Confirmed is exact: 100 ms of
+	// turn0, then all of turn1 and turn2, matching the played byte stream above.
+	// turn0's Sent is its 400 ms of scripted audio, plus any stale cut-reply
+	// chunk that reached the bridge before the cut landed. That race is real on
+	// this path: a stale chunk sent before the clear is queued, then discarded
+	// by it. So Sent is bounded, not exact, and the ledger must still close:
+	// everything sent is either estimated as played or discarded.
 	dxSync(t, s, ctx, h, &seq)
-	if items := h.bridge.Items(); len(items) != 1 {
-		t.Fatalf("ledger has %d item(s), want one anonymous item", len(items))
+	if items := h.bridge.Items(); len(items) != 3 {
+		t.Fatalf("ledger has %d item(s), want one per reply utterance", len(items))
 	}
 	if n := h.bridge.Pending(); n != 0 {
 		t.Fatalf("%d playout mark(s) were never classified", n)
 	}
-	it, ok := h.bridge.Item(audio.SourceRef{})
+	it, ok := h.bridge.Item(audio.SourceRef{Utterance: 2})
 	if !ok {
-		t.Fatal("ledger has no anonymous item")
+		t.Fatal("ledger has no entry for the interrupted utterance")
 	}
-	if it.Confirmed != dxDur(500) || it.Estimated != dxDur(500) {
-		t.Fatalf("confirmed %v estimated %v, want exactly 500ms", it.Confirmed, it.Estimated)
+	if it.Confirmed != dxDur(100) || it.Estimated != dxDur(100) {
+		t.Fatalf("interrupted utterance confirmed %v estimated %v, want exactly 100ms", it.Confirmed, it.Estimated)
 	}
-	if it.Sent < dxDur(800) || it.Sent > dxDur(860) {
-		t.Fatalf("sent %v, want 800ms of scripted reply plus at most the 60ms stale window", it.Sent)
+	if it.Sent < dxDur(400) || it.Sent > dxDur(460) {
+		t.Fatalf("sent %v, want 400ms of scripted reply plus at most the 60ms stale window", it.Sent)
 	}
 	if it.Estimated+it.Discarded != it.Sent {
 		t.Fatalf("ledger does not close: estimated %v + discarded %v != sent %v", it.Estimated, it.Discarded, it.Sent)
 	}
 	if !it.Interrupted {
-		t.Fatal("the barge-in cut was not recorded on the anonymous item")
+		t.Fatal("the barge-in cut was not recorded on the interrupted utterance")
+	}
+	for _, u := range []uint64{3, 4} {
+		got, ok := h.bridge.Item(audio.SourceRef{Utterance: u})
+		if !ok || got.Interrupted || got.Sent != dxDur(200) || got.Confirmed != dxDur(200) {
+			t.Fatalf("utterance %d = %+v (present %v), want 200ms sent and confirmed, not interrupted", u, got, ok)
+		}
 	}
 	if n := len(pl.Played()); n != 4000 {
 		t.Fatalf("played %d bytes, want 4000 (500 ms at 8000 B/s, the ledger's confirmed duration)", n)

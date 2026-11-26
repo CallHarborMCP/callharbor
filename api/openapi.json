@@ -209,9 +209,8 @@
     "/api/v1/calls/{call_id}/transcript": {
       "get": {
         "operationId": "getCallTranscript",
-        "summary": "Get a call transcript (planned)",
-        "description": "Planned. Not mounted yet: the operation is not implemented. Requests return 404, or 405 when the path is mounted for another method. Returns timed speaker turns and quality flags. Only the caller's own calls.",
-        "x-callharbor-availability": "planned",
+        "summary": "Get one page of a call transcript owned by the caller",
+        "description": "Returns the latest revision of each turn, in seq order, up to 100 turns per page. Each turn carries its speaker, finality, timing, fidelity and provenance; unknown provenance is null. quality_flags lists the summary flags of the call's media run, plus transcript_in_progress while the run is open and no_media_session when the call never reached a media run. finalized is true once the run has ended. Pass next_cursor back as cursor for the next page; it is empty on the last page. A call owned by another user is reported as not_found, the same as a missing call. Each read is recorded in the audit log as transcript.read.",
         "security": [
           {
             "sessionCookie": []
@@ -1221,20 +1220,56 @@
           "final"
         ]
       },
+      "Fidelity": {
+        "type": "string",
+        "description": "How far the text matches what was heard and played. played: the caller heard it as written. interrupted_text_includes_unplayed: the text includes audio that was generated but cut off before it played. playout_unconfirmed: playout could not be confirmed. not_played: generated but never played. provider_asr_approximate: text from provider recognition, not an exact record. unavailable: no provenance was recorded.",
+        "enum": [
+          "played",
+          "interrupted_text_includes_unplayed",
+          "playout_unconfirmed",
+          "not_played",
+          "provider_asr_approximate",
+          "unavailable"
+        ]
+      },
+      "TimingSource": {
+        "type": "string",
+        "description": "provider: the timeline of the voice provider's session. local_receive: when CallHarbor received the event, relative to the media start.",
+        "enum": [
+          "provider",
+          "local_receive"
+        ]
+      },
       "TranscriptTurn": {
         "type": "object",
         "required": [
           "seq",
+          "revision",
           "speaker",
           "finality",
           "started_ms",
           "ended_ms",
-          "text"
+          "text",
+          "fidelity",
+          "timing_source",
+          "source_ids",
+          "correlation_id",
+          "provider_item_id",
+          "generated_ms",
+          "played_ms",
+          "played_is_estimate",
+          "quality_flags"
         ],
         "additionalProperties": false,
         "properties": {
           "seq": {
-            "type": "integer"
+            "type": "integer",
+            "minimum": 1
+          },
+          "revision": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "The revision of this turn that is shown. A later revision replaces an earlier one; it never edits it."
           },
           "speaker": {
             "$ref": "#/components/schemas/Speaker"
@@ -1250,10 +1285,59 @@
             "type": [
               "integer",
               "null"
-            ]
+            ],
+            "minimum": 0
           },
           "text": {
             "type": "string"
+          },
+          "fidelity": {
+            "$ref": "#/components/schemas/Fidelity"
+          },
+          "timing_source": {
+            "$ref": "#/components/schemas/TimingSource"
+          },
+          "source_ids": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "correlation_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "maxLength": 128
+          },
+          "provider_item_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "generated_ms": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "minimum": 0
+          },
+          "played_ms": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "minimum": 0
+          },
+          "played_is_estimate": {
+            "type": "boolean"
+          },
+          "quality_flags": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
           }
         }
       },
@@ -1263,6 +1347,7 @@
           "call_id",
           "turns",
           "quality_flags",
+          "finalized",
           "next_cursor"
         ],
         "additionalProperties": false,
@@ -1278,12 +1363,18 @@
           },
           "quality_flags": {
             "type": "array",
+            "description": "Deduplicated, sorted flags for the whole call. Flags are open-ended strings; clients must tolerate unknown values.",
             "items": {
               "type": "string"
             }
           },
+          "finalized": {
+            "type": "boolean",
+            "description": "True once the call's media run has ended and its transcript is final."
+          },
           "next_cursor": {
-            "type": "string"
+            "type": "string",
+            "description": "Opaque. Empty on the last page."
           }
         }
       },

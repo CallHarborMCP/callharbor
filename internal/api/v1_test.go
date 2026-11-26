@@ -82,7 +82,7 @@ func newFixture(t *testing.T) *fixture {
 	}
 
 	f.mux = http.NewServeMux()
-	NewHandler(idHandler, service.New(store), telSvc, nil).Register(f.mux)
+	NewHandler(idHandler, service.New(store).WithTranscripts(store), telSvc, nil).Register(f.mux)
 	return f
 }
 
