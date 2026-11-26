@@ -724,6 +724,55 @@ func TestPlayoutUpdateIsNotCorrection(t *testing.T) {
 	}
 }
 
+// A final turn whose playout changes after it was written gets a new revision on
+// the next periodic flush, before Close. Playout progress alone must not wait
+// for the call to end.
+func TestFinalTurnPlayoutChangePersistedOnPeriodicFlush(t *testing.T) {
+	h := newHarness(t, realtime.RealtimeCapabilities)
+	src := audio.SourceRef{ItemID: "item_a"}
+	h.rec.Observe(realtime.Event{Kind: realtime.EventAgentTranscriptDone, EventID: "ev_1", ItemID: "item_a", Text: "Done."})
+	h.setPlayout(src, played(800*ms))
+	if err := h.rec.flush(context.Background(), false); err != nil {
+		t.Fatal(err)
+	}
+	if n := len(h.store.revisionsOf(1)); n != 1 {
+		t.Fatalf("after first flush: %d revisions, want 1", n)
+	}
+	// Playout now reports that audio was interrupted: the turn stays final, but
+	// its playout evidence changed. No text changed and the call is still open.
+	h.setPlayout(src, audio.ItemPlayout{Sent: 800 * ms, Confirmed: 300 * ms, Estimated: 300 * ms, Discarded: 500 * ms, Interrupted: true})
+	if err := h.rec.flush(context.Background(), false); err != nil {
+		t.Fatal(err)
+	}
+	revs := h.store.revisionsOf(1)
+	if len(revs) != 2 {
+		t.Fatalf("after periodic flush with a playout change: %d revisions, want 2 (not held until Close)", len(revs))
+	}
+	if got := revs[1]; got.Text != "Done." || got.Fidelity != "interrupted_text_includes_unplayed" || hasFlag(got.Quality, FlagCorrected) {
+		t.Fatalf("playout revision = %+v", got)
+	}
+}
+
+// Past the per-call text budget, further text is dropped and flagged, while the
+// text already held stays. A long call has a bounded memory ceiling.
+func TestCallTextBudgetIsBounded(t *testing.T) {
+	h := newHarness(t, realtime.RealtimeCapabilities)
+	chunk := strings.Repeat("a", MaxTurnText)
+	// Each turn can hold MaxTurnText, so enough turns exceed the call budget.
+	turns := MaxCallText/MaxTurnText + 2
+	for i := range turns {
+		id := "item_" + strconv.Itoa(i)
+		h.rec.Observe(realtime.Event{Kind: realtime.EventAgentTranscriptDelta, EventID: "d_" + strconv.Itoa(i), ItemID: id, Text: chunk})
+	}
+	h.close(t)
+	if r := h.rec.callText; r > MaxCallText {
+		t.Fatalf("call text %d exceeds budget %d", r, MaxCallText)
+	}
+	if flags, _ := h.store.summary(t); !hasFlag(flags, FlagEventsDropped) {
+		t.Fatalf("flags %v, want %s once the text budget is reached", flags, FlagEventsDropped)
+	}
+}
+
 // A cut with no sent audio omits played_ms and sent_ms instead of writing 0.
 func TestCutWithoutAudioOmitsUnknownDurations(t *testing.T) {
 	h := newHarness(t, realtime.RealtimeCapabilities)

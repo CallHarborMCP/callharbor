@@ -283,3 +283,41 @@ func TestTranscriptColumnChecksRejectBadRows(t *testing.T) {
 		expectExecError(t, s, stmt)
 	}
 }
+
+// MaxTranscriptSeq is 0 for a call with no turns, the highest seq after
+// revisions, and is isolated from another owner's call with the same seq.
+func TestMaxTranscriptSeqIsPerOwnerAndCall(t *testing.T) {
+	ctx := context.Background()
+	s := openMigrated(t, filepath.Join(t.TempDir(), "maxseq.db"))
+	seedTenants(t, s)
+
+	if n, err := s.MaxTranscriptSeq(ctx, "alice", "alice-call"); err != nil || n != 0 {
+		t.Fatalf("empty call max seq = %d, %v; want 0, nil", n, err)
+	}
+	if err := s.RecordTranscript(ctx, "alice-call", "alice", []TranscriptRevision{txRevision(1, "one"), txRevision(3, "three")}, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.RecordTranscript(ctx, "alice-call", "alice", []TranscriptRevision{txRevision(3, "three again")}, nil); err != nil {
+		t.Fatal(err)
+	}
+	if n, err := s.MaxTranscriptSeq(ctx, "alice", "alice-call"); err != nil || n != 3 {
+		t.Fatalf("max seq after revisions = %d, %v; want 3, nil", n, err)
+	}
+	// Another owner's call with turns must not change alice's answer. Bob's
+	// turns carry a higher seq than alice's.
+	seedCallRow(t, s, "bob-call", "bob", "bob-tel", "bob-ai", "kb", testTime)
+	if err := s.RecordTranscript(ctx, "bob-call", "bob", []TranscriptRevision{txRevision(9, "bob")}, nil); err != nil {
+		t.Fatal(err)
+	}
+	if n, err := s.MaxTranscriptSeq(ctx, "alice", "alice-call"); err != nil || n != 3 {
+		t.Fatalf("alice max seq after bob's turns = %d, %v; want 3, nil", n, err)
+	}
+	// Bob asking about alice's call sees nothing of hers, and alice asking
+	// about bob's call sees nothing of his.
+	if n, err := s.MaxTranscriptSeq(ctx, "bob", "alice-call"); err != nil || n != 0 {
+		t.Fatalf("bob on alice's call = %d, %v; want 0, nil", n, err)
+	}
+	if n, err := s.MaxTranscriptSeq(ctx, "alice", "bob-call"); err != nil || n != 0 {
+		t.Fatalf("alice on bob's call = %d, %v; want 0, nil", n, err)
+	}
+}
