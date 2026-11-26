@@ -303,7 +303,13 @@ func (m *Media) attach(sess realtime.Session, st storage.MediaCall, leg, provide
 			// hangup, before the claim is released, so shutdown's wait covers
 			// the final transcript write while the store is open. No event or
 			// cut reaches the recorder once the run has returned.
-			defer func() { _ = rec.Close(context.Background()) }()
+			defer func() {
+				if err := rec.Close(context.Background()); err != nil && m.Logger != nil {
+					// Log without transcript content. The call's transcript
+					// stays unfinalized, which the service reports.
+					m.Logger.Error("transcript final write failed", "call_id", st.ID, "error", err.Error())
+				}
+			}()
 		}
 		opts := voice.Options{Caps: caps, SilenceTimeout: SilenceTimeout}
 		_, capped, runErr := Run(runCtx, sess, ab, sink, opts, time.Duration(st.MaxDurationSecs)*time.Second)

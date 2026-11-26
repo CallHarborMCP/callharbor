@@ -39,15 +39,33 @@ const (
 	FlagCorrected          = "corrected"
 	FlagUnexpectedCaller   = "unexpected_caller_transcription_ignored"
 	FlagTruncatedText      = "text_truncated"
+	// FlagPlayoutAttribution marks a Live agent turn: its utterance grouping
+	// and playout accounting are a local guess, not provider evidence.
+	FlagPlayoutAttribution = "playout_attribution_local"
+	// FlagPlayoutUpdated marks playout evidence that changed after the final
+	// text was written. The text itself did not change.
+	FlagPlayoutUpdated = "playout_updated"
+	// FlagProviderIDInvalid marks a provider identifier that was too long to
+	// store and was dropped.
+	FlagProviderIDInvalid = "provider_id_invalid"
 )
+
+// maxProviderID is the longest provider identifier stored. It matches the
+// correlation_id CHECK in the transcript and call event schema.
+const maxProviderID = 128
 
 // Bounds on what one call may hold in memory and in storage. Past a bound the
 // excess is dropped and flagged, never silently cut.
 const (
-	MaxTurns       = 2000
-	MaxTurnText    = 32 << 10
-	MaxFragments   = 4096
-	MaxEvents      = 4000
+	// MaxTurns is a per-call memory ceiling, far above a 7200 s call's turns.
+	MaxTurns    = 20000
+	MaxTurnText = 32 << 10
+	// MaxFragments bounds the fragments of one turn.
+	MaxFragments = 4096
+	// MaxEvents bounds events waiting to be written. Written events leave memory.
+	MaxEvents = 4000
+	// maxSeenEvents bounds the provider event ids kept for replay detection.
+	maxSeenEvents  = 8192
 	FlushInterval  = time.Second
 	CallerTurnGap  = 2 * time.Second
 	finalizeBudget = 10 * time.Second
@@ -56,6 +74,7 @@ const (
 // Store persists transcript revisions and call events.
 type Store interface {
 	RecordTranscript(ctx context.Context, callID, ownerUserID string, turns []storage.TranscriptRevision, events []storage.CallEvent) error
+	MaxTranscriptSeq(ctx context.Context, ownerUserID, callID string) (int, error)
 }
 
 // Config wires a Recorder to one call.
@@ -88,15 +107,17 @@ type turn struct {
 	corr    string
 	frags   []fragment
 	// done holds the provider's final text (Realtime transcript done).
-	done      *string
-	sources   []string
-	timed     bool
-	startMS   int64
-	endMS     int64
-	hasEnd    bool
-	flags     map[string]bool
-	dirty     bool
-	wroteFin  bool
+	done     *string
+	sources  []string
+	timed    bool
+	startMS  int64
+	endMS    int64
+	hasEnd   bool
+	flags    map[string]bool
+	dirty    bool
+	wroteFin bool
+	// finalText is the text of the last final revision written.
+	finalText string
 	unavail   bool
 	lastWrite string
 	textBytes int
@@ -108,15 +129,18 @@ type Recorder struct {
 	cfg   Config
 	start time.Time
 	live  bool
+	// seqBase is the highest seq already stored for the call before this run.
+	seqBase int
+	// nSeq counts the turns this run has created.
+	nSeq int
 
 	mu         sync.Mutex
 	turns      []*turn
 	agentBySrc map[audio.SourceRef]*turn
 	callerByID map[string]*turn
 	seenEvents map[string]bool
+	seenOrder  []string
 	events     []storage.CallEvent
-	nEvents    int
-	nFrags     int
 	flags      map[string]bool
 	lastCut    string
 
@@ -136,10 +160,17 @@ func New(cfg Config) (*Recorder, error) {
 	if cfg.Now == nil {
 		cfg.Now = time.Now
 	}
+	// A later media run for the same call continues numbering after the
+	// turns already stored, so it never revises them.
+	base, err := cfg.Store.MaxTranscriptSeq(context.Background(), cfg.OwnerUserID, cfg.CallID)
+	if err != nil {
+		return nil, fmt.Errorf("transcript: load turn base: %w", err)
+	}
 	r := &Recorder{
 		cfg:        cfg,
 		start:      cfg.Now(),
 		live:       cfg.Caps.Protocol == realtime.ProtocolLive,
+		seqBase:    base,
 		agentBySrc: map[audio.SourceRef]*turn{},
 		callerByID: map[string]*turn{},
 		seenEvents: map[string]bool{},
@@ -221,11 +252,7 @@ func (r *Recorder) Observe(ev realtime.Event) {
 			// A replayed provider event is recorded once.
 			return
 		}
-		if len(r.seenEvents) >= MaxFragments+MaxTurns {
-			r.flags[FlagEventsDropped] = true
-			return
-		}
-		r.seenEvents[ev.EventID] = true
+		r.rememberEventLocked(ev.EventID)
 	}
 	now := r.sinceStart()
 	switch ev.Kind {
@@ -274,8 +301,11 @@ func (r *Recorder) Observe(ev realtime.Event) {
 func (r *Recorder) OnCut(c telnyx.Cut, callerTurn uint64) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	payload := map[string]any{
-		"audible": c.Audible, "played_ms": c.Played.Milliseconds(), "sent_ms": c.Sent.Milliseconds(),
+	payload := map[string]any{"audible": c.Audible}
+	// Played and Sent are measured only for a cut that had an item with
+	// audio sent. Otherwise they are unknown, and are omitted rather than 0.
+	if c.Sent > 0 {
+		payload["played_ms"], payload["sent_ms"] = c.Played.Milliseconds(), c.Sent.Milliseconds()
 	}
 	cause := r.lastCut
 	if callerTurn > 0 {
@@ -302,7 +332,8 @@ func (r *Recorder) agentTurnLocked(src audio.SourceRef, now int64) *turn {
 	if t == nil {
 		return nil
 	}
-	t.src, t.itemID, t.corr = src, src.ItemID, correlationOf(src)
+	t.src, t.itemID = src, src.ItemID
+	t.corr = boundCorrelation(t, correlationOf(src))
 	r.agentBySrc[src] = t
 	return t
 }
@@ -319,15 +350,14 @@ func (r *Recorder) callerTurnLocked(ev realtime.Event, now int64) *turn {
 		}
 		t := r.newTurnLocked(recording.SpeakerCaller, now)
 		if t != nil {
-			t.itemID, t.corr = ev.ItemID, ev.ItemID
+			t.itemID, t.corr = ev.ItemID, boundCorrelation(t, ev.ItemID)
 			r.callerByID[ev.ItemID] = t
 		}
 		return t
 	}
-	if last := r.lastCallerLocked(); last != nil && ev.HasTiming && last.timed {
-		gap := ev.StartMS - last.endMS
-		if gap <= CallerTurnGap.Milliseconds() && !r.agentStartedBetweenLocked(last.startMS, ev.StartMS) {
-			return last
+	if ev.HasTiming {
+		if t := r.nearestCallerTurnLocked(ev.StartMS); t != nil {
+			return t
 		}
 	}
 	t := r.newTurnLocked(recording.SpeakerCaller, now)
@@ -337,25 +367,53 @@ func (r *Recorder) callerTurnLocked(ev realtime.Event, now int64) *turn {
 	return t
 }
 
-func (r *Recorder) lastCallerLocked() *turn {
-	for i := len(r.turns) - 1; i >= 0; i-- {
-		if r.turns[i].speaker == recording.SpeakerCaller && !r.turns[i].unavail {
-			return r.turns[i]
+// nearestCallerTurnLocked returns the timed caller turn a Live fragment at
+// startMS belongs to. It is the caller turn whose window contains the fragment
+// or is nearest to it in time, provided the distance is within CallerTurnGap
+// and no agent fragment starts between the fragment and that turn. A late
+// fragment therefore joins its own turn, and an intervening agent turn is never
+// passed over.
+func (r *Recorder) nearestCallerTurnLocked(startMS int64) *turn {
+	var best *turn
+	var bestDist int64
+	for _, t := range r.turns {
+		if t.speaker != recording.SpeakerCaller || t.unavail || !t.timed {
+			continue
+		}
+		d := distanceTo(startMS, t.startMS, t.endMS)
+		if best == nil || d < bestDist {
+			best, bestDist = t, d
 		}
 	}
-	return nil
+	if best == nil || bestDist > CallerTurnGap.Milliseconds() {
+		return nil
+	}
+	if r.agentStartedBetweenLocked(min(startMS, best.startMS), max(startMS, best.startMS)) {
+		return nil
+	}
+	return best
+}
+
+// distanceTo is the distance from x to the window [lo, hi], zero inside it.
+func distanceTo(x, lo, hi int64) int64 {
+	switch {
+	case x < lo:
+		return lo - x
+	case x > hi:
+		return x - hi
+	}
+	return 0
 }
 
 // agentStartedBetweenLocked reports whether an agent fragment starts on the
-// provider timeline after the caller turn began and before at. A late caller
-// fragment from before the agent replied still joins its turn.
-func (r *Recorder) agentStartedBetweenLocked(callerStart, at int64) bool {
+// provider timeline strictly between lo and hi.
+func (r *Recorder) agentStartedBetweenLocked(lo, hi int64) bool {
 	for _, t := range r.turns {
 		if t.speaker != recording.SpeakerAgent {
 			continue
 		}
 		for _, f := range t.frags {
-			if f.timed && f.startMS > callerStart && f.startMS < at {
+			if f.timed && f.startMS > lo && f.startMS < hi {
 				return true
 			}
 		}
@@ -379,7 +437,7 @@ func (r *Recorder) callerSpeechLocked(ev realtime.Event, now int64) {
 	if t == nil {
 		return
 	}
-	t.itemID, t.corr, t.unavail = ev.ItemID, ev.ItemID, true
+	t.itemID, t.corr, t.unavail = ev.ItemID, boundCorrelation(t, ev.ItemID), true
 	t.flags[FlagCallerUnavailable] = true
 	r.addSourceLocked(t, ev.EventID)
 	r.callerByID[ev.ItemID] = t
@@ -387,10 +445,13 @@ func (r *Recorder) callerSpeechLocked(ev realtime.Event, now int64) {
 
 func (r *Recorder) newTurnLocked(sp recording.Speaker, now int64) *turn {
 	if len(r.turns) >= MaxTurns {
+		// A memory ceiling far above any real call length. Turns are never
+		// dropped below it.
 		r.flags[FlagEventsDropped] = true
 		return nil
 	}
-	t := &turn{seq: len(r.turns) + 1, speaker: sp, flags: map[string]bool{}, startMS: now, endMS: now, dirty: true}
+	t := &turn{seq: r.seqBase + r.nSeq + 1, speaker: sp, flags: map[string]bool{}, startMS: now, endMS: now, dirty: true}
+	r.nSeq++
 	r.turns = append(r.turns, t)
 	return t
 }
@@ -412,13 +473,12 @@ func (r *Recorder) addFragmentLocked(t *turn, ev realtime.Event, now int64) {
 	if t == nil {
 		return
 	}
-	if r.nFrags >= MaxFragments || t.textBytes+len(ev.Text) > MaxTurnText {
+	if len(t.frags) >= MaxFragments || t.textBytes+len(ev.Text) > MaxTurnText {
 		r.flags[FlagEventsDropped] = true
 		t.flags[FlagTruncatedText] = true
 		t.dirty = true
 		return
 	}
-	r.nFrags++
 	f := fragment{text: ev.Text, startMS: now, endMS: now}
 	if ev.HasTiming {
 		f.startMS, f.endMS, f.timed = ev.StartMS, ev.EndMS, true
@@ -449,6 +509,18 @@ func (r *Recorder) addFragmentLocked(t *turn, ev realtime.Event, now int64) {
 		t.flags[FlagCorrected] = true
 	}
 	t.dirty = true
+}
+
+// rememberEventLocked records a provider event id for replay detection. Only the
+// most recent maxSeenEvents ids are kept, so a long call holds bounded memory.
+// Live turns settle only at close, so a per-turn release cannot bound them.
+func (r *Recorder) rememberEventLocked(id string) {
+	if len(r.seenOrder) >= maxSeenEvents {
+		delete(r.seenEvents, r.seenOrder[0])
+		r.seenOrder = r.seenOrder[1:]
+	}
+	r.seenEvents[id] = true
+	r.seenOrder = append(r.seenOrder, id)
 }
 
 func (r *Recorder) addSourceLocked(t *turn, id string) {
@@ -501,7 +573,7 @@ func (r *Recorder) providerEventLocked(ev realtime.Event) {
 }
 
 func (r *Recorder) addEventLocked(e storage.CallEvent) {
-	if r.nEvents >= MaxEvents {
+	if len(r.events) >= MaxEvents {
 		r.flags[FlagEventsDropped] = true
 		return
 	}
@@ -509,7 +581,6 @@ func (r *Recorder) addEventLocked(e storage.CallEvent) {
 		e.Provider = "internal"
 	}
 	e.OccurredAt = r.cfg.Now().UTC().Format("2006-01-02T15:04:05.000Z")
-	r.nEvents++
 	r.events = append(r.events, e)
 }
 
@@ -526,6 +597,13 @@ func (r *Recorder) flush(ctx context.Context, final bool) error {
 	var keys []string
 	var entries []recording.Entry
 	for _, t := range r.turns {
+		// A periodic flush rebuilds only turns that can have changed: dirty
+		// turns, and turns not yet final (their playout may still settle).
+		// Settled, unchanged turns cost nothing. Only the final flush needs
+		// every entry, for the summary.
+		if !final && !t.dirty && t.wroteFin {
+			continue
+		}
 		rev, entry := r.revisionLocked(t, final)
 		entries = append(entries, entry)
 		key := revKey(rev)
@@ -534,9 +612,14 @@ func (r *Recorder) flush(ctx context.Context, final bool) error {
 			t.dirty = false
 			continue
 		}
-		if t.wroteFin && !t.flags[FlagCorrected] {
-			// A turn that already had a final revision changed again.
-			t.flags[FlagCorrected] = true
+		if t.wroteFin {
+			// A turn that already had a final revision changed again. Only a
+			// text change is a correction; playout evidence alone is not.
+			if rev.Text != t.finalText {
+				t.flags[FlagCorrected] = true
+			} else {
+				t.flags[FlagPlayoutUpdated] = true
+			}
 			rev, _ = r.revisionLocked(t, final)
 			key = revKey(rev)
 		}
@@ -571,6 +654,7 @@ func (r *Recorder) flush(ctx context.Context, final bool) error {
 			t.lastWrite = keys[i]
 			if revs[i].Finality == storage.FinalityFinal {
 				t.wroteFin = true
+				t.finalText = revs[i].Text
 			}
 		}
 		return nil
@@ -632,6 +716,15 @@ func (r *Recorder) revisionLocked(t *turn, final bool) (storage.TranscriptRevisi
 			// Audio was sent with no transcript: there is no text to show.
 			e = recording.Entry{Speaker: recording.SpeakerAgent, Fidelity: recording.FidelityUnavailable, Generated: p.Sent}
 			flags[FlagAgentMissing] = true
+		}
+		if r.live {
+			// Live agent audio has no item ID: its utterance number is a local
+			// guess. Text with no sent audio is unconfirmed, not a claim that
+			// it was never played.
+			flags[FlagPlayoutAttribution] = true
+			if e.Fidelity == recording.FidelityNotPlayed && text != "" {
+				e.Fidelity = recording.FidelityUnconfirmed
+			}
 		}
 		entry = e
 		gen, played := e.Generated.Milliseconds(), e.Played.Milliseconds()
@@ -721,6 +814,18 @@ func joinText(frags []fragment) string {
 		b = append(b, f.text...)
 	}
 	return string(b)
+}
+
+// boundCorrelation returns corr for storage in transcript_turns.correlation_id,
+// which holds 1 to maxProviderID bytes. A longer identifier is dropped and the
+// turn is flagged, so one oversized id cannot fail the whole transaction.
+func boundCorrelation(t *turn, corr string) string {
+	if len(corr) > maxProviderID {
+		t.flags[FlagProviderIDInvalid] = true
+		t.dirty = true
+		return ""
+	}
+	return corr
 }
 
 func correlationOf(src audio.SourceRef) string {

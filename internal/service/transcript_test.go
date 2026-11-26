@@ -287,26 +287,32 @@ func TestGetTranscriptCallLookupFailureIsInternal(t *testing.T) {
 
 func TestPageFlagsDerivation(t *testing.T) {
 	cases := []struct {
-		name string
-		sum  storage.TranscriptSummary
-		want string
+		name  string
+		sum   storage.TranscriptSummary
+		ended bool
+		want  string
 	}{
-		{"no media run", storage.TranscriptSummary{}, "no_media_session"},
-		{"in progress", storage.TranscriptSummary{Recorded: true}, "transcript_in_progress"},
-		{"finalized clean", storage.TranscriptSummary{Recorded: true, Finalized: true}, ""},
+		{"no media run", storage.TranscriptSummary{}, false, "no_media_session"},
+		{"in progress", storage.TranscriptSummary{Recorded: true}, false, "transcript_in_progress"},
+		// A terminal call whose run never finalized is not in progress: it
+		// will not finalize, so the transcript is reported not finalized.
+		{"ended without finalize", storage.TranscriptSummary{Recorded: true}, true, "transcript_not_finalized"},
+		{"finalized clean", storage.TranscriptSummary{Recorded: true, Finalized: true}, true, ""},
 		{
 			"stored flags deduped and sorted",
 			storage.TranscriptSummary{Recorded: true, Finalized: true, QualityFlags: []string{"events_dropped", "corrected", "corrected"}},
+			true,
 			"corrected,events_dropped",
 		},
 		{
 			"in progress adds its flag to stored ones",
 			storage.TranscriptSummary{Recorded: true, QualityFlags: []string{"provider_turn_incomplete"}},
+			false,
 			"provider_turn_incomplete,transcript_in_progress",
 		},
 	}
 	for _, c := range cases {
-		got := pageFlags(c.sum)
+		got := pageFlags(c.sum, c.ended)
 		if got == nil {
 			t.Fatalf("%s: flags nil", c.name)
 		}

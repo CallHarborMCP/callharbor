@@ -151,6 +151,19 @@ func insertRevision(ctx context.Context, tx *sql.Tx, callID, owner string, t Tra
 	return nil
 }
 
+// MaxTranscriptSeq returns the highest turn seq recorded for the owner's call,
+// or 0 when none is recorded. A later media run continues numbering after it,
+// so earlier turns are never rewritten as revisions.
+func (s *Store) MaxTranscriptSeq(ctx context.Context, ownerUserID, callID string) (int, error) {
+	var n sql.NullInt64
+	err := s.db.QueryRowContext(ctx, `SELECT MAX(seq) FROM transcript_turns WHERE owner_user_id = ? AND call_id = ?`,
+		ownerUserID, callID).Scan(&n)
+	if err != nil {
+		return 0, fmt.Errorf("storage: max transcript seq: %w", err)
+	}
+	return int(n.Int64), nil
+}
+
 // ListTranscriptTurns returns the latest revision of up to limit of the owner's
 // turns for one call with seq greater than afterSeq, in seq order. Another
 // owner's call yields no rows; callers check call ownership first.

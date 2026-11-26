@@ -17,6 +17,7 @@ import (
 const (
 	flagNoMediaSession       = "no_media_session"
 	flagTranscriptInProgress = "transcript_in_progress"
+	flagTranscriptNotFinal   = "transcript_not_finalized"
 )
 
 // Audit vocabulary for transcript reads.
@@ -107,7 +108,7 @@ func (s *Service) GetTranscript(ctx context.Context, actor Actor, in GetTranscri
 	}
 	// Ownership comes from the call row. The turn and summary reads return
 	// nothing for another owner, so they cannot replace this check.
-	_, err = s.store.GetCall(ctx, actor.UserID, in.CallID)
+	call, err := s.store.GetCall(ctx, actor.UserID, in.CallID)
 	if errors.Is(err, storage.ErrCallNotFound) {
 		if err := s.auditTranscript(ctx, actor, in.CallID, auditOutcomeDenied, `{"reason":"not_found"}`); err != nil {
 			return TranscriptPage{}, err
@@ -129,7 +130,7 @@ func (s *Service) GetTranscript(ctx context.Context, actor Actor, in GetTranscri
 	page := TranscriptPage{
 		CallID:       in.CallID,
 		Turns:        []TranscriptTurn{},
-		QualityFlags: pageFlags(summary),
+		QualityFlags: pageFlags(summary, isTerminal(call.Status)),
 		Finalized:    summary.Finalized,
 	}
 	hasMore := len(rows) > MaxLimit
@@ -169,9 +170,14 @@ func (s *Service) auditTranscript(ctx context.Context, actor Actor, callID, outc
 	return nil
 }
 
+// isTerminal reports whether a call status is one a call never leaves.
+func isTerminal(status string) bool {
+	return status == "ended" || status == "failed"
+}
+
 // pageFlags is the page's quality flags: the summary's stored flags plus the
 // flag for the media state. The result is deduplicated, sorted and never nil.
-func pageFlags(sum storage.TranscriptSummary) []string {
+func pageFlags(sum storage.TranscriptSummary, ended bool) []string {
 	set := map[string]struct{}{}
 	for _, f := range sum.QualityFlags {
 		set[f] = struct{}{}
@@ -179,8 +185,14 @@ func pageFlags(sum storage.TranscriptSummary) []string {
 	if !sum.Recorded {
 		set[flagNoMediaSession] = struct{}{}
 	}
+	// A call that has ended cannot still be in progress. If its run never
+	// wrote a finalized summary, the transcript is not finalized.
 	if sum.Recorded && !sum.Finalized {
-		set[flagTranscriptInProgress] = struct{}{}
+		if ended {
+			set[flagTranscriptNotFinal] = struct{}{}
+		} else {
+			set[flagTranscriptInProgress] = struct{}{}
+		}
 	}
 	out := make([]string, 0, len(set))
 	for f := range set {

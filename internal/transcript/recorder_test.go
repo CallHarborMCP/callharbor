@@ -6,6 +6,7 @@ import (
 	"errors"
 	"slices"
 	"strconv"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -29,6 +30,13 @@ func (s *memStore) RecordTranscript(_ context.Context, callID, owner string, tur
 	defer s.mu.Unlock()
 	if s.fail != nil {
 		return s.fail
+	}
+	// Mirror the transcript_turns CHECK on correlation_id, so an oversized id
+	// fails the write here as it would in SQLite.
+	for _, r := range turns {
+		if n := len(r.CorrelationID); r.CorrelationID != "" && (n < 1 || n > 128) {
+			return errors.New("CHECK constraint failed: correlation_id")
+		}
 	}
 	s.revs = append(s.revs, turns...)
 	s.events = append(s.events, events...)
@@ -60,6 +68,17 @@ func (s *memStore) revisionsOf(seq int) []storage.TranscriptRevision {
 		}
 	}
 	return out
+}
+
+// MaxTranscriptSeq reports the highest seq written so far, as storage does.
+func (s *memStore) MaxTranscriptSeq(_ context.Context, _, _ string) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	maxSeq := 0
+	for _, r := range s.revs {
+		maxSeq = max(maxSeq, r.Seq)
+	}
+	return maxSeq, nil
 }
 
 func (s *memStore) summary(t *testing.T) (flags []string, complete bool) {
@@ -506,6 +525,43 @@ func TestTurnBound(t *testing.T) {
 	}
 }
 
+// A long call with many sequential turns, beyond the old per-call event and
+// replay-id bounds, persists every turn and its done event. Pending events are
+// written by periodic flushes, so the event bound applies per flush window.
+func TestLongCallSequentialTurnsAllPersisted(t *testing.T) {
+	h := newHarness(t, realtime.RealtimeCapabilities)
+	const n = 4500
+	for i := range n {
+		id := "item_" + strconv.Itoa(i)
+		h.rec.Observe(realtime.Event{Kind: realtime.EventAgentTranscriptDelta, EventID: "d_" + strconv.Itoa(i), ItemID: id, Text: "a"})
+		h.rec.Observe(realtime.Event{Kind: realtime.EventAgentTranscriptDone, EventID: "f_" + strconv.Itoa(i), ItemID: id, Text: "a"})
+		h.setPlayout(audio.SourceRef{ItemID: id}, played(100*ms))
+		h.rec.Observe(realtime.Event{Kind: realtime.EventResponseDone, RawType: "response.done", EventID: "r_" + strconv.Itoa(i), ResponseID: "resp_" + strconv.Itoa(i), ResponseStatus: "completed"})
+		if i%100 == 99 {
+			if err := h.rec.flush(context.Background(), false); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	h.close(t)
+	turns := h.store.latest()
+	if len(turns) != n {
+		t.Fatalf("persisted %d turns, want %d", len(turns), n)
+	}
+	if flags, _ := h.store.summary(t); hasFlag(flags, FlagEventsDropped) {
+		t.Fatalf("flags %v: a long call dropped data", flags)
+	}
+	doneEvents := 0
+	for _, e := range h.store.events {
+		if e.Kind == "provider.response_done" {
+			doneEvents++
+		}
+	}
+	if doneEvents != n {
+		t.Fatalf("persisted %d response_done events, want %d", doneEvents, n)
+	}
+}
+
 // Provider events keep ids and correlation but never transcript text or audio.
 func TestProviderEventsCarryNoContent(t *testing.T) {
 	h := newHarness(t, realtime.RealtimeCapabilities)
@@ -527,6 +583,169 @@ func TestProviderEventsCarryNoContent(t *testing.T) {
 		}
 	}
 	t.Fatalf("no response_done event in %v", h.store.eventKinds())
+}
+
+// A second media run for the same call continues turn numbering after the
+// first run's turns, so the earlier turns are not revised.
+func TestSecondRunContinuesSeq(t *testing.T) {
+	store := &memStore{}
+	run := func(text string) {
+		rec, err := New(Config{
+			CallID: "call_1", OwnerUserID: "alice", Caps: realtime.RealtimeCapabilities, Store: store,
+			Playout:  func(audio.SourceRef) (audio.ItemPlayout, bool) { return played(300 * ms), true },
+			SourceOf: func(ev realtime.Event) audio.SourceRef { return audio.SourceRef{ItemID: ev.ItemID} },
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		rec.Observe(realtime.Event{Kind: realtime.EventAgentTranscriptDone, EventID: "ev_" + text, ItemID: "item_" + text, Text: text})
+		if err := rec.Close(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	run("first")
+	run("second")
+	turns := store.latest()
+	if len(turns) != 2 || turns[0].Seq != 1 || turns[1].Seq != 2 || turns[0].Text != "first" || turns[1].Text != "second" {
+		t.Fatalf("turns after second run = %+v", turns)
+	}
+	if n := len(store.revisionsOf(1)); n != 1 {
+		t.Fatalf("first run's turn was revised: %d revisions", n)
+	}
+}
+
+// Live: a late caller fragment from before an agent reply joins its own caller
+// turn. It is not attached to the latest caller turn, and the agent turn stays
+// between them.
+func TestLateCallerFragmentJoinsItsOwnTurn(t *testing.T) {
+	h := newHarness(t, realtime.LiveCapabilities)
+	in := func(id, text string, s, e int64) {
+		h.rec.Observe(realtime.Event{Kind: realtime.EventCallerTranscriptDelta, EventID: id, Text: text, HasTiming: true, StartMS: s, EndMS: e})
+	}
+	in("i1", "Book ", 0, 300)
+	h.rec.Observe(realtime.Event{Kind: realtime.EventAgentTranscriptDelta, EventID: "o1", Text: "Sure.", HasTiming: true, StartMS: 400, EndMS: 600})
+	in("i3", "Friday", 700, 900)
+	in("i2", "a table", 300, 700)
+	h.close(t)
+	turns := h.store.latest()
+	if len(turns) != 3 {
+		t.Fatalf("got %d turns: %+v", len(turns), turns)
+	}
+	if turns[0].Text != "Book a table" || turns[0].StartedMS != 0 {
+		t.Fatalf("caller turn 1 = %+v", turns[0])
+	}
+	if turns[1].Speaker != storage.SpeakerAssistant || turns[1].Text != "Sure." {
+		t.Fatalf("agent turn = %+v", turns[1])
+	}
+	if turns[2].Speaker != storage.SpeakerCallee || turns[2].Text != "Friday" {
+		t.Fatalf("later caller turn = %+v", turns[2])
+	}
+}
+
+// An oversized provider item id is dropped from the correlation and flagged,
+// and the turn still persists. It must not fail the whole transaction.
+func TestOversizedProviderIDIsDroppedAndFlagged(t *testing.T) {
+	h := newHarness(t, realtime.RealtimeCapabilities)
+	long := strings.Repeat("x", maxProviderID+1)
+	h.rec.Observe(realtime.Event{Kind: realtime.EventAgentTranscriptDone, EventID: "ev_1", ItemID: long, Text: "Hello."})
+	h.setPlayout(audio.SourceRef{ItemID: long}, played(300*ms))
+	h.close(t)
+	a := h.store.latest()
+	if len(a) != 1 || a[0].Text != "Hello." || a[0].CorrelationID != "" || !hasFlag(a[0].Quality, FlagProviderIDInvalid) {
+		t.Fatalf("turn = %+v", a)
+	}
+}
+
+// Live: a caller speech edge falls between an agent's audio and its late
+// transcript delta. The agent text was sent and audible, so it must not be
+// claimed not_played, and the turn carries the local attribution flag.
+func TestLiveAgentTurnSplitByCallerEdgeIsNotNotPlayed(t *testing.T) {
+	h := newHarness(t, realtime.LiveCapabilities)
+	h.rec.Observe(realtime.Event{Kind: realtime.EventAudio, Audio: []byte{1}})
+	h.setPlayout(audio.SourceRef{Utterance: 1}, played(500*ms))
+	h.nextUtterance()
+	h.rec.Observe(realtime.Event{Kind: realtime.EventSpeechStarted, EventID: "sp_1", HasTiming: true, StartMS: 200})
+	h.rec.Observe(realtime.Event{Kind: realtime.EventAgentTranscriptDelta, EventID: "o1", Text: "Sure thing.", HasTiming: true, StartMS: 300, EndMS: 600})
+	h.close(t)
+	for _, a := range h.store.latest() {
+		if a.Speaker != storage.SpeakerAssistant || a.Text != "Sure thing." {
+			continue
+		}
+		if a.Fidelity == "not_played" || hasFlag(a.Quality, FlagAgentNotPlayed) {
+			t.Fatalf("late agent text claimed not played: %+v", a)
+		}
+		if !hasFlag(a.Quality, FlagPlayoutAttribution) {
+			t.Fatalf("live agent turn lacks %s: %+v", FlagPlayoutAttribution, a)
+		}
+		return
+	}
+	t.Fatal("no agent turn with the late text recorded")
+}
+
+// Live: text with no sent audio is playout_unconfirmed rather than a claim
+// that it was never played.
+func TestLiveTextWithoutAudioIsUnconfirmed(t *testing.T) {
+	h := newHarness(t, realtime.LiveCapabilities)
+	h.rec.Observe(realtime.Event{Kind: realtime.EventAgentTranscriptDelta, EventID: "o1", Text: "Hello.", HasTiming: true, StartMS: 0, EndMS: 300})
+	h.close(t)
+	for _, a := range h.store.latest() {
+		if a.Speaker == storage.SpeakerAssistant && (a.Fidelity != "playout_unconfirmed" || hasFlag(a.Quality, FlagAgentNotPlayed)) {
+			t.Fatalf("live text without audio = %+v", a)
+		}
+	}
+}
+
+// A playout-only change after the final revision sets playout_updated, not
+// corrected. A text change still sets corrected.
+func TestPlayoutUpdateIsNotCorrection(t *testing.T) {
+	h := newHarness(t, realtime.RealtimeCapabilities)
+	src := audio.SourceRef{ItemID: "item_a"}
+	h.rec.Observe(realtime.Event{Kind: realtime.EventAgentTranscriptDone, EventID: "ev_1", ItemID: "item_a", Text: "Done."})
+	// Unconfirmed audio that settles: the turn becomes final, labeled unconfirmed.
+	h.setPlayout(src, audio.ItemPlayout{Sent: 800 * ms, Confirmed: 600 * ms, Estimated: 600 * ms, Unconfirmed: 200 * ms})
+	if err := h.rec.flush(context.Background(), false); err != nil {
+		t.Fatal(err)
+	}
+	// Later playout evidence changes, the text does not.
+	h.setPlayout(src, played(800*ms))
+	h.close(t)
+	revs := h.store.revisionsOf(1)
+	if len(revs) < 2 {
+		t.Fatalf("want a final revision then a playout update, got %+v", revs)
+	}
+	for _, r := range revs {
+		if hasFlag(r.Quality, FlagCorrected) {
+			t.Fatalf("playout-only change marked corrected: %+v", r)
+		}
+	}
+	last := revs[len(revs)-1]
+	if !hasFlag(last.Quality, FlagPlayoutUpdated) || last.Text != "Done." || last.Fidelity != "played" {
+		t.Fatalf("last revision = %+v, want played with %s", last, FlagPlayoutUpdated)
+	}
+}
+
+// A cut with no sent audio omits played_ms and sent_ms instead of writing 0.
+func TestCutWithoutAudioOmitsUnknownDurations(t *testing.T) {
+	h := newHarness(t, realtime.RealtimeCapabilities)
+	h.rec.OnCut(telnyx.Cut{}, 0)
+	h.close(t)
+	for _, e := range h.store.events {
+		if e.Kind != "media.barge_in_cut" {
+			continue
+		}
+		var p map[string]any
+		if err := json.Unmarshal([]byte(e.PayloadJSON), &p); err != nil {
+			t.Fatal(err)
+		}
+		if _, ok := p["played_ms"]; ok {
+			t.Fatalf("unknown played_ms written as a value: %v", p)
+		}
+		if _, ok := p["sent_ms"]; ok {
+			t.Fatalf("unknown sent_ms written as a value: %v", p)
+		}
+		return
+	}
+	t.Fatal("no cut event")
 }
 
 // Observe, OnCut and periodic flushes may run concurrently.
