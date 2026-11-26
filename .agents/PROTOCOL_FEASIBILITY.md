@@ -33,7 +33,7 @@ prove both adapters agree on an explicit, documented audio/message interface.
    If complete two-party transcription cannot be obtained through the selected
    realtime provider without another paid API, report a **release blocker** with
    evidence and investigate standards-compliant no-extra-service options.
-   Do not silently enable billable STT or mislabel an estimate as verbatim.
+   Do not enable separately billed AI APIs, Telnyx add-ons or additional STT engines; never mislabel model-derived text as verbatim. Investigate standard capabilities of the existing configured voice session first (native transcript events or protocol-defined out-of-band responses). Distinguish specification and independent simulator conformance from actual subscription endpoint support. No gateway-specific code or PoC; surface unsupported capabilities without silent fallback.
 6. Security and network: callback HTTPS/public reachability, media WSS,
    scoped WebSocket session authentication, proxy/reconnect, IP/SSRF policy,
    tenant/caller authorization and realistic deployment example.
