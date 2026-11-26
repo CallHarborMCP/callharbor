@@ -34,6 +34,8 @@ mise exec -- bash scripts/verify-local.sh --quick
 
 Run the full command without `--quick` only when you need the production Docker and browser end-to-end checks.
 
+`web/` runs TypeScript 7 (the `typescript7` alias) for `typecheck` and `build`. The `typescript` name is aliased to `@typescript/typescript6` only because typescript-eslint needs the TypeScript compiler API, which TypeScript 7 does not ship. Remove this side-by-side setup once typescript-eslint supports the TypeScript 7 API.
+
 ## Code style
 
 - Go code must be formatted with `gofmt` and pass `go vet`, `golangci-lint`, `gosec`, `govulncheck` and `go test -race`.
