@@ -23,14 +23,14 @@ jobs:
         run: mise exec -- bash scripts/verify-local.sh
       - name: Upload Go coverage artifact
         if: success()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: go-coverage
           path: coverage-go.out
           retention-days: 14
       - name: Upload web coverage artifact
         if: success()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: web-coverage
           path: web/coverage/lcov.info
