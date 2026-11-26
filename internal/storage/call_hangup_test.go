@@ -2,6 +2,8 @@ package storage
 
 import (
 	"context"
+	"database/sql"
+	"fmt"
 	"path/filepath"
 	"testing"
 )
@@ -163,5 +165,49 @@ func TestLiveLegCarriesProfileOwnerForGranteeCall(t *testing.T) {
 	}
 	if leg.TelephonyOwnerUserID != "alice" {
 		t.Fatalf("local hangup profile owner = %q, want alice", leg.TelephonyOwnerUserID)
+	}
+}
+
+// HangupSeen is false until a call.hangup is recorded for the call. It is true
+// after RecordHangupSeen, which a hangup on an already-terminal call uses, so a
+// later orphan hangup is not sent for the leg.
+func TestHangupSeenMarkerSetByRecordHangupSeen(t *testing.T) {
+	ctx := context.Background()
+	s := openMigrated(t, filepath.Join(t.TempDir(), "hs.db"))
+	seedTenants(t, s)
+	seedLiveCall(t, s, "c-hs", "ended", "cc-hs")
+
+	// Each read uses its own receipt id. A repeated id is a redelivery, so its
+	// process function never runs and the state read would be empty.
+	reads := 0
+	read := func() CallSignalState {
+		t.Helper()
+		reads++
+		var st CallSignalState
+		ran, err := s.RecordWebhookOnce(ctx, "telnyx", fmt.Sprintf("ev-read-%d", reads), mustParse(testTime), func(ctx context.Context, tx *sql.Tx) error {
+			var err error
+			st, err = ReadCallForSignal(ctx, tx, "c-hs")
+			return err
+		})
+		if err != nil || ran {
+			t.Fatalf("read %d: ran=%v err=%v", reads, ran, err)
+		}
+		return st
+	}
+	if read().HangupSeen {
+		t.Fatal("HangupSeen = true before any hangup was recorded")
+	}
+	if _, err := s.RecordWebhookOnce(ctx, "telnyx", "ev-mark", mustParse(testTime), func(ctx context.Context, tx *sql.Tx) error {
+		st, err := ReadCallForSignal(ctx, tx, "c-hs")
+		if err != nil {
+			return err
+		}
+		return RecordHangupSeen(ctx, tx, st, "ev-mark", mustParse(testTime))
+	}); err != nil {
+		t.Fatal(err)
+	}
+	got := read()
+	if got.ID != "c-hs" || !got.HangupSeen {
+		t.Fatalf("after RecordHangupSeen: id=%q HangupSeen=%v, want c-hs true", got.ID, got.HangupSeen)
 	}
 }

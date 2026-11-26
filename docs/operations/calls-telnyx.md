@@ -67,9 +67,9 @@ shutdown is recorded as `dial_unconfirmed`, never redialed.
 
 The container's stop grace period must cover the worst-case shutdown sequence.
 With `T` set to `CALLHARBOR_SHUTDOWN_TIMEOUT` and `B = max(T/3, 5 s)`, the sum
-is `T + 5 s + 2B`: 30 s at the default 15 s, and 505 s at the 5 m maximum. Set
-`docker stop --time` or the Compose `stop_grace_period` to at least that. See
-`docs/operations/docker.md`.
+is `T + 5 s + 3B`: 35 s at the default 15 s, and 605 s at the 5 m maximum. At
+the default, use `docker stop --time 40` or Compose `stop_grace_period: 40s`.
+See `docs/operations/docker.md`.
 
 Dials are serial: one worker places one call at a time, so a slow dial delays
 the dials queued behind it. Head-of-line blocking is tracked for issue #65.

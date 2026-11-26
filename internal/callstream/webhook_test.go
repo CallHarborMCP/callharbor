@@ -378,6 +378,13 @@ func (r *recordingHangup) count() int {
 	return len(r.ids)
 }
 
+// snapshot returns each hangup as "call_id|control_id", in arrival order.
+func (r *recordingHangup) snapshot() []string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]string(nil), r.ids...)
+}
+
 // A leg that answers after its call already ended is still live at Telnyx. The
 // call ended before its control id was known, so the event that first records
 // the id sends exactly one hangup for that leg after commit. The receipt makes
@@ -403,10 +410,11 @@ func TestOrphanLegOnTerminalCallGetsOneHangup(t *testing.T) {
 	}
 }
 
-// Once the control id is recorded, later non-hangup events on a terminal call do
-// not hang up again. The earlier event that recorded the id already decided it
-// (n1), so a stream of late events sends no repeated hangups.
-func TestLaterEventsOnBoundTerminalCallSendNoHangup(t *testing.T) {
+// A non-hangup event on a terminal call with a control id sends the orphan
+// hangup, and each one re-sends it until a call.hangup has been seen. A failed
+// request is then retried by the next event, not stranded (n1, option 1). The
+// hangup is the same leg each time, so the command id stays stable at Telnyx.
+func TestLaterNonHangupEventsResendOrphanHangupUntilHangupSeen(t *testing.T) {
 	s, db := newWebhookStore(t)
 	seedCall(t, db, "c1", "ended", "cc-1")
 	rh := &recordingHangup{}
@@ -415,13 +423,143 @@ func TestLaterEventsOnBoundTerminalCallSendNoHangup(t *testing.T) {
 		t.Fatal(err)
 	}
 	f := newFixtureWith(t, wh)
-	for _, id := range []string{"e1", "e2", "e3"} {
+	for _, id := range []string{"e1", "e2"} {
 		if rec := f.post(t, "c1", event(t, "c1", id, "call.answered", "cc-1", nil)); rec.Code != http.StatusOK {
 			t.Fatalf("late event %s = %d", id, rec.Code)
 		}
 	}
+	if n := rh.count(); n != 2 {
+		t.Fatalf("hangups after two late events = %d, want 2 (one per non-hangup event)", n)
+	}
+	for _, got := range rh.snapshot() {
+		if got != "c1|cc-1" {
+			t.Fatalf("orphan hangup leg = %q, want c1|cc-1", got)
+		}
+	}
+	// Telnyx confirms the hangup. No later event sends another.
+	if rec := f.post(t, "c1", event(t, "c1", "e3", "call.hangup", "cc-1", map[string]any{"hangup_cause": "normal_clearing"})); rec.Code != http.StatusOK {
+		t.Fatalf("hangup = %d", rec.Code)
+	}
+	if rec := f.post(t, "c1", event(t, "c1", "e4", "call.answered", "cc-1", nil)); rec.Code != http.StatusOK {
+		t.Fatalf("late event after hangup = %d", rec.Code)
+	}
+	if n := rh.count(); n != 2 {
+		t.Fatalf("hangups after call.hangup = %d, want still 2", n)
+	}
+}
+
+// Once call.hangup has been seen, no later event sends an orphan hangup, even
+// on a call that is still terminal. The hangup event itself records the marker.
+func TestNoOrphanHangupAfterHangupSeen(t *testing.T) {
+	s, db := newWebhookStore(t)
+	seedCall(t, db, "c1", "ended", "cc-1")
+	rh := &recordingHangup{}
+	wh, err := NewWebhooks(s, func() time.Time { return seedNow }, rh.hang, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f := newFixtureWith(t, wh)
+	if rec := f.post(t, "c1", event(t, "c1", "e1", "call.hangup", "cc-1", map[string]any{"hangup_cause": "normal_clearing"})); rec.Code != http.StatusOK {
+		t.Fatalf("hangup = %d", rec.Code)
+	}
+	if rec := f.post(t, "c1", event(t, "c1", "e2", "call.answered", "cc-1", nil)); rec.Code != http.StatusOK {
+		t.Fatalf("answered after hangup = %d", rec.Code)
+	}
 	if n := rh.count(); n != 0 {
-		t.Fatalf("hangups = %d, want 0 for a bound terminal call", n)
+		t.Fatalf("hangups = %d, want 0 once call.hangup has been seen", n)
+	}
+}
+
+// After Refuse, a webhook that would orphan a leg sends no hangup, so shutdown's
+// hangup pass owns the leg. Wait returns at once when none is running.
+func TestRefusedOrphanHangupIsSkippedAfterShutdownBegins(t *testing.T) {
+	s, db := newWebhookStore(t)
+	seedCall(t, db, "c1", "ended", "cc-1")
+	rh := &recordingHangup{}
+	wh, err := NewWebhooks(s, func() time.Time { return seedNow }, rh.hang, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wh.Refuse()
+	f := newFixtureWith(t, wh)
+	if rec := f.post(t, "c1", event(t, "c1", "e1", "call.answered", "cc-1", nil)); rec.Code != http.StatusOK {
+		t.Fatalf("answered after refuse = %d", rec.Code)
+	}
+	if n := rh.count(); n != 0 {
+		t.Fatalf("hangups after refuse = %d, want 0", n)
+	}
+	if err := wh.Wait(context.Background()); err != nil {
+		t.Fatalf("wait with nothing running = %v", err)
+	}
+}
+
+// Wait blocks while an orphan hangup is running, and returns once it finishes.
+// The hangup is held open by a gate so the test controls when it ends.
+func TestWaitBlocksForRunningOrphanHangup(t *testing.T) {
+	s, db := newWebhookStore(t)
+	seedCall(t, db, "c1", "ended", "cc-1")
+	release := make(chan struct{})
+	entered := make(chan struct{}, 1)
+	hang := func(ctx context.Context, _ storage.LiveCallLeg) error {
+		entered <- struct{}{}
+		<-release
+		return nil
+	}
+	wh, err := NewWebhooks(s, func() time.Time { return seedNow }, hang, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f := newFixtureWith(t, wh)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		f.post(t, "c1", event(t, "c1", "e1", "call.answered", "cc-1", nil))
+	}()
+	<-entered
+	// Refused while one is running: Wait with a short deadline must not finish.
+	wh.Refuse()
+	short, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	if err := wh.Wait(short); err == nil {
+		t.Fatal("wait returned while an orphan hangup was still running")
+	}
+	close(release)
+	<-done
+	if err := wh.Wait(context.Background()); err != nil {
+		t.Fatalf("wait after the hangup finished = %v", err)
+	}
+}
+
+// failed → ended: a call that hung up before answer is failed. An answered that
+// arrives later is the ended transition the state machine allows. The hangup was
+// already seen, so the answered event sends no orphan hangup.
+func TestAnsweredAfterNormalClearingHangupSendsNoOrphan(t *testing.T) {
+	s, db := newWebhookStore(t)
+	seedCall(t, db, "c1", "failed", "cc-1")
+	// The stored reason a normal-clearing hangup leaves before answer. The
+	// answered transition is allowed only when the reason is consistent with
+	// the call having been answered (ReasonHangup).
+	if _, err := db.Exec(`UPDATE calls SET outcome_reason_code = 'hangup' WHERE id = 'c1'`); err != nil {
+		t.Fatal(err)
+	}
+	rh := &recordingHangup{}
+	wh, err := NewWebhooks(s, func() time.Time { return seedNow }, rh.hang, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f := newFixtureWith(t, wh)
+	if rec := f.post(t, "c1", event(t, "c1", "e1", "call.hangup", "cc-1", map[string]any{"hangup_cause": "normal_clearing"})); rec.Code != http.StatusOK {
+		t.Fatalf("hangup = %d", rec.Code)
+	}
+	if rec := f.post(t, "c1", event(t, "c1", "e2", "call.answered", "cc-1", nil)); rec.Code != http.StatusOK {
+		t.Fatalf("answered = %d", rec.Code)
+	}
+	st, _, _ := callStatus(t, db, "c1")
+	if st != "ended" {
+		t.Fatalf("status = %s, want ended (failed → ended)", st)
+	}
+	if n := rh.count(); n != 0 {
+		t.Fatalf("hangups = %d, want 0: the hangup was already seen", n)
 	}
 }
 

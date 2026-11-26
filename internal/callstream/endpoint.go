@@ -55,6 +55,9 @@ type Media struct {
 	// Hangup ends the Telnyx leg when CallHarbor ends a call. It is best-effort:
 	// a failure is logged and the call stays in ending.
 	Hangup LegHangup
+	// Webhooks is the webhook set sharing this media service. Its orphan
+	// hangups are stopped with the media sessions, so none starts after shutdown.
+	Webhooks *Webhooks
 	// sessions holds the active media sessions: one per call id (m1), and the
 	// set shutdown cancels and waits for before the store closes (M2).
 	sessions sessions

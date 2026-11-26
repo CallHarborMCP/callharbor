@@ -85,11 +85,12 @@ When calls are enabled, shutdown can take longer than the drain. It also ends ev
 1. Drain HTTP and the dial worker, up to `T` (`CALLHARBOR_SHUTDOWN_TIMEOUT`).
 2. If the worker is still dialing at `T`, wait up to 5 s more for it to stop.
 3. Wait up to `B` for media sessions to finish.
-4. Hang up every live leg, within a budget of `B`.
+4. Wait up to `B` for orphan hangups started by webhooks to finish.
+5. Hang up every live leg, within a budget of `B`.
 
-Here `B = max(T/3, 5 s)`. The worst case is `T + 5 s + 2B`. At the default `T = 15s`, `B = 5s`, so the sum is 30 s. At the maximum `T = 5m`, `B = 100s`, so the sum is 505 s.
+Here `B = max(T/3, 5 s)`. The worst case is `T + 5 s + 3B`. At the default `T = 15s`, `B = 5s`, so the sum is 35 s. At the maximum `T = 5m`, `B = 100s`, so the sum is 605 s.
 
-Docker's default stop timeout is 10 s, which is shorter than the sum. If Docker sends `SIGKILL` first, the hangups are never sent and live legs can stay up at Telnyx. Set the stop timeout to at least the sum, for example `docker stop --time 30 callharbor` at the default. In Compose, set `stop_grace_period` to the same value. Add a margin if the host is slow to exit.
+Docker's default stop timeout is 10 s, which is shorter than the sum. If Docker sends `SIGKILL` first, the hangups are never sent and live legs can stay up at Telnyx. Set the stop timeout to at least the sum, with a margin. At the default, use `docker stop --time 40 callharbor`, which covers the 35 s sum. In Compose, set `stop_grace_period: 40s` to the same value. Raise it if the host is slow to exit.
 
 Data stays in the named volume. `docker rm` removes the container, not the volume. Removing the volume with `docker volume rm callharbor-data` deletes all stored data.
 

@@ -25,6 +25,9 @@ type CallSignalState struct {
 	ReasonCode           string
 	// ProviderCallControlID is the leg's control id, or empty when none is recorded.
 	ProviderCallControlID string
+	// HangupSeen reports whether a call.hangup for this call has been recorded.
+	// It is the marker that stops orphan hangups for the leg.
+	HangupSeen bool
 }
 
 // ReadCallForSignal reads a call's lifecycle state inside tx. It runs in the
@@ -32,11 +35,13 @@ type CallSignalState struct {
 func ReadCallForSignal(ctx context.Context, tx *sql.Tx, callID string) (CallSignalState, error) {
 	var c CallSignalState
 	var control, outcome, reason sql.NullString
+	var hangupSeen int
 	err := tx.QueryRowContext(ctx, `SELECT c.id, c.owner_user_id, c.telephony_profile_id, tp.owner_user_id,
-		c.status, c.outcome, c.outcome_reason_code, c.provider_call_control_id
+		c.status, c.outcome, c.outcome_reason_code, c.provider_call_control_id,
+		EXISTS (SELECT 1 FROM call_events e WHERE e.call_id = c.id AND e.kind = 'hangup')
 		FROM calls c JOIN telephony_profiles tp ON tp.id = c.telephony_profile_id
 		WHERE c.id = ?`, callID).Scan(&c.ID, &c.OwnerUserID, &c.TelephonyProfileID, &c.TelephonyOwnerUserID,
-		&c.Status, &outcome, &reason, &control)
+		&c.Status, &outcome, &reason, &control, &hangupSeen)
 	if errors.Is(err, sql.ErrNoRows) {
 		return CallSignalState{}, ErrCallNotFound
 	}
@@ -46,7 +51,19 @@ func ReadCallForSignal(ctx context.Context, tx *sql.Tx, callID string) (CallSign
 	c.Outcome = outcome.String
 	c.ReasonCode = reason.String
 	c.ProviderCallControlID = control.String
+	c.HangupSeen = hangupSeen == 1
 	return c, nil
+}
+
+// RecordHangupSeen appends a hangup event for a call whose state the hangup did
+// not change, such as a call that already ended. Telnyx's hangup is then still
+// on record, so no later orphan hangup is sent for the leg. It runs inside the
+// webhook's receipt transaction.
+func RecordHangupSeen(ctx context.Context, tx *sql.Tx, from CallSignalState, providerEventID string, now time.Time) error {
+	return appendCallEvent(ctx, tx, CallEvent{
+		CallID: from.ID, OwnerUserID: from.OwnerUserID, Kind: "hangup", State: from.Status,
+		Provider: "telnyx", ProviderEventID: providerEventID, OccurredAt: now.UTC().Format(storageTime),
+	})
 }
 
 // RecordCallControlID records the provider control id of a call that has none,

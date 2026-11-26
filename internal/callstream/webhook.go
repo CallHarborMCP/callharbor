@@ -38,6 +38,53 @@ type Webhooks struct {
 	mu        sync.Mutex
 	verifiers map[string]*telnyx.Verifier
 	order     []string
+
+	// hangupMu guards stopped and inflight. Once stopped, no orphan hangup
+	// starts; inflight counts the ones already running.
+	hangupMu sync.Mutex
+	stopped  bool
+	inflight sync.WaitGroup
+}
+
+// Refuse stops new orphan hangups from starting. Running ones are not touched:
+// Wait waits for them. Shutdown calls Refuse when it begins, so an orphan hangup
+// never starts after the shutdown hangup pass has taken over.
+func (w *Webhooks) Refuse() {
+	w.hangupMu.Lock()
+	defer w.hangupMu.Unlock()
+	w.stopped = true
+}
+
+// Wait waits, up to ctx, for the orphan hangups already running. Shutdown calls
+// it before the store closes, so none touches a closed store.
+func (w *Webhooks) Wait(ctx context.Context) error {
+	done := make(chan struct{})
+	go func() {
+		w.inflight.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+// enterHangup registers one orphan hangup. It reports false once Stop has run.
+// The check and the registration share hangupMu, so Stop never misses one.
+func (w *Webhooks) enterHangup() bool {
+	w.hangupMu.Lock()
+	defer w.hangupMu.Unlock()
+	if w.stopped {
+		return false
+	}
+	w.inflight.Add(1)
+	return true
+}
+
+func (w *Webhooks) exitHangup() {
+	w.inflight.Done()
 }
 
 // ReceiptStore is the durable dedupe gate. *storage.Store satisfies it.
@@ -155,11 +202,20 @@ func (s *statusRecorder) Write(b []byte) (int, error) {
 // hangupOrphan sends one best-effort hangup for a leg after its webhook has
 // committed. It runs outside the transaction, under a bounded timeout that is
 // detached from the request, so a client disconnect does not cancel it.
+//
+// It is counted in w.inflight, so shutdown can wait for it before the store
+// closes. Once shutdown has begun (Stop), no new orphan hangup starts: the
+// shutdown hangup pass owns every live leg from that point.
 func (w *Webhooks) hangupOrphan(r *http.Request, leg storage.LiveCallLeg) {
 	if w.hangup == nil {
 		w.logger.Warn("leg ended by webhook but hangup is not configured", "call_id", leg.ID)
 		return
 	}
+	if !w.enterHangup() {
+		w.logger.Info("orphan hangup skipped during shutdown; shutdown hangs up live legs", "call_id", leg.ID)
+		return
+	}
+	defer w.exitHangup()
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), orphanHangupTimeout)
 	defer cancel()
 	if err := w.hangup(ctx, leg); err != nil {
@@ -243,13 +299,23 @@ func (w *Webhooks) apply(callID string, orphan **storage.LiveCallLeg) telnyx.Dis
 				return err
 			}
 		}
-		// n1: only the event that first records the leg's control id on a
-		// terminal call can name a leg Telnyx still carries. Later events for the
-		// same call do not, and a hangup event is the leg ending.
-		if terminal && firstControlID && sig.Kind != call.KindHangup {
+		// An orphan is a leg Telnyx may still carry: its call is terminal, it has
+		// a control id, and no call.hangup for it has been seen. A non-hangup
+		// event for such a call sends the hangup, so a failed request is retried
+		// by the next event (the leg stays orphaned until Telnyx confirms the
+		// hangup). A hangup event records that Telnyx has confirmed it, so the
+		// marker stops every later hangup.
+		cid := cur.ProviderCallControlID
+		if terminal && cid != "" && sig.Kind == call.KindHangup && !cur.HangupSeen {
+			// The leg is ending. Record that so no later event sends a hangup.
+			if err := storage.RecordHangupSeen(ctx, tx, cur, sig.EventID, w.now()); err != nil {
+				return err
+			}
+		}
+		if terminal && cid != "" && sig.Kind != call.KindHangup && !cur.HangupSeen {
 			*orphan = &storage.LiveCallLeg{ID: cur.ID, OwnerUserID: cur.OwnerUserID,
 				TelephonyProfileID: cur.TelephonyProfileID, TelephonyOwnerUserID: cur.TelephonyOwnerUserID,
-				ControlID: sig.ProviderCallControlID}
+				ControlID: cid}
 		}
 		return nil
 	}

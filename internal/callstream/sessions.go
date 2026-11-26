@@ -170,6 +170,23 @@ func (m *Media) StopMedia() {
 	m.sessions.cancelAll()
 }
 
+// RefuseOrphanHangups stops the webhook set from starting new orphan hangups.
+// Shutdown calls it with StopMedia.
+func (m *Media) RefuseOrphanHangups() {
+	if m.Webhooks != nil {
+		m.Webhooks.Refuse()
+	}
+}
+
+// WaitOrphanHangups waits, up to ctx, for orphan hangups already running. It
+// returns nil when none are left. Shutdown calls it before the store closes.
+func (m *Media) WaitOrphanHangups(ctx context.Context) error {
+	if m.Webhooks == nil {
+		return nil
+	}
+	return m.Webhooks.Wait(ctx)
+}
+
 // WaitMedia waits up to timeout for every stream setup and session to release.
 // It reports whether they all finished. Shutdown calls it before the store
 // closes, so no media goroutine touches a closed store.

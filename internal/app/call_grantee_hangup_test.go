@@ -126,8 +126,9 @@ func TestGranteeLegIsHungUpByCapWithOwnersKey(t *testing.T) {
 }
 
 // TestGranteeLegHangupSurvivesRevokedGrant covers the revoke path: bob's grant
-// is revoked while his call is live. The local cap still ends the leg with the
-// owner's key, so the revoke does not strand it.
+// is revoked while his call is live, and the test then shuts the app down. The
+// shutdown hangup pass still ends the leg with the owner's key, so the revoke
+// does not strand it.
 func TestGranteeLegHangupSurvivesRevokedGrant(t *testing.T) {
 	const ctl = "v3:ctl-grantee-rev"
 	tel := newFakeTelnyx(t, ctl)
