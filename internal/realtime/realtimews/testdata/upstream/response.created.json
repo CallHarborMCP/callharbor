@@ -1,0 +1,27 @@
+{
+  "type": "response.created",
+  "event_id": "event_C9G8pqbTEddBSIxbBN6Os",
+  "response": {
+    "object": "realtime.response",
+    "id": "resp_C9G8p7IH2WxLbkgPNouYL",
+    "status": "in_progress",
+    "status_details": null,
+    "output": [],
+    "conversation_id": "conv_C9G8mmBkLhQJwCon3hoJN",
+    "output_modalities": [
+      "audio"
+    ],
+    "max_output_tokens": "inf",
+    "audio": {
+      "output": {
+        "format": {
+          "type": "audio/pcm",
+          "rate": 24000
+        },
+        "voice": "marin"
+      }
+    },
+    "usage": null,
+    "metadata": null
+  }
+}

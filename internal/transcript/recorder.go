@@ -49,6 +49,20 @@ const (
 	// FlagProviderIDInvalid marks a provider identifier that was too long to
 	// store and was dropped.
 	FlagProviderIDInvalid = "provider_id_invalid"
+	// FlagCallerPending marks a caller turn whose out-of-band transcription has
+	// not resolved yet. A pending turn is never presented as complete.
+	FlagCallerPending = "caller_transcript_pending"
+	// FlagCallerTextModelDerived marks caller text produced by an
+	// out-of-band response of the configured voice model. It is approximate.
+	FlagCallerTextModelDerived = "caller_text_model_derived"
+	// FlagCallerFailed marks a caller turn whose out-of-band transcription
+	// failed, was rejected, timed out, or was cancelled.
+	FlagCallerFailed = "caller_transcript_failed"
+	// FlagCallerUnresolved marks a caller turn still pending when the call
+	// ended.
+	FlagCallerUnresolved = "caller_transcript_unresolved"
+	// FlagCallerEmpty marks a caller turn whose model-derived text is empty.
+	FlagCallerEmpty = "caller_text_empty"
 )
 
 // maxProviderID is the longest provider identifier stored. It matches the
@@ -133,8 +147,14 @@ type turn struct {
 	// playoutSeen is the playout accounting the last written revision used.
 	playoutSeen audio.ItemPlayout
 	unavail     bool
-	lastWrite   string
-	textBytes   int
+	// pending is set while an out-of-band caller transcription is unresolved.
+	pending bool
+	// failed is set when the out-of-band transcription failed.
+	failed bool
+	// modelDerived is set for caller text produced by an out-of-band response.
+	modelDerived bool
+	lastWrite    string
+	textBytes    int
 	// doneBytes is the length of the provider's final text, counted against
 	// MaxTurnText and MaxCallText.
 	doneBytes int
@@ -231,9 +251,6 @@ func New(cfg Config) (*Recorder, error) {
 		flags:      map[string]bool{},
 		stop:       make(chan struct{}),
 		done:       make(chan struct{}),
-	}
-	if cfg.Caps.V1CallerTranscript() == realtime.Unavailable {
-		r.flags[FlagCallerUnavailable] = true
 	}
 	if r.live {
 		r.flags[FlagGroupedLocally] = true
@@ -355,18 +372,20 @@ func (r *Recorder) Observe(ev realtime.Event) {
 		r.touchLocal(t, now)
 		t.dirty = true
 	case realtime.EventCallerTranscriptDelta, realtime.EventCallerTranscriptFinal:
-		if r.cfg.Caps.V1CallerTranscript() == realtime.Unavailable {
-			// Separately billed transcription is never enabled. Text that
-			// arrives anyway is outside the contract and is not stored.
+		if !r.callerTextAllowedLocked(ev) {
+			// Separately billed transcription is never enabled. Caller text
+			// that is not out-of-band on an out-of-band call is outside the
+			// contract and is not stored.
 			r.flags[FlagUnexpectedCaller] = true
 			return
 		}
-		t := r.callerTurnLocked(ev, now)
-		r.addFragmentLocked(t, ev, now)
+		r.callerTextLocked(ev, now)
 	case realtime.EventSpeechStarted:
 		r.callerSpeechLocked(ev, now)
+	case realtime.EventCallerTranscriptFailed:
+		r.callerFailedLocked(ev, now)
 	case realtime.EventTruncated, realtime.EventResponseDone, realtime.EventDelegation,
-		realtime.EventError, realtime.EventClosed, realtime.EventCallerTranscriptFailed:
+		realtime.EventError, realtime.EventClosed:
 		r.providerEventLocked(ev)
 	}
 }
@@ -503,20 +522,110 @@ func (r *Recorder) agentStartedBetweenLocked(lo, hi int64) bool {
 func (r *Recorder) callerSpeechLocked(ev realtime.Event, now int64) {
 	r.lastCut = ev.EventID
 	r.providerEventLocked(ev)
-	if r.cfg.Caps.V1CallerTranscript() != realtime.Unavailable || ev.ItemID == "" {
+	if ev.ItemID == "" {
 		return
 	}
-	if _, ok := r.callerByID[ev.ItemID]; ok {
+	switch r.cfg.Caps.V1CallerTranscript() {
+	case realtime.OutOfBand:
+		// The caller turn exists from speech start and stays pending until its
+		// out-of-band transcription resolves.
+		if _, ok := r.callerByID[ev.ItemID]; ok {
+			return
+		}
+		t := r.newTurnLocked(recording.SpeakerCaller, now)
+		if t == nil {
+			return
+		}
+		t.itemID, t.corr, t.pending = boundItemID(t, ev.ItemID), boundCorrelation(t, ev.ItemID), true
+		t.flags[FlagCallerPending] = true
+		r.addSourceLocked(t, ev.EventID)
+		r.callerByID[ev.ItemID] = t
+	case realtime.Unavailable:
 		return
 	}
-	t := r.newTurnLocked(recording.SpeakerCaller, now)
+}
+
+// callerTextAllowedLocked reports whether caller text may be stored. On an
+// out-of-band call only out-of-band text is accepted; on a native call all
+// caller text is accepted (live_ws); with no caller transcript it is rejected.
+func (r *Recorder) callerTextAllowedLocked(ev realtime.Event) bool {
+	switch r.cfg.Caps.V1CallerTranscript() {
+	case realtime.Native:
+		return true
+	case realtime.OutOfBand:
+		return ev.OutOfBand
+	}
+	return false
+}
+
+// callerTextLocked joins caller text to the caller turn of its item. A turn is
+// created when no speech start was seen for the item.
+func (r *Recorder) callerTextLocked(ev realtime.Event, now int64) {
+	if r.cfg.Caps.V1CallerTranscript() == realtime.OutOfBand {
+		t := r.callerTurnLocked(ev, now)
+		if t == nil {
+			return
+		}
+		t.pending = false
+		t.modelDerived = true
+		delete(t.flags, FlagCallerPending)
+		t.flags[FlagCallerTextModelDerived] = true
+		if ev.Kind == realtime.EventCallerTranscriptFinal {
+			r.callerFinalLocked(t, ev)
+			return
+		}
+		if ev.ResponseID != "" {
+			r.addSourceLocked(t, ev.ResponseID)
+		}
+		r.addFragmentLocked(t, ev, now)
+		return
+	}
+	t := r.callerTurnLocked(ev, now)
+	r.addFragmentLocked(t, ev, now)
+}
+
+// callerFinalLocked stores the final out-of-band text. It replaces the joined
+// deltas, as a provider final does for agent text, and counts against the same
+// text budget. The text is cut at a rune boundary and flagged if it is too long.
+func (r *Recorder) callerFinalLocked(t *turn, ev realtime.Event) {
+	r.callText -= t.doneBytes
+	room := min(MaxTurnText, MaxCallText-r.callText)
+	text := ev.Text
+	if len(text) > room {
+		text = truncateUTF8(text, max(room, 0))
+		t.flags[FlagTruncatedText] = true
+		r.flags[FlagTruncatedText] = true
+	}
+	t.doneBytes = len(text)
+	r.callText += len(text)
+	t.done = &text
+	r.addSourceLocked(t, ev.EventID)
+	if ev.ResponseID != "" {
+		r.addSourceLocked(t, ev.ResponseID)
+	}
+	t.dirty = true
+}
+
+// callerFailedLocked records a failed out-of-band transcription on its caller
+// turn. The provider event still goes to the timeline with its code.
+func (r *Recorder) callerFailedLocked(ev realtime.Event, now int64) {
+	r.providerEventLocked(ev)
+	if ev.ItemID == "" || !ev.OutOfBand {
+		return
+	}
+	t := r.callerTurnLocked(ev, now)
 	if t == nil {
 		return
 	}
-	t.itemID, t.corr, t.unavail = boundItemID(t, ev.ItemID), boundCorrelation(t, ev.ItemID), true
-	t.flags[FlagCallerUnavailable] = true
+	t.pending = false
+	delete(t.flags, FlagCallerPending)
+	t.failed = true
+	t.flags[FlagCallerFailed] = true
+	if len(t.frags) > 0 {
+		t.flags[FlagProviderIncomplete] = true
+	}
 	r.addSourceLocked(t, ev.EventID)
-	r.callerByID[ev.ItemID] = t
+	t.dirty = true
 }
 
 func (r *Recorder) newTurnLocked(sp recording.Speaker, now int64) *turn {
@@ -685,6 +794,19 @@ func (r *Recorder) flush(ctx context.Context, final bool) error {
 	var keys []string
 	var seen []audio.ItemPlayout
 	var entries []recording.Entry
+	if final {
+		// A caller turn still pending at close can no longer resolve: it is
+		// unavailable, not a guess, and the call is flagged unresolved.
+		for _, t := range r.turns {
+			if t.speaker == recording.SpeakerCaller && t.pending {
+				t.pending = false
+				t.unavail = true
+				delete(t.flags, FlagCallerPending)
+				t.flags[FlagCallerUnresolved] = true
+				t.dirty = true
+			}
+		}
+	}
 	for _, t := range r.turns {
 		// A periodic flush rebuilds only turns that can have changed: dirty
 		// turns, and turns whose playout is not yet settled, because their
@@ -837,9 +959,26 @@ func (r *Recorder) revisionLocked(t *turn, final bool) (storage.TranscriptRevisi
 	switch t.speaker {
 	case recording.SpeakerCaller:
 		rev.Speaker = storage.SpeakerCallee
-		if t.unavail {
+		switch {
+		case t.unavail:
 			entry = recording.CallerEntry("", false, t.sources, t.timed, t.startMS, t.endMS)
-		} else {
+		case t.modelDerived:
+			// Out-of-band text is model-derived and approximate: provider_asr
+			// fidelity with an explicit model-derived flag, never a claim of
+			// provider ASR. Empty text stays empty and is flagged.
+			entry = recording.CallerEntry(text, true, t.sources, t.timed, t.startMS, t.endMS)
+			if text == "" {
+				flags[FlagCallerEmpty] = true
+			}
+			flags[FlagCallerTextModelDerived] = true
+		case t.failed && text != "":
+			// A transcription that failed after partial text keeps the partial
+			// text, flagged as incomplete. It is model-derived text too.
+			entry = recording.CallerEntry(text, true, t.sources, t.timed, t.startMS, t.endMS)
+			flags[FlagCallerTextModelDerived] = true
+		case t.pending, t.failed:
+			entry = recording.CallerEntry("", false, t.sources, t.timed, t.startMS, t.endMS)
+		default:
 			entry = recording.CallerEntry(text, true, t.sources, t.timed, t.startMS, t.endMS)
 			if r.live {
 				flags[FlagGroupedLocally] = true
@@ -921,7 +1060,8 @@ func (r *Recorder) summaryFlagsLocked(entries []recording.Entry) []string {
 	if r.cfg.Caps.V1CallerTranscript() == realtime.Unavailable {
 		flags[FlagCallerUnavailable] = true
 	}
-	if flags[FlagCallerUnavailable] || flags[FlagEventsDropped] || flags[FlagAgentMissing] || recording.Complete(entries) != nil {
+	if flags[FlagCallerUnavailable] || flags[FlagCallerFailed] || flags[FlagCallerUnresolved] || flags[FlagCallerPending] ||
+		flags[FlagEventsDropped] || flags[FlagAgentMissing] || recording.Complete(entries) != nil {
 		flags[FlagTwoPartyIncomplete] = true
 	}
 	return sortedKeys(flags)

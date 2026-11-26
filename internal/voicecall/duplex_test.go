@@ -84,6 +84,12 @@ type dxRealtime struct {
 	truncs  chan dxTruncate
 	// closed, when non-nil, receives one value when the provider connection ends.
 	closed chan struct{}
+	// oob enables the caller-transcription out-of-band path (#113): the caller's
+	// committed item is announced, and the endpoint answers the out-of-band
+	// response.create with a stray audio delta, text, and done.
+	oob bool
+	// oobReq receives one value when an out-of-band response.create arrives.
+	oobReq chan struct{}
 }
 
 type dxTruncate struct {
@@ -153,7 +159,42 @@ func (p *dxRealtime) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				for _, ch := range p.stale {
 					send(delta("item_dx", ch))
 				}
+				if p.oob {
+					// The caller's audio item is committed; the endpoint announces it.
+					send(map[string]any{"type": "conversation.item.added", "event_id": "evt_added_dx", "item": map[string]any{
+						"id": "item_user_dx", "type": "message", "status": "completed", "role": "user",
+						"content": []map[string]any{{"type": "input_audio"}}}})
+				}
 			}
+		case "response.create":
+			// Only the out-of-band caller transcription sends this. It must ask
+			// for text only, with no conversation and no billed transcription.
+			if !p.oob {
+				p.t.Errorf("unexpected response.create in an ordinary barge-in run")
+				return
+			}
+			resp, _ := m["response"].(map[string]any)
+			meta := resp["metadata"]
+			_, billed := m["transcription"]
+			_, billedSess := m["session"]
+			if resp["conversation"] != "none" || resp["output_modalities"] == nil || billed || billedSess {
+				p.t.Errorf("out-of-band request shape = %v", m)
+			}
+			select {
+			case p.oobReq <- struct{}{}:
+			default:
+			}
+			send(map[string]any{"type": "response.created", "event_id": "evt_oob_c", "response": map[string]any{
+				"id": "resp_oob_dx", "status": "in_progress", "metadata": meta, "output": []any{}}})
+			// Stray audio for the out-of-band response: it must never reach the
+			// caller's media stream, the playout ledger, or the played bytes.
+			send(map[string]any{"type": "response.output_audio.delta", "event_id": "evt_oob_a", "response_id": "resp_oob_dx",
+				"item_id": "item_oob_dx", "output_index": 0, "content_index": 0,
+				"delta": base64.StdEncoding.EncodeToString(dxChunks(1, 9)[0])})
+			send(map[string]any{"type": "response.output_text.done", "event_id": "evt_oob_t", "response_id": "resp_oob_dx",
+				"item_id": "item_oob_dx", "output_index": 0, "content_index": 0, "text": "Book a table."})
+			send(map[string]any{"type": "response.done", "event_id": "evt_oob_d", "response": map[string]any{
+				"id": "resp_oob_dx", "status": "completed", "metadata": meta, "output": []any{}}})
 		case "response.cancel":
 			// The documented barge-in path on this engine never cancels a
 			// response. Any cancel is a protocol violation, so fail here.
@@ -466,6 +507,19 @@ func dxDur(n int) time.Duration { return time.Duration(n) * time.Millisecond }
 // deltas for the cut item never reach Telnyx, the cut item is truncated, and a
 // new output item after the cut plays in full.
 func TestDuplexRealtimeBargeInProductionPath(t *testing.T) {
+	dxBargeInRealtime(t, false)
+}
+
+// TestDuplexRealtimeBargeInWithOutOfBandCaller runs the same barge-in path with
+// the out-of-band caller transcription (#113) active. The endpoint answers the
+// caller's out-of-band request with a stray audio delta. That audio must never
+// reach Telnyx, and barge-in, clear, truncate and continuation must behave as
+// they do without it.
+func TestDuplexRealtimeBargeInWithOutOfBandCaller(t *testing.T) {
+	dxBargeInRealtime(t, true)
+}
+
+func dxBargeInRealtime(t *testing.T, oob bool) {
 	prov := &dxRealtime{
 		t:       t,
 		agent:   dxChunks(50, 1),
@@ -473,6 +527,8 @@ func TestDuplexRealtimeBargeInProductionPath(t *testing.T) {
 		next:    dxChunks(5, 4),
 		started: make(chan time.Time, 1),
 		truncs:  make(chan dxTruncate, 4),
+		oob:     oob,
+		oobReq:  make(chan struct{}, 1),
 	}
 	srv := httptest.NewServer(http.HandlerFunc(prov.ServeHTTP))
 	t.Cleanup(srv.Close)
@@ -596,6 +652,15 @@ func TestDuplexRealtimeBargeInProductionPath(t *testing.T) {
 	want := append(append([]byte(nil), agentSent[:1600]...), nextSent...)
 	if got := pl.Played(); string(got) != string(want) {
 		t.Fatalf("played %d bytes, want exact 1600-byte prefix plus %d-byte continuation", len(got), len(nextSent))
+	}
+	if oob {
+		// The out-of-band request must really have been sent, so the stray
+		// audio above was exercised, not skipped.
+		select {
+		case <-prov.oobReq:
+		default:
+			t.Fatal("no out-of-band transcription request reached the endpoint")
+		}
 	}
 	dxStopRun(t, s, errs, stop)
 }

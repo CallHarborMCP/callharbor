@@ -1,0 +1,9 @@
+{
+    "event_id": "event_4142",
+    "type": "response.output_text.delta",
+    "response_id": "resp_001",
+    "item_id": "msg_007",
+    "output_index": 0,
+    "content_index": 0,
+    "delta": "Sure, I can h"
+}

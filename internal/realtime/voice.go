@@ -27,6 +27,11 @@ const (
 	Native      Availability = "native"
 	OptInBilled Availability = "opt_in_separately_billed"
 	ClientSide  Availability = "client_side_only"
+	// OutOfBand means caller text is produced by the same configured voice
+	// model through a protocol-defined out-of-band response that references
+	// the caller audio item. The text is model-derived and approximate; it is
+	// not a separately billed transcription service.
+	OutOfBand   Availability = "out_of_band_response"
 	Unavailable Availability = "unavailable"
 )
 
@@ -78,7 +83,7 @@ var RealtimeCapabilities = Capabilities{
 		{Encoding: audio.L16, SampleRate: 24000, LittleEndian: true}, pcmu, pcma,
 	},
 	ModelInURL:          true,
-	CallerTranscript:    OptInBilled,
+	CallerTranscript:    OutOfBand,
 	AgentTranscript:     Native,
 	TranscriptTiming:    false,
 	ServerTruncate:      true,
@@ -121,14 +126,16 @@ func For(p Protocol) (Capabilities, error) {
 }
 
 // V1CallerTranscript is the caller transcript availability CallHarbor V1
-// presents for c. Separately billed transcription is prohibited by the product
-// scope (.agents/PRODUCT_SCOPE.md), so it is reported as Unavailable: caller
-// audio is recorded, caller text is shown as unavailable. The interim
-// realtime_ws decision was a CEO-agent decision, not owner authorization (see
-// docs/protocol/FEASIBILITY.md §4 item 1).
+// presents for c. Native and out-of-band (same configured voice model) caller
+// text are usable. Separately billed transcription is prohibited by the product
+// scope (.agents/PRODUCT_SCOPE.md) and is reported as Unavailable, so it is
+// never silently enabled. When an endpoint cannot provide out-of-band text,
+// the transcript contract fails explicitly (see Check and
+// docs/protocol/FEASIBILITY.md §4.1).
 func (c Capabilities) V1CallerTranscript() Availability {
-	if c.CallerTranscript == Native {
-		return Native
+	switch c.CallerTranscript {
+	case Native, OutOfBand:
+		return c.CallerTranscript
 	}
 	return Unavailable
 }
@@ -158,7 +165,7 @@ func (c Capabilities) Check(r Requirements) error {
 	}
 	if r.TwoPartyTranscript {
 		switch c.CallerTranscript {
-		case Native:
+		case Native, OutOfBand:
 		case OptInBilled:
 			return fmt.Errorf("%w: %s caller transcript requires a separately billed transcription model", ErrCapability, c.Protocol)
 		default:

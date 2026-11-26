@@ -239,6 +239,16 @@ type fakeAI struct {
 	// transcriptionRequested is set when a session setup message carries a
 	// "transcription" key anywhere (billed caller transcription, #114).
 	transcriptionRequested bool
+	// oobRequests holds every out-of-band response.create the app sent, in
+	// arrival order (realtime_ws caller transcription, #113).
+	oobRequests []map[string]any
+}
+
+// outOfBandRequests returns the out-of-band response.create messages recorded.
+func (f *fakeAI) outOfBandRequests() []map[string]any {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]map[string]any(nil), f.oobRequests...)
 }
 
 // hasKey reports whether key appears as an object key anywhere in v.
@@ -359,6 +369,13 @@ func (f *fakeAI) handle(ctx context.Context, c *websocket.Conn, m map[string]any
 		f.mu.Lock()
 		f.transcriptionRequested = true
 		f.mu.Unlock()
+	}
+	if m["type"] == "response.create" {
+		if resp, _ := m["response"].(map[string]any); resp != nil && resp["conversation"] == "none" {
+			f.mu.Lock()
+			f.oobRequests = append(f.oobRequests, m)
+			f.mu.Unlock()
+		}
 	}
 	switch m["type"] {
 	case "session.update": // realtime_ws setup

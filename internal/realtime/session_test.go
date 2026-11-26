@@ -82,13 +82,14 @@ func TestDialFailsClosedBeforeAnyAdapter(t *testing.T) {
 	if _, err := d.Dial(context.Background(), Profile{Protocol: ProtocolRealtime}, Requirements{Format: audio.Format{Encoding: audio.L16, SampleRate: 16000, LittleEndian: true}}); !errors.Is(err, ErrCapability) {
 		t.Fatalf("unsupported format: %v", err)
 	}
-	if _, err := d.Dial(context.Background(), Profile{Protocol: ProtocolRealtime}, Requirements{Format: pcmu, TwoPartyTranscript: true}); !errors.Is(err, ErrCapability) {
-		t.Fatalf("two-party transcript must fail closed: %v", err)
-	}
 	if called {
 		t.Fatal("an adapter ran for a rejected profile")
 	}
 	if _, err := d.Dial(context.Background(), Profile{Protocol: ProtocolRealtime}, Requirements{Format: pcmu}); err != nil || !called {
 		t.Fatalf("supported profile not dialed: %v", err)
+	}
+	called = false
+	if _, err := d.Dial(context.Background(), Profile{Protocol: ProtocolRealtime}, Requirements{Format: pcmu, TwoPartyTranscript: true}); err != nil || !called {
+		t.Fatalf("realtime_ws out-of-band two-party transcript must be dialed: %v", err)
 	}
 }
