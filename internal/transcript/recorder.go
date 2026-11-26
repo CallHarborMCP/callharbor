@@ -15,6 +15,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/CallHarborMCP/callharbor/internal/audio"
 	"github.com/CallHarborMCP/callharbor/internal/realtime"
@@ -68,11 +69,11 @@ const (
 	// MaxFragments bounds the fragments of one turn. MaxCallFragments bounds
 	// them across the call.
 	MaxFragments     = 4096
-	MaxCallFragments = 1 << 20
+	MaxCallFragments = 1 << 17
 	// MaxTurnSources bounds the provider ids one turn keeps. MaxCallSources
 	// bounds them across the call.
 	MaxTurnSources = 256
-	MaxCallSources = 1 << 20
+	MaxCallSources = 1 << 17
 	// MaxEvents bounds events waiting to be written. Written events leave memory.
 	MaxEvents = 4000
 	// maxSeenEvents bounds the provider event ids kept for replay detection.
@@ -134,17 +135,42 @@ type turn struct {
 	unavail     bool
 	lastWrite   string
 	textBytes   int
+	// doneBytes is the length of the provider's final text, counted against
+	// MaxTurnText and MaxCallText.
+	doneBytes int
+}
+
+// truncateUTF8 returns the longest prefix of s of at most n bytes that ends on
+// a rune boundary.
+func truncateUTF8(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	for n > 0 && !utf8.RuneStart(s[n]) {
+		n--
+	}
+	return s[:n]
 }
 
 // Recorder collects the events of one call. Observe and OnCut may be called
 // from any goroutine. It is not reusable after Close.
 //
 // Memory bound per call (worst case, all caps reached, approximate):
-//   - transcript text: MaxCallText (4 MiB) across all turns, then flagged text_truncated.
-//   - fragment structs: MaxCallFragments (2^20) × ~48 B ≈ 48 MiB, then flagged.
-//   - turns: MaxTurns (20000) × ~300 B of turn overhead ≈ 6 MiB, excluding fragments and text.
-//   - source IDs: MaxCallSources (2^20) × ~64 B ≈ 64 MiB, then flagged events_dropped.
-//     MaxTurnSources (256) bounds each turn as well.
+//   - transcript text (deltas and final text): MaxCallText (4 MiB) across all
+//     turns, then truncated and flagged text_truncated.
+//   - fragment structs: MaxCallFragments (2^17 = 131072) × ~48 B ≈ 6 MiB, then
+//     flagged events_dropped. MaxFragments (4096) bounds each turn.
+//   - turns: MaxTurns (20000) × ~300 B of turn overhead ≈ 6 MiB, excluding
+//     fragments and text.
+//   - source IDs: MaxCallSources (2^17) × ~64 B ≈ 8 MiB, then flagged
+//     events_dropped. MaxTurnSources (256) bounds each turn.
+//   - provider IDs: each stored id is at most maxProviderID (128) bytes; longer
+//     ids are dropped and flagged provider_id_invalid.
+//   - replay IDs: maxSeenEvents (8192) rolling window, ~0.5 MiB.
+//   - pending events: MaxEvents (4000) until the next flush writes them.
+//
+// Total, with every cap reached: about 25 MiB plus text. The per-call text
+// budget is the dominant term and is itself bounded at 4 MiB.
 //   - replay IDs: maxSeenEvents (8192) rolling window, ~0.5 MiB.
 //   - pending events: MaxEvents (4000) until the next flush writes them.
 //
@@ -276,6 +302,13 @@ func (r *Recorder) sinceStart() int64 {
 func (r *Recorder) Observe(ev realtime.Event) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	// An oversized event id is neither stored nor remembered for replay. Item
+	// and response ids are bounded where they are stored, not here, because an
+	// agent item id is still needed to find its playout accounting.
+	if len(ev.EventID) > maxProviderID {
+		r.flags[FlagProviderIDInvalid] = true
+		ev.EventID = ""
+	}
 	if ev.EventID != "" && (ev.Kind == realtime.EventAgentTranscriptDelta || ev.Kind == realtime.EventAgentTranscriptDone ||
 		ev.Kind == realtime.EventCallerTranscriptDelta || ev.Kind == realtime.EventCallerTranscriptFinal) {
 		if r.seenEvents[ev.EventID] {
@@ -300,6 +333,15 @@ func (r *Recorder) Observe(ev realtime.Event) {
 			return
 		}
 		text := ev.Text
+		if room := min(MaxTurnText-t.doneBytes, MaxCallText-r.callText); len(text) > room {
+			// Final text counts against the same text budget as deltas. It is
+			// cut at a rune boundary and flagged, never silently truncated.
+			text = truncateUTF8(text, max(room, 0))
+			t.flags[FlagTruncatedText] = true
+			r.flags[FlagTruncatedText] = true
+		}
+		t.doneBytes = len(text)
+		r.callText += len(text)
 		// Final text that only completes the deltas is not a correction;
 		// final text that rewrites them is.
 		if joined := joinText(t.frags); len(t.frags) > 0 && !strings.HasPrefix(text, joined) {
@@ -362,7 +404,8 @@ func (r *Recorder) agentTurnLocked(src audio.SourceRef, now int64) *turn {
 	if t == nil {
 		return nil
 	}
-	t.src, t.itemID = src, src.ItemID
+	t.src = src
+	t.itemID = boundItemID(t, src.ItemID)
 	t.corr = boundCorrelation(t, correlationOf(src))
 	r.agentBySrc[src] = t
 	return t
@@ -380,7 +423,7 @@ func (r *Recorder) callerTurnLocked(ev realtime.Event, now int64) *turn {
 		}
 		t := r.newTurnLocked(recording.SpeakerCaller, now)
 		if t != nil {
-			t.itemID, t.corr = ev.ItemID, boundCorrelation(t, ev.ItemID)
+			t.itemID, t.corr = boundItemID(t, ev.ItemID), boundCorrelation(t, ev.ItemID)
 			r.callerByID[ev.ItemID] = t
 		}
 		return t
@@ -467,7 +510,7 @@ func (r *Recorder) callerSpeechLocked(ev realtime.Event, now int64) {
 	if t == nil {
 		return
 	}
-	t.itemID, t.corr, t.unavail = ev.ItemID, boundCorrelation(t, ev.ItemID), true
+	t.itemID, t.corr, t.unavail = boundItemID(t, ev.ItemID), boundCorrelation(t, ev.ItemID), true
 	t.flags[FlagCallerUnavailable] = true
 	r.addSourceLocked(t, ev.EventID)
 	r.callerByID[ev.ItemID] = t
@@ -625,8 +668,9 @@ func (r *Recorder) addEventLocked(e storage.CallEvent) {
 }
 
 // flush writes every changed turn as a new revision, then pending events.
-// A turn is rewritten when its text or flags changed, its finality changed or
-// final is set; playout progress alone waits for one of those. With final set,
+// A turn is rewritten when its text, flags or timing changed, its finality
+// changed, or final is set. A playout-only change is written once its playout
+// has settled; unsettled playout is not written on every tick. With final set,
 // every turn is written as final and the summary is appended.
 func (r *Recorder) flush(ctx context.Context, final bool) error {
 	r.flushMu.Lock()
@@ -646,17 +690,20 @@ func (r *Recorder) flush(ctx context.Context, final bool) error {
 		if !final && !t.dirty && t.wroteFin && !r.playoutOpenLocked(t) {
 			continue
 		}
-		rev, entry := r.revisionLocked(t, final)
+		rev, entry, p := r.revisionLocked(t, final)
 		entries = append(entries, entry)
 		key := revKey(rev)
 		finChange := rev.Finality == storage.FinalityFinal && !t.wroteFin
 		// The written key covers text, flags, timing and playout, so a key
-		// match means nothing changed. A playout-only change is a new key.
+		// match means nothing changed.
 		if key == t.lastWrite {
 			t.dirty = false
 			continue
 		}
-		if !t.dirty && !finChange && !final && !r.playoutOpenLocked(t) {
+		// A periodic flush writes a turn with no text, flag or finality change
+		// only once its playout has settled and differs from the last write.
+		// Unsettled playout moves every tick and is held until it settles.
+		if !final && !t.dirty && !finChange && (!playoutSettled(p) || p == t.playoutSeen) {
 			t.dirty = false
 			continue
 		}
@@ -668,13 +715,13 @@ func (r *Recorder) flush(ctx context.Context, final bool) error {
 			} else {
 				t.flags[FlagPlayoutUpdated] = true
 			}
-			rev, _ = r.revisionLocked(t, final)
+			rev, _, p = r.revisionLocked(t, final)
 			key = revKey(rev)
 		}
 		revs = append(revs, rev)
 		wrote = append(wrote, t)
 		keys = append(keys, key)
-		seen = append(seen, r.playoutOfLocked(t))
+		seen = append(seen, p)
 		t.dirty = false
 	}
 	if final {
@@ -723,16 +770,23 @@ func (r *Recorder) flush(ctx context.Context, final bool) error {
 	return err
 }
 
-// playoutOpenLocked reports whether an agent turn's playout evidence may still
-// change: its accounting is unsettled, or it differs from the snapshot last
-// written. Playout changes are read here, because the bridge does not mark the
-// turn dirty when playout moves. Caller turns are never open.
+// playoutSettled reports whether an agent turn's playout accounting is complete:
+// every sent byte is estimated, discarded or unconfirmed.
+func playoutSettled(p audio.ItemPlayout) bool {
+	return p.Estimated+p.Discarded+p.Unconfirmed >= p.Sent
+}
+
+// playoutOpenLocked reports whether an agent turn's playout is still moving and
+// should be rebuilt on a periodic flush. Unsettled playout is rebuilt; settled
+// playout is rebuilt once, when it differs from the snapshot last written, so a
+// settled change is persisted without waiting for Close. Caller turns are never
+// open.
 func (r *Recorder) playoutOpenLocked(t *turn) bool {
 	if t.speaker != recording.SpeakerAgent {
 		return false
 	}
 	p := r.playoutOfLocked(t)
-	if p.Estimated+p.Discarded+p.Unconfirmed < p.Sent {
+	if !playoutSettled(p) {
 		return true
 	}
 	return p != t.playoutSeen
@@ -748,8 +802,10 @@ func (r *Recorder) playoutOfLocked(t *turn) audio.ItemPlayout {
 	return p
 }
 
-// revisionLocked builds the current revision of t and its fidelity entry.
-func (r *Recorder) revisionLocked(t *turn, final bool) (storage.TranscriptRevision, recording.Entry) {
+// revisionLocked builds the current revision of t, its fidelity entry, and the
+// playout accounting it was built from. The caller stores that playout as the
+// turn's snapshot, so the revision and the snapshot come from one read.
+func (r *Recorder) revisionLocked(t *turn, final bool) (storage.TranscriptRevision, recording.Entry, audio.ItemPlayout) {
 	flags := map[string]bool{}
 	for f := range t.flags {
 		flags[f] = true
@@ -772,6 +828,7 @@ func (r *Recorder) revisionLocked(t *turn, final bool) (storage.TranscriptRevisi
 		rev.EndedMS = &end
 	}
 	var entry recording.Entry
+	var played audio.ItemPlayout
 	settled := true
 	switch t.speaker {
 	case recording.SpeakerCaller:
@@ -787,7 +844,8 @@ func (r *Recorder) revisionLocked(t *turn, final bool) (storage.TranscriptRevisi
 	case recording.SpeakerAgent:
 		rev.Speaker = storage.SpeakerAssistant
 		p, _ := r.cfg.Playout(t.src)
-		settled = p.Estimated+p.Discarded+p.Unconfirmed >= p.Sent
+		played = p
+		settled = playoutSettled(p)
 		e, err := recording.AgentEntry(text, t.sources, p)
 		if err != nil {
 			// Audio was sent with no transcript: there is no text to show.
@@ -804,8 +862,8 @@ func (r *Recorder) revisionLocked(t *turn, final bool) (storage.TranscriptRevisi
 			}
 		}
 		entry = e
-		gen, played := e.Generated.Milliseconds(), e.Played.Milliseconds()
-		rev.GeneratedMS, rev.PlayedMS, rev.PlayedIsEstimate = &gen, &played, e.PlayedIsEstimate
+		gen, playedMS := e.Generated.Milliseconds(), e.Played.Milliseconds()
+		rev.GeneratedMS, rev.PlayedMS, rev.PlayedIsEstimate = &gen, &playedMS, e.PlayedIsEstimate
 		switch e.Fidelity {
 		case recording.FidelityInterrupted:
 			flags[FlagAgentUnplayed] = true
@@ -829,7 +887,7 @@ func (r *Recorder) revisionLocked(t *turn, final bool) (storage.TranscriptRevisi
 		rev.Finality = storage.FinalityFinal
 	}
 	rev.Quality = sortedKeys(flags)
-	return rev, entry
+	return rev, entry, played
 }
 
 func (r *Recorder) summaryFlagsLocked(entries []recording.Entry) []string {
@@ -891,6 +949,17 @@ func joinText(frags []fragment) string {
 		b = append(b, f.text...)
 	}
 	return string(b)
+}
+
+// boundItemID returns id for storage in provider_item_id. An oversized id is
+// not stored, and the turn is flagged provider_id_invalid.
+func boundItemID(t *turn, id string) string {
+	if len(id) > maxProviderID {
+		t.flags[FlagProviderIDInvalid] = true
+		t.dirty = true
+		return ""
+	}
+	return id
 }
 
 // boundCorrelation returns corr for storage in transcript_turns.correlation_id,

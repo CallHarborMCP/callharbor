@@ -651,8 +651,38 @@ func TestOversizedProviderIDIsDroppedAndFlagged(t *testing.T) {
 	h.setPlayout(audio.SourceRef{ItemID: long}, played(300*ms))
 	h.close(t)
 	a := h.store.latest()
-	if len(a) != 1 || a[0].Text != "Hello." || a[0].CorrelationID != "" || !hasFlag(a[0].Quality, FlagProviderIDInvalid) {
+	if len(a) != 1 || a[0].Text != "Hello." || a[0].CorrelationID != "" || a[0].ProviderItemID != "" || !hasFlag(a[0].Quality, FlagProviderIDInvalid) {
 		t.Fatalf("turn = %+v", a)
+	}
+}
+
+// A 1 MiB provider event id is neither stored nor remembered, and the call is
+// flagged provider_id_invalid. The event itself is still recorded without it.
+func TestOversizedEventIDIsNotStored(t *testing.T) {
+	h := newHarness(t, realtime.RealtimeCapabilities)
+	huge := strings.Repeat("e", 1<<20)
+	h.rec.Observe(realtime.Event{Kind: realtime.EventResponseDone, RawType: "response.done", EventID: huge, ResponseID: "resp_1", ResponseStatus: "completed"})
+	h.close(t)
+	for _, e := range h.store.events {
+		if len(e.ProviderEventID) > maxProviderID {
+			t.Fatalf("stored event id of %d bytes", len(e.ProviderEventID))
+		}
+	}
+	if flags, _ := h.store.summary(t); !hasFlag(flags, FlagProviderIDInvalid) {
+		t.Fatalf("flags %v lack %s", flags, FlagProviderIDInvalid)
+	}
+}
+
+// Final text past the per-turn text budget is truncated and flagged text_truncated.
+func TestOversizedDoneTextIsTruncatedAndFlagged(t *testing.T) {
+	h := newHarness(t, realtime.RealtimeCapabilities)
+	big := strings.Repeat("b", MaxTurnText+1000)
+	h.rec.Observe(realtime.Event{Kind: realtime.EventAgentTranscriptDone, EventID: "ev_big", ItemID: "item_big", Text: big})
+	h.setPlayout(audio.SourceRef{ItemID: "item_big"}, played(300*ms))
+	h.close(t)
+	a := h.store.latest()
+	if len(a) != 1 || len(a[0].Text) > MaxTurnText || !hasFlag(a[0].Quality, FlagTruncatedText) {
+		t.Fatalf("turn text %d bytes, quality %v", len(a[0].Text), a[0].Quality)
 	}
 }
 
@@ -721,6 +751,35 @@ func TestPlayoutUpdateIsNotCorrection(t *testing.T) {
 	last := revs[len(revs)-1]
 	if !hasFlag(last.Quality, FlagPlayoutUpdated) || last.Text != "Done." || last.Fidelity != "played" {
 		t.Fatalf("last revision = %+v, want played with %s", last, FlagPlayoutUpdated)
+	}
+}
+
+// Unsettled playout that keeps moving is not written on every periodic flush.
+// It is written once it settles, so a turn that is still playing does not
+// produce a revision per tick.
+func TestUnsettledPlayoutNotWrittenEveryFlush(t *testing.T) {
+	h := newHarness(t, realtime.RealtimeCapabilities)
+	src := audio.SourceRef{ItemID: "item_u"}
+	h.rec.Observe(realtime.Event{Kind: realtime.EventAgentTranscriptDone, EventID: "ev_u", ItemID: "item_u", Text: "Working."})
+	// Unsettled: Sent 1000ms, only 200ms accounted for so far.
+	h.setPlayout(src, audio.ItemPlayout{Sent: 1000 * ms, Confirmed: 200 * ms, Estimated: 200 * ms})
+	for i := range 5 {
+		// Playout advances a little each tick while still unsettled.
+		h.setPlayout(src, audio.ItemPlayout{Sent: 1000 * ms, Confirmed: time.Duration(200+i*10) * ms, Estimated: time.Duration(200+i*10) * ms})
+		if err := h.rec.flush(context.Background(), false); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if n := len(h.store.revisionsOf(1)); n > 1 {
+		t.Fatalf("unsettled playout wrote %d revisions over 5 flushes, want at most 1", n)
+	}
+	// Once settled, the change is persisted on a periodic flush.
+	h.setPlayout(src, played(1000*ms))
+	if err := h.rec.flush(context.Background(), false); err != nil {
+		t.Fatal(err)
+	}
+	if n := len(h.store.revisionsOf(1)); n < 2 {
+		t.Fatalf("settled playout not persisted on flush: %d revisions", n)
 	}
 }
 

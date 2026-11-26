@@ -210,7 +210,7 @@
       "get": {
         "operationId": "getCallTranscript",
         "summary": "Get one page of a call transcript owned by the caller",
-        "description": "Returns the latest revision of each turn, in seq order, up to 100 turns per page. Each turn carries its speaker, finality, timing, fidelity and provenance; unknown provenance is null. quality_flags lists the summary flags of the call's media run, plus transcript_in_progress while the run is open and no_media_session when the call never reached a media run. finalized is true once the run has ended. Pass next_cursor back as cursor for the next page; it is empty on the last page. A call owned by another user is reported as not_found, the same as a missing call. Each read is recorded in the audit log as transcript.read.",
+        "description": "Returns the latest revision of each turn, in seq order, up to 100 turns per page. Each turn carries its speaker, finality, timing, fidelity and provenance; unknown provenance is null. quality_flags lists the summary flags of the call's media run, plus transcript_in_progress while the run is open, transcript_not_finalized when the call has ended without a finalized summary, and no_media_session when the call never reached a media run. Other flags in the list (for example playout_attribution_local, playout_updated, provider_id_invalid and text_truncated) are open-ended; clients must accept values they do not know. finalized is true once the run has ended. Pass next_cursor back as cursor for the next page; it is empty on the last page. A call owned by another user is reported as not_found, the same as a missing call. Each read is recorded in the audit log as transcript.read.",
         "security": [
           {
             "sessionCookie": []

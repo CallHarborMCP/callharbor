@@ -182,7 +182,7 @@ func registerTools(srv *mcp.Server, svc *service.Service, logger *slog.Logger) {
 
 	addTool(srv, &mcp.Tool{
 		Name:         ToolGetTranscript,
-		Description:  "Return one page of a call transcript owned by the caller, in seq order, up to 100 turns per page. Each turn carries its speaker, finality, timing, fidelity and provenance; unknown provenance is null. quality_flags lists the call's summary flags plus transcript_in_progress while the media run is open and no_media_session when the call never reached one. Pass next_cursor back as cursor for the next page. Foreign or missing calls return not_found.",
+		Description:  "Return one page of a call transcript owned by the caller, in seq order, up to 100 turns per page. Each turn carries its speaker, finality, timing, fidelity and provenance; unknown provenance is null. quality_flags lists the call's summary flags plus transcript_in_progress while the media run is open, transcript_not_finalized when the call has ended without a finalized summary, and no_media_session when the call never reached one. Other flags are open-ended; clients must accept values they do not know. Pass next_cursor back as cursor for the next page. Foreign or missing calls return not_found.",
 		Annotations:  &mcp.ToolAnnotations{ReadOnlyHint: true},
 		InputSchema:  inputOf(ToolGetTranscript),
 		OutputSchema: outputOf(ToolGetTranscript),
