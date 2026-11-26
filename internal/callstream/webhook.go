@@ -71,7 +71,7 @@ func (w *Webhooks) Wait(ctx context.Context) error {
 	}
 }
 
-// enterHangup registers one orphan hangup. It reports false once Stop has run.
+// enterHangup registers one orphan hangup. It reports false once Refuse has run.
 // The check and the registration share hangupMu, so Stop never misses one.
 func (w *Webhooks) enterHangup() bool {
 	w.hangupMu.Lock()
@@ -204,15 +204,17 @@ func (s *statusRecorder) Write(b []byte) (int, error) {
 // detached from the request, so a client disconnect does not cancel it.
 //
 // It is counted in w.inflight, so shutdown can wait for it before the store
-// closes. Once shutdown has begun (Stop), no new orphan hangup starts: the
-// shutdown hangup pass owns every live leg from that point.
+// closes. Refuse runs after the HTTP drain, so only a handler still running
+// past the drain deadline is refused. The shutdown hangup pass covers live
+// legs only, not these terminal calls; such a leg relies on a later Telnyx
+// event or its time_limit_secs.
 func (w *Webhooks) hangupOrphan(r *http.Request, leg storage.LiveCallLeg) {
 	if w.hangup == nil {
 		w.logger.Warn("leg ended by webhook but hangup is not configured", "call_id", leg.ID)
 		return
 	}
 	if !w.enterHangup() {
-		w.logger.Info("orphan hangup skipped during shutdown; shutdown hangs up live legs", "call_id", leg.ID)
+		w.logger.Info("orphan hangup skipped: shutdown passed the drain deadline", "call_id", leg.ID)
 		return
 	}
 	defer w.exitHangup()

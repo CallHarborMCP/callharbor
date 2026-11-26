@@ -65,6 +65,12 @@ to `CALLHARBOR_SHUTDOWN_TIMEOUT`, then sends a best-effort hangup for each live
 leg. A hangup that fails is logged and does not block shutdown. A dial cut off by
 shutdown is recorded as `dial_unconfirmed`, never redialed.
 
+The shutdown hangup pass covers live calls only. A leg found only after its call
+was already failed (for example, a dial whose outcome was unknown) is hung up when
+its webhooks arrive, and again on each later event until Telnyx reports the
+hangup. If those attempts fail and no further event arrives, Telnyx's
+`time_limit_secs` is the backstop. Fuller reconciliation is tracked for #65.
+
 The container's stop grace period must cover the worst-case shutdown sequence.
 With `T` set to `CALLHARBOR_SHUTDOWN_TIMEOUT` and `B = max(T/3, 5 s)`, the sum
 is `T + 5 s + 3B`: 35 s at the default 15 s, and 605 s at the 5 m maximum. At

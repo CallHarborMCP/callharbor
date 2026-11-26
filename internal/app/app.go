@@ -476,9 +476,6 @@ func shutdown(p shutdownParts) error {
 		// Refuse new streams and cancel running ones now. Their local ends are
 		// suppressed; HangupLive below ends every live leg.
 		p.media.StopMedia()
-		// Refuse new orphan hangups from webhooks at the same point. Running
-		// ones are waited for below, before the store closes.
-		p.media.RefuseOrphanHangups()
 	}
 	if !p.serveDead {
 		if err := p.httpServer.Shutdown(drainCtx); err != nil {
@@ -515,9 +512,13 @@ func shutdown(p shutdownParts) error {
 	if p.media != nil && !p.media.WaitMedia(mediaWaitBound(p.cfg.ShutdownTimeout)) {
 		p.logger.Warn("media sessions did not finish before the store closed")
 	}
-	// Orphan hangups were refused from StopMedia onward. Wait here for any
-	// already running, so none touches the store after close.
+	// Orphan hangups are refused only after the HTTP drain, so a webhook that
+	// commits while draining still hangs up its orphaned leg: HangupLive does
+	// not cover terminal calls. Only a handler running past the drain deadline
+	// is refused. Wait for any already running, so none touches the store
+	// after close.
 	if p.media != nil {
+		p.media.RefuseOrphanHangups()
 		orphanCtx, cancelOrphan := context.WithTimeout(context.Background(), mediaWaitBound(p.cfg.ShutdownTimeout))
 		if err := p.media.WaitOrphanHangups(orphanCtx); err != nil {
 			p.logger.Warn("orphan hangups did not finish before the store closed")
