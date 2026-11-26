@@ -125,13 +125,16 @@ func jsonObjectKeys(t *testing.T, b []byte) []string {
 // allowlist or any forbidden add-on key.
 func assertWithinBoundary(t *testing.T, body []byte) {
 	t.Helper()
-	for _, k := range jsonObjectKeys(t, body) {
+	keys := jsonObjectKeys(t, body)
+	present := make(map[string]bool, len(keys))
+	for _, k := range keys {
+		present[k] = true
 		if !dialAllowlist[k] {
 			t.Errorf("dial body key %q is outside the telephony-only allowlist: %s", k, body)
 		}
 	}
 	for _, bad := range forbiddenAddonFields {
-		if strings.Contains(string(body), `"`+bad+`"`) {
+		if present[bad] {
 			t.Errorf("dial body carries forbidden add-on key %q: %s", bad, body)
 		}
 	}
@@ -233,6 +236,8 @@ func TestDialRequestJSONFieldsAreAllowlisted(t *testing.T) {
 	}
 }
 
+// TestDialParamsHasNoAddonFields is a name-based tripwire, not a proof: it only
+// catches add-on-looking field names. The key allowlist tests are the real gate.
 func TestDialParamsHasNoAddonFields(t *testing.T) {
 	rt := reflect.TypeOf(DialParams{})
 	for i := range rt.NumField() {

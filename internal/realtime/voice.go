@@ -125,7 +125,7 @@ func For(p Protocol) (Capabilities, error) {
 // scope (.agents/PRODUCT_SCOPE.md), so it is reported as Unavailable: caller
 // audio is recorded, caller text is shown as unavailable. The interim
 // realtime_ws decision was a CEO-agent decision, not owner authorization (see
-// docs/protocol/FEASIBILITY.md §4.1).
+// docs/protocol/FEASIBILITY.md §4 item 1).
 func (c Capabilities) V1CallerTranscript() Availability {
 	if c.CallerTranscript == Native {
 		return Native

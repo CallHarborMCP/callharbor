@@ -87,13 +87,13 @@ func TestCallFlowEndToEnd(t *testing.T) {
 			ai.sendAgentAudio(t, agentChunk)
 			assertStreamMediaPayload(t, mediaConn, agentChunk)
 
-			// Telephony-only boundary (#114): the flow must not reach any Telnyx
-			// endpoint CallHarbor does not implement, and every dial body must
-			// stay within the telephony allowlist with no add-on keys.
-			if unexpected := tel.unexpectedRequests(); len(unexpected) != 0 {
-				t.Errorf("unexpected Telnyx requests: %v", unexpected)
-			}
+			// Telephony-only boundary (#114): every dial body must stay within the
+			// telephony allowlist with no add-on keys. Unexpected Telnyx requests
+			// are failed by the fake's cleanup.
 			assertDialBodiesTelephonyOnly(t, tel.dialBodies())
+			if ai.sawTranscriptionRequest() {
+				t.Error("provider session setup requested billed transcription (#114 forbids it)")
+			}
 		})
 	}
 }

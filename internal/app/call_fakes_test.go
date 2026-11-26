@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -14,6 +15,7 @@ import (
 	"github.com/coder/websocket"
 
 	"github.com/CallHarborMCP/callharbor/internal/realtime"
+	"github.com/CallHarborMCP/callharbor/internal/telephony/telnyx"
 )
 
 // fakeConnectionID is the Telnyx connection the fake account reports. The test
@@ -142,6 +144,13 @@ func newFakeTelnyx(t *testing.T, controlID string) *fakeTelnyx {
 	})
 	f.srv = httptest.NewServer(mux)
 	t.Cleanup(f.srv.Close)
+	// Cleanups run last-in first-out, so this runs before srv.Close. Any request
+	// to a Telnyx route the fake does not implement fails every test that made it.
+	t.Cleanup(func() {
+		if u := f.unexpectedRequests(); len(u) != 0 {
+			t.Errorf("unexpected Telnyx requests (telephony-only boundary, #114): %v", u)
+		}
+	})
 	return f
 }
 
@@ -169,18 +178,21 @@ func (f *fakeTelnyx) dialBodies() []map[string]any {
 	return append([]map[string]any(nil), f.dials...)
 }
 
-// dialBodyAllowlist is the complete set of keys a dial body may carry (#114
-// telephony-only boundary). It is duplicated from the telnyx package's
-// boundary test because that package's tests cannot be imported here. Keep
-// both lists in step.
-var dialBodyAllowlist = map[string]bool{
-	"connection_id": true, "to": true, "from": true, "webhook_url": true,
-	"webhook_url_method": true, "command_id": true, "client_state": true,
-	"timeout_secs": true, "time_limit_secs": true, "stream_url": true,
-	"stream_track": true, "stream_codec": true, "stream_bidirectional_mode": true,
-	"stream_bidirectional_codec": true, "stream_bidirectional_sampling_rate": true,
-	"stream_bidirectional_target_legs": true, "stream_auth_token": true,
-	"stream_establish_before_call_originate": true,
+// dialBodyAllowlist is the set of keys a dial body may carry, computed from the
+// json tags of telnyx.DialRequest so it cannot drift from production. The
+// telnyx package's boundary test pins DialRequest to its own explicit allowlist.
+var dialBodyAllowlist = dialRequestKeys()
+
+func dialRequestKeys() map[string]bool {
+	rt := reflect.TypeOf(telnyx.DialRequest{})
+	out := make(map[string]bool, rt.NumField())
+	for i := range rt.NumField() {
+		name, _, _ := strings.Cut(rt.Field(i).Tag.Get("json"), ",")
+		if name != "" && name != "-" {
+			out[name] = true
+		}
+	}
+	return out
 }
 
 // dialBodyForbiddenKeys are pinned CallRequest add-on keys (AMD, transcription,
@@ -224,6 +236,31 @@ type fakeAI struct {
 	events []string
 	// live is the open provider connection, so a test can drop it mid-call.
 	live *websocket.Conn
+	// transcriptionRequested is set when a session setup message carries a
+	// "transcription" key anywhere (billed caller transcription, #114).
+	transcriptionRequested bool
+}
+
+// hasKey reports whether key appears as an object key anywhere in v.
+func hasKey(v any, key string) bool {
+	switch x := v.(type) {
+	case map[string]any:
+		if _, ok := x[key]; ok {
+			return true
+		}
+		for _, c := range x {
+			if hasKey(c, key) {
+				return true
+			}
+		}
+	case []any:
+		for _, c := range x {
+			if hasKey(c, key) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // drop closes the provider's side of the open session, as if the AI service
@@ -261,6 +298,14 @@ func (f *fakeAI) endpoint() string {
 		return base + "/v1/live/sessions"
 	}
 	return base + "/v1/realtime"
+}
+
+// sawTranscriptionRequest reports whether any session setup asked for billed
+// transcription.
+func (f *fakeAI) sawTranscriptionRequest() bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.transcriptionRequested
 }
 
 // snapshot returns the recorded events in arrival order.
@@ -310,6 +355,11 @@ func (f *fakeAI) serve(w http.ResponseWriter, r *http.Request) {
 // handle answers one client event. Setup events echo the session so the
 // adapter's format check passes. Audio events are recorded only.
 func (f *fakeAI) handle(ctx context.Context, c *websocket.Conn, m map[string]any) {
+	if (m["type"] == "session.update" || m["type"] == "session.start") && hasKey(m, "transcription") {
+		f.mu.Lock()
+		f.transcriptionRequested = true
+		f.mu.Unlock()
+	}
 	switch m["type"] {
 	case "session.update": // realtime_ws setup
 		sess, _ := m["session"].(map[string]any)

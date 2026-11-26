@@ -23,7 +23,10 @@ or `calls are disabled: they need the secrets master key`.
 ## Telnyx URLs
 
 The server derives these from `CALLHARBOR_PUBLIC_URL`. Configure nothing else in
-Telnyx beyond the connection and its webhook URL.
+Telnyx beyond the connection and its webhook URL. Telnyx call recording,
+transcription, answering-machine detection (AMD), AI assistants and other paid
+add-ons must stay disabled on the number and the Call Control application.
+CallHarbor never enables them and records locally only.
 
 | Use | URL |
 | --- | --- |
