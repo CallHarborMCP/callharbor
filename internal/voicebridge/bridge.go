@@ -23,7 +23,16 @@ type Bridge struct {
 	ledger   *audio.PlayoutLedger
 	inRate   *audio.Resampler
 	outRate  *audio.Resampler
+	vad      *audio.VAD
+	// speech holds caller speech edges not yet taken by TakeSpeech. It is
+	// bounded by speechQueue; overflow drops the oldest edge, so the state
+	// seen by the next reader is always the latest.
+	speech []audio.SpeechTransition
 }
+
+// speechQueue bounds unread caller speech edges. Edges alternate start and
+// end, so a small bound keeps the most recent state without growth.
+const speechQueue = 8
 
 // New creates a bridge for one call. leg is the telephony wire format (G.711
 // 8 kHz on Telnyx). provider is the format negotiated with the AI voice
@@ -39,7 +48,11 @@ func New(leg, provider audio.Format, tolerance, grace time.Duration) (*Bridge, e
 	if err != nil {
 		return nil, err
 	}
-	b := &Bridge{leg: leg, provider: provider, ledger: l}
+	vad, err := audio.NewVAD(leg.SampleRate)
+	if err != nil {
+		return nil, err
+	}
+	b := &Bridge{leg: leg, provider: provider, ledger: l, vad: vad}
 	if leg.SampleRate != provider.SampleRate {
 		if b.inRate, err = audio.NewResampler(leg.SampleRate, provider.SampleRate); err != nil {
 			return nil, err
@@ -60,11 +73,41 @@ func (b *Bridge) CallerAudio(payload []byte) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
+	for _, t := range b.vad.Process(s) {
+		if t == audio.SpeechNone {
+			continue
+		}
+		if len(b.speech) == speechQueue {
+			b.speech = b.speech[1:]
+		}
+		b.speech = append(b.speech, t)
+	}
 	if b.inRate != nil {
 		s = b.inRate.Process(nil, s)
 	}
 	return audio.Encode(nil, b.provider, s)
 }
+
+// TakeSpeech returns and clears the caller speech edges seen since the last
+// call, oldest first. The detector runs on caller audio only.
+func (b *Bridge) TakeSpeech() []audio.SpeechTransition {
+	out := b.speech
+	b.speech = nil
+	return out
+}
+
+// Playing reports whether agent audio is still queued or audible at now.
+func (b *Bridge) Playing(now time.Time) bool {
+	return b.ledger.QueueEnd().After(now)
+}
+
+// PlayoutEnd is the time the queued agent audio finishes at real-time rate.
+func (b *Bridge) PlayoutEnd() time.Time { return b.ledger.QueueEnd() }
+
+// ResetCallerSpeech ends the detector's open utterance by policy, so the next
+// caller onset is judged from fresh audio and can emit a Start edge. Pending
+// speech edges that were not yet taken are kept; the owner takes them.
+func (b *Bridge) ResetCallerSpeech() { b.vad.Reset() }
 
 // AgentAudio converts one provider output chunk to telephony wire bytes and
 // records it in the playout ledger. The caller must transmit the returned
@@ -99,11 +142,17 @@ func (b *Bridge) Echo(name string, now time.Time) (audio.MarkOutcome, error) {
 	return b.ledger.Echo(name, now)
 }
 
-// Interrupt records a barge-in cut in the ledger. The caller must also send
-// the telephony clear command. Provider barge-in signals are not playback
-// confirmation; only echoed marks are.
-func (b *Bridge) Interrupt(now time.Time) {
-	b.ledger.Clear(now)
+// Interrupt records a barge-in cut in the ledger and reports whether agent
+// audio was still audible at now. The caller must also send the telephony
+// clear command. Provider barge-in signals are not playback confirmation; only
+// echoed marks are.
+func (b *Bridge) Interrupt(now time.Time) (audible bool) {
+	return b.ledger.Clear(now)
+}
+
+// Position reports an item's audible position at now (see audio.PlayoutLedger.Position).
+func (b *Bridge) Position(src audio.SourceRef, now time.Time) time.Duration {
+	return b.ledger.Position(src, now)
 }
 
 // Expire reports playout marks that never echoed within the ledger grace.
@@ -121,3 +170,6 @@ func (b *Bridge) Items() []audio.ItemPlayout { return b.ledger.Items() }
 
 // Pending reports marks still awaiting an echo.
 func (b *Bridge) Pending() int { return b.ledger.Pending() }
+
+// PendingLive reports marks awaiting an echo that have not yet expired.
+func (b *Bridge) PendingLive() int { return b.ledger.PendingLive() }

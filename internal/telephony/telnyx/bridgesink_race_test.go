@@ -56,7 +56,7 @@ func TestBridgeSinkConcurrentAgentAudioMarksAndInterrupts(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			for j := 0; j < 20; j++ {
-				if err := s.Interrupt(ctx); err != nil {
+				if _, err := s.Interrupt(ctx); err != nil {
 					t.Error(err)
 					return
 				}
@@ -116,7 +116,8 @@ func TestBridgeSinkInterruptCannotOvertakeInFlightAgentAudio(t *testing.T) {
 	<-entered
 	interruptDone := make(chan error, 1)
 	go func() {
-		interruptDone <- s.Interrupt(ctx)
+		_, err := s.Interrupt(ctx)
+		interruptDone <- err
 	}()
 	time.Sleep(50 * time.Millisecond)
 	close(release)
@@ -165,7 +166,7 @@ func TestBridgeSinkDropsCutItemAudioAfterInterrupt(t *testing.T) {
 	if err := s.AgentAudio(ctx, audio.SourceRef{ItemID: "cut"}, chunk); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.Interrupt(ctx); err != nil {
+	if _, err := s.Interrupt(ctx); err != nil {
 		t.Fatal(err)
 	}
 	before := len(sent)

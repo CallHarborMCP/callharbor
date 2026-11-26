@@ -41,6 +41,12 @@ func TestCapabilityMatrix(t *testing.T) {
 	if LiveCapabilities.ServerTruncate || LiveCapabilities.ModelInURL || !RealtimeCapabilities.ModelInURL {
 		t.Fatal("protocol differences regressed")
 	}
+	if RealtimeCapabilities.SpeechStartEvents != Native || LiveCapabilities.SpeechStartEvents != Unavailable {
+		t.Fatal("speech-start events: realtime_ws is native, live_ws has none documented")
+	}
+	if RealtimeCapabilities.DTMFInput != Unavailable || LiveCapabilities.DTMFInput != Unavailable {
+		t.Fatal("neither primary WebSocket accepts DTMF input; digits must never reach the model")
+	}
 }
 
 func TestValidateEndpoint(t *testing.T) {

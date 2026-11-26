@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"sync"
+	"time"
 
 	"github.com/CallHarborMCP/callharbor/internal/audio"
 	"github.com/CallHarborMCP/callharbor/internal/realtime"
@@ -26,6 +27,9 @@ type AudioBridge struct {
 	sink *telnyx.BridgeSink
 
 	caller chan []byte
+	// speech carries caller speech edges to the engine. Its bound is
+	// speechQueue; a full channel drops the edge (see enqueueSpeech).
+	speech chan voice.SpeechEvent
 	done   chan struct{}
 	once   sync.Once
 
@@ -34,7 +38,14 @@ type AudioBridge struct {
 	hasItem  bool
 }
 
-var _ voice.AudioBridge = (*AudioBridge)(nil)
+var (
+	_ voice.AudioBridge  = (*AudioBridge)(nil)
+	_ voice.SpeechBridge = (*AudioBridge)(nil)
+)
+
+// speechQueue bounds unread caller speech edges. The engine drains them
+// promptly; a lagging reader loses the oldest edge, never blocks the media loop.
+const speechQueue = 8
 
 // NewAudioBridge wraps sink, which must already be bound to a Telnyx stream.
 // Caller audio that the sink converts is routed into the engine queue through
@@ -43,9 +54,41 @@ func NewAudioBridge(sink *telnyx.BridgeSink) (*AudioBridge, error) {
 	if sink == nil {
 		return nil, errors.New("voicecall: audio bridge requires a bridge sink")
 	}
-	b := &AudioBridge{sink: sink, caller: make(chan []byte, callerQueue), done: make(chan struct{})}
+	b := &AudioBridge{
+		sink:   sink,
+		caller: make(chan []byte, callerQueue),
+		speech: make(chan voice.SpeechEvent, speechQueue),
+		done:   make(chan struct{}),
+	}
 	sink.ToProvider = b.enqueueCaller
+	sink.OnCallerSpeech = b.enqueueSpeech
 	return b, nil
+}
+
+// enqueueSpeech is non-blocking. When the engine lags, the oldest edge is
+// dropped so the newest state is always delivered. A start edge may be lost:
+// it only drives the onset cut, and the next end edge still resets silence
+// accounting. An end edge is never dropped: the engine's turn state depends on
+// it, so a lost end would leave the caller's turn open.
+func (b *AudioBridge) enqueueSpeech(ev telnyx.SpeechEvent) {
+	out := voice.SpeechEvent{Started: ev.Started, At: ev.At, Turn: ev.Turn, Audible: ev.Audible}
+	for {
+		select {
+		case b.speech <- out:
+			return
+		default:
+		}
+		if !ev.Started {
+			// Make room for the end edge by dropping the oldest queued edge.
+			select {
+			case <-b.speech:
+			default:
+			}
+			continue
+		}
+		// A start edge that finds the queue full is dropped, not waited on.
+		return
+	}
 }
 
 func (b *AudioBridge) enqueueCaller(chunk []byte) error {
@@ -86,10 +129,33 @@ func (b *AudioBridge) Play(ctx context.Context, pcm []byte) error {
 	return b.sink.AgentAudio(ctx, b.currentItem(), pcm)
 }
 
-// Interrupt drops unplayed model audio and sends Telnyx the clear command.
-func (b *AudioBridge) Interrupt(ctx context.Context) error {
-	return b.sink.Interrupt(ctx)
+// Interrupt drops unplayed model audio, sends Telnyx the clear command and
+// returns what was cut, in provider-neutral terms.
+func (b *AudioBridge) Interrupt(ctx context.Context) (voice.Cut, error) {
+	c, err := b.sink.Interrupt(ctx)
+	if err != nil {
+		return voice.Cut{}, err
+	}
+	return voice.Cut{ItemID: c.ItemID, ContentIndex: c.ContentIndex, Played: c.Played, Sent: c.Sent, Audible: c.Audible}, nil
 }
+
+// InterruptTurn cuts agent audio only while the caller is still in turn. A
+// refused cut returns ok false and sends nothing to Telnyx.
+func (b *AudioBridge) InterruptTurn(ctx context.Context, turn uint64) (voice.Cut, bool, error) {
+	c, ok, err := b.sink.InterruptTurn(ctx, turn)
+	if err != nil || !ok {
+		return voice.Cut{}, ok, err
+	}
+	return voice.Cut{ItemID: c.ItemID, ContentIndex: c.ContentIndex, Played: c.Played, Sent: c.Sent, Audible: c.Audible}, true, nil
+}
+
+// CallerSpeech returns the bounded channel of caller speech edges.
+func (b *AudioBridge) CallerSpeech() <-chan voice.SpeechEvent { return b.speech }
+
+// PlayoutEnd reports when queued agent audio finishes. Without it the engine
+// cannot tell that agent audio is audible, so local barge-in on live_ws never
+// cuts.
+func (b *AudioBridge) PlayoutEnd() time.Time { return b.sink.PlayoutEnd() }
 
 // Item records the provider item the next Play belongs to. The engine calls it
 // from the event sink, before Play, on the same goroutine.

@@ -76,11 +76,11 @@ func (b *fakeBridge) Play(ctx context.Context, pcm []byte) error {
 	return nil
 }
 
-func (b *fakeBridge) Interrupt(ctx context.Context) error {
+func (b *fakeBridge) Interrupt(ctx context.Context) (Cut, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	b.barges++
-	return nil
+	return Cut{}, nil
 }
 
 func TestRunClosesCleanlyOnProviderClose(t *testing.T) {
@@ -167,9 +167,9 @@ func (b *failingBridge) Play(ctx context.Context, pcm []byte) error {
 	return b.fakeBridge.Play(ctx, pcm)
 }
 
-func (b *failingBridge) Interrupt(ctx context.Context) error {
+func (b *failingBridge) Interrupt(ctx context.Context) (Cut, error) {
 	if b.bargeErr != nil {
-		return b.bargeErr
+		return Cut{}, b.bargeErr
 	}
 	return b.fakeBridge.Interrupt(ctx)
 }

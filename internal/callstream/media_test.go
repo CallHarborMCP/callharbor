@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -12,6 +13,7 @@ import (
 	"github.com/CallHarborMCP/callharbor/internal/audio"
 	"github.com/CallHarborMCP/callharbor/internal/realtime"
 	"github.com/CallHarborMCP/callharbor/internal/service"
+	"github.com/CallHarborMCP/callharbor/internal/voice"
 )
 
 // fakeSession is a realtime.Session that records Close. It never produces
@@ -117,7 +119,7 @@ func TestRenderRejectsInvalidStoredBrief(t *testing.T) {
 func TestRunEnforcesMaxDuration(t *testing.T) {
 	sess := newFakeSession()
 	start := time.Now()
-	_, _, _ = Run(context.Background(), sess, nopBridge{}, nil, 150*time.Millisecond)
+	_, _, _ = Run(context.Background(), sess, nopBridge{}, nil, voice.Options{}, 150*time.Millisecond)
 	if elapsed := time.Since(start); elapsed > 5*time.Second {
 		t.Fatalf("run ran %v, far past its 150ms limit", elapsed)
 	}
@@ -167,8 +169,8 @@ func (nopBridge) NextCallerAudio(ctx context.Context) ([]byte, error) {
 	<-ctx.Done()
 	return nil, ctx.Err()
 }
-func (nopBridge) Play(context.Context, []byte) error { return nil }
-func (nopBridge) Interrupt(context.Context) error    { return nil }
+func (nopBridge) Play(context.Context, []byte) error           { return nil }
+func (nopBridge) Interrupt(context.Context) (voice.Cut, error) { return voice.Cut{}, nil }
 
 func mustBrief(t *testing.T, m map[string]any) string {
 	t.Helper()
@@ -177,4 +179,37 @@ func mustBrief(t *testing.T, m map[string]any) string {
 		t.Fatal(err)
 	}
 	return string(b)
+}
+
+// The end reason recorded for a media run is decided by endReason. Each run end
+// maps to its own reason, so a silence timeout is never recorded as a media
+// failure or a duration cap.
+func TestEndReasonMapping(t *testing.T) {
+	cases := []struct {
+		name   string
+		capped bool
+		err    error
+		want   string
+	}{
+		{"duration cap", true, nil, ReasonMaxDuration},
+		{"duration cap wins over an error", true, errors.New("boom"), ReasonMaxDuration},
+		{"caller silence", false, voice.ErrCallerSilence, ReasonCallerSilence},
+		{"wrapped caller silence", false, fmt.Errorf("run: %w", voice.ErrCallerSilence), ReasonCallerSilence},
+		{"other run failure", false, errors.New("provider closed"), ReasonMediaFailed},
+		{"clean provider close", false, nil, ReasonAISessionClosed},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := endReason(tc.capped, tc.err); got != tc.want {
+				t.Fatalf("endReason(%v, %v) = %q, want %q", tc.capped, tc.err, got, tc.want)
+			}
+		})
+	}
+}
+
+// caller_silence is the reason string the operations doc names.
+func TestCallerSilenceReasonString(t *testing.T) {
+	if ReasonCallerSilence != "caller_silence" {
+		t.Fatalf("ReasonCallerSilence = %q, want caller_silence", ReasonCallerSilence)
+	}
 }

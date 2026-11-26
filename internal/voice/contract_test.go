@@ -41,11 +41,11 @@ func (b *recordingBridge) Play(_ context.Context, pcm []byte) error {
 	return nil
 }
 
-func (b *recordingBridge) Interrupt(context.Context) error {
+func (b *recordingBridge) Interrupt(context.Context) (voice.Cut, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	b.interrupts++
-	return nil
+	return voice.Cut{}, nil
 }
 
 func (b *recordingBridge) counts() (played, interrupts int) {

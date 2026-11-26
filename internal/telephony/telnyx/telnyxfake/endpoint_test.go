@@ -38,7 +38,10 @@ type liveFake struct {
 	inbound  [][]byte
 	outbound []byte
 	followup []byte
+	// resumed is streamed when provider append number resumeAt arrives. It is
+	// a plain reply trigger: no transcript event is sent with it.
 	resumed  []byte
+	resumeAt int
 	appends  int
 }
 
@@ -81,8 +84,7 @@ func (f *liveFake) handler(t *testing.T) http.HandlerFunc {
 				if f.followup != nil && n == 2 {
 					_ = c.Write(ctx, websocket.MessageText, []byte(`{"type":"session.output_audio.delta","delta":"`+base64.StdEncoding.EncodeToString(f.followup)+`"}`))
 				}
-				if f.resumed != nil && n == 3 {
-					_ = c.Write(ctx, websocket.MessageText, []byte(`{"type":"session.input_transcript.delta","event_id":"evt_caller","delta":"hi","start_ms":0,"end_ms":100}`))
+				if f.resumed != nil && n == f.resumeAt {
 					_ = c.Write(ctx, websocket.MessageText, []byte(`{"type":"session.output_audio.delta","delta":"`+base64.StdEncoding.EncodeToString(f.resumed)+`"}`))
 				}
 			case "session.close":
