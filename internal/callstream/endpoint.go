@@ -13,6 +13,7 @@ import (
 	"github.com/CallHarborMCP/callharbor/internal/realtime"
 	"github.com/CallHarborMCP/callharbor/internal/storage"
 	"github.com/CallHarborMCP/callharbor/internal/telephony/telnyx"
+	"github.com/CallHarborMCP/callharbor/internal/voice"
 	"github.com/CallHarborMCP/callharbor/internal/voicebridge"
 	"github.com/CallHarborMCP/callharbor/internal/voicecall"
 )
@@ -205,14 +206,20 @@ func (m *Media) buildSink(ctx context.Context, st storage.MediaCall, start telny
 		m.failSetup(ctx, st.ID, reason)
 		return nil, err
 	}
-	return m.attach(sess, st, start.Format, format, send, release)
+	caps, err := realtime.For(prof.Protocol)
+	if err != nil {
+		_ = sess.Close()
+		release()
+		return nil, err
+	}
+	return m.attach(sess, st, start.Format, format, caps, send, release)
 }
 
 // attach builds the bridge and runs the voice session over it. Every error
 // path closes the session, so no provider connection outlives a refused stream.
 // On success the run owns release and calls it after the run's end is handled,
 // so shutdown's wait covers the final local hangup too.
-func (m *Media) attach(sess realtime.Session, st storage.MediaCall, leg, provider audio.Format, send telnyx.Send, release func()) (telnyx.MediaSink, error) {
+func (m *Media) attach(sess realtime.Session, st storage.MediaCall, leg, provider audio.Format, caps realtime.Capabilities, send telnyx.Send, release func()) (telnyx.MediaSink, error) {
 	bridge, err := voicebridge.New(leg, provider, 5*time.Millisecond, 2*time.Second)
 	if err != nil {
 		_ = sess.Close()
@@ -243,7 +250,8 @@ func (m *Media) attach(sess realtime.Session, st storage.MediaCall, leg, provide
 		// is freed only after the run and its local hangup have finished.
 		defer release()
 		defer stop()
-		_, capped, runErr := Run(runCtx, sess, ab, ab.EventSink(nil), time.Duration(st.MaxDurationSecs)*time.Second)
+		opts := voice.Options{Caps: caps, SilenceTimeout: SilenceTimeout}
+		_, capped, runErr := Run(runCtx, sess, ab, ab.EventSink(nil), opts, time.Duration(st.MaxDurationSecs)*time.Second)
 		if m.Logger != nil && runErr != nil {
 			m.Logger.Info("call media ended", "call_id", st.ID, "error", runErr.Error())
 		}
@@ -261,6 +269,8 @@ func (m *Media) attach(sess realtime.Session, st storage.MediaCall, leg, provide
 		switch {
 		case capped:
 			m.endLocally(context.WithoutCancel(runCtx), st.ID, ReasonMaxDuration)
+		case errors.Is(runErr, voice.ErrCallerSilence):
+			m.endLocally(context.WithoutCancel(runCtx), st.ID, ReasonCallerSilence)
 		case runErr != nil:
 			m.endLocally(context.WithoutCancel(runCtx), st.ID, ReasonMediaFailed)
 		default:

@@ -76,7 +76,7 @@ func TestBargeInSendsTelnyxClear(t *testing.T) {
 	if err := ab.Play(ctx, ev.Audio); err != nil {
 		t.Fatalf("Play: %v", err)
 	}
-	if err := ab.Interrupt(ctx); err != nil {
+	if _, err := ab.Interrupt(ctx); err != nil {
 		t.Fatalf("Interrupt: %v", err)
 	}
 

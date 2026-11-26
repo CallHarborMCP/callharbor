@@ -12,6 +12,7 @@ import (
 	"github.com/CallHarborMCP/callharbor/internal/audio"
 	"github.com/CallHarborMCP/callharbor/internal/realtime"
 	"github.com/CallHarborMCP/callharbor/internal/service"
+	"github.com/CallHarborMCP/callharbor/internal/voice"
 )
 
 // fakeSession is a realtime.Session that records Close. It never produces
@@ -117,7 +118,7 @@ func TestRenderRejectsInvalidStoredBrief(t *testing.T) {
 func TestRunEnforcesMaxDuration(t *testing.T) {
 	sess := newFakeSession()
 	start := time.Now()
-	_, _, _ = Run(context.Background(), sess, nopBridge{}, nil, 150*time.Millisecond)
+	_, _, _ = Run(context.Background(), sess, nopBridge{}, nil, voice.Options{}, 150*time.Millisecond)
 	if elapsed := time.Since(start); elapsed > 5*time.Second {
 		t.Fatalf("run ran %v, far past its 150ms limit", elapsed)
 	}
@@ -167,8 +168,8 @@ func (nopBridge) NextCallerAudio(ctx context.Context) ([]byte, error) {
 	<-ctx.Done()
 	return nil, ctx.Err()
 }
-func (nopBridge) Play(context.Context, []byte) error { return nil }
-func (nopBridge) Interrupt(context.Context) error    { return nil }
+func (nopBridge) Play(context.Context, []byte) error           { return nil }
+func (nopBridge) Interrupt(context.Context) (voice.Cut, error) { return voice.Cut{}, nil }
 
 func mustBrief(t *testing.T, m map[string]any) string {
 	t.Helper()

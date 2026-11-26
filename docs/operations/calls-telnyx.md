@@ -89,6 +89,7 @@ CallHarbor ends a live call itself in three cases:
 | `max_duration` | The call's `max_duration_seconds` expired. |
 | `media_failed` | The AI session failed mid-call (a provider error or a dropped connection). |
 | `ai_session_closed` | The AI session closed cleanly while the caller was still connected. |
+| `caller_silence` | Neither the caller nor the agent was active for the silence timeout (`callstream.SilenceTimeout`, 30 s). CallHarbor closes the AI session and hangs up the leg. Speech is detected locally, so a noisy line that never goes quiet never triggers this. |
 
 When one of these happens, the call moves to `ending` and one `call.ending`
 event is recorded. Then CallHarbor sends one best-effort Telnyx hangup for the

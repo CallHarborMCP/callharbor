@@ -93,7 +93,9 @@ Source: `internal/realtime/voice.go`, tested in `TestCapabilityMatrix`.
 | Turn detection | `server_vad`/`semantic_vad`, `interrupt_response` | Model-internal. Not configurable. |
 | Caller transcript | **Opt-in, separately billed transcription model** (`audio.input.transcription`). O-RT costs: "If enabled, input transcription is billed separately". Asynchronous, no word timing. | `session.input_transcript.delta` is always on, with `start_ms`/`end_ms` (approximate, session-relative). No separate transcription charge is documented (absence of a charge: **UNVERIFIED**). |
 | Agent transcript | `response.output_audio_transcript.delta/.done`. No timing. | `session.output_transcript.delta` with `start_ms`/`end_ms` |
-| Interruption | Client `conversation.item.truncate{item_id,audio_end_ms}` → `conversation.item.truncated` (no text). `response.cancel`. | No truncate or cancel event. The client must stop playout itself. |
+| Speech start | Native `input_audio_buffer.speech_started{audio_start_ms,item_id}` (fixture-backed). Used for barge-in. | **None.** The fixture-backed `input_audio_buffer.speech_started` is rejected fail-closed. Barge-in is driven by the local caller-speech detector (`internal/audio/vad.go`, live-unverified). |
+| Interruption | Client `conversation.item.truncate{item_id,audio_end_ms}` → `conversation.item.truncated` (no text). CallHarbor sends truncate only for an identified, partly played item. It never sends `response.cancel`. | No truncate or cancel event. The client must stop playout itself: Telnyx `clear`, with the anonymous gate closed until caller speech ends. |
+| DTMF input | Not used on either protocol. Digits are never forwarded to the model and never logged (`DTMFInput` is `Unavailable` on both). | Same as Realtime. |
 | Playout events | `output_audio_buffer.*` is WebRTC/SIP only, so unavailable on WS | None |
 | Delegation | n/a (tools are not used) | `session.delegation.created`. The client answers with `session.commentary.append` ("unavailable"). No backend. |
 | Usage | `response.done.response.usage` (tokens) | `session.usage.updated.usage.seconds` (cumulative). Final value in `session.closed.usage`. |
@@ -141,10 +143,35 @@ Source: `internal/realtime/voice.go`, tested in `TestCapabilityMatrix`.
 | R12 | Live `session.output_audio.delta` example has `start_ms`/`end_ms`, but the schema says they are omitted on the primary WS | O-LIVE | Timing is ignored on audio. |
 | R13 | Live `error.code` is a required string in the schema, but the guide mentions `null` codes | O-LIVE live-conversations | Both accepted (test). |
 | R14 | Live `usage.seconds` is an integer in the reference, a float in O-PY | O-LIVE, O-PY `session_usage.py` | Parsed as float (test). |
-| R15 | Live pre-start error, close codes, max session length, whether output stops immediately on barge-in | O-LIVE (absent) | Fail closed on any non-`session.started` first event. Barge-in silencing is local (Telnyx `clear`). GPT-Live sends no speech-start event in the pinned fixtures, so `input_audio_buffer.speech_started` is rejected fail-closed (`livews` negative test); the bridge cuts playout on an explicit local call, not a provider signal. GPT-Live audio events carry no item ID, so a barge-in opens a synthetic local turn: the bridge closes it on cut (Telnyx `clear`) and suppresses all agent audio without an item ID until the first `session.input_transcript.delta` (caller speech) after the cut, which reopens the turn. Identified items stay gated per item. Signed-stream test `TestSignedStreamBargeInSuppressesStreamingLiveAudio` asserts no `media` after `clear` while the fake keeps streaming, and that audio resumes only after a caller transcript; it fails with the gate disabled. Live turn-taking after a barge-in therefore waits for caller speech. The limit that GPT-Live does not signal speech start remains live-unverified. |
+| R15 | Live pre-start error, close codes, max session length, whether output stops immediately on barge-in | O-LIVE (absent) | Fail closed on any non-`session.started` first event. GPT-Live sends no speech-start, truncate or cancel event in the pinned fixtures, so `input_audio_buffer.speech_started` is rejected fail-closed (`livews` negative test), and no `response.cancel` or truncate is ever sent on either protocol. Caller speech is detected locally (`internal/audio/vad.go`, energy VAD, live-unverified). The transport stamps each local speech-start edge with its caller turn number and whether agent audio was audible at that instant, under the same lock that gates agent audio. The engine requests a cut only for an audible start, and the transport performs it only if that caller turn is still open (no end edge since), so a start that is delayed past its own end cannot cut a reply that began after the caller stopped. A performed cut sends Telnyx `clear` and closes the anonymous turn gate; the transport reopens that gate synchronously on the local speech-end edge, so the provider's next reply is not gated. GPT-Live audio carries no item ID, so all agent audio without an ID is suppressed between the cut and the caller's speech end. Identified items stay gated per item. Signed-stream test `TestSignedStreamBargeInSuppressesStreamingLiveAudio` asserts no `media` after `clear` while the fake keeps streaming, and that audio resumes only after the detector's end edge; it fails with the gate disabled. The provider transcript is never a reopen trigger. Whether GPT-Live stops output promptly on a local cut is live-unverified. |
 | R16 | Whether GPT-Live transcription carries any extra charge | O-LIVE pricing (silent) | Must be confirmed by the owner from billing before claiming "no extra cost". |
 | R17 | Arbitrary model aliases or gateways (e.g. `gpt-live-1-codex`) | PRODUCT_SCOPE | Supported only if the handshake echoes the same model and format. Otherwise fail closed (`model alias rewritten` test). |
 
 ## 7. Simulation limits
+
+### Barge-in measurements (emulator only)
+
+These numbers come from loopback emulators (`telnyxfake`, the independent fake Realtime and Live servers), not from Telnyx or a live provider. They measure CallHarbor's own path: media frame in, provider event, Telnyx `clear` out. Real Telnyx `clear` latency is **unmeasured**.
+
+Command: `mise exec -- go test -race -count=1 -run 'TestDuplexRealtimeBargeInProductionPath|TestDuplexLivePathBargeIn' -v ./internal/voicecall/`, repeated 5 times. All 5 runs passed under `-race`. All figures are from `-race` builds. The race detector slows execution, so these are not representative of a non-race build. Latencies without `-race` were not measured.
+
+| Protocol | Metric (`BARGEIN_LATENCY` label) | n | min (ms) | max (ms) |
+|---|---|---|---|---|
+| `realtime_ws` | `frame->clear`: caller onset frame sent to Telnyx `clear` | 5 | 0.92 | 2.01 |
+| `realtime_ws` | `provider-speech_started->clear`: provider `input_audio_buffer.speech_started` received to `clear` | 5 | 0.25 | 0.81 |
+| `live_ws` | `frame->clear`: caller onset frame sent to Telnyx `clear` | 5 | 0.55 | 1.11 |
+| `live_ws` | `provider-received-onset->clear`: fake provider receives the first loud audio append to `clear` | 5 | 7.09 | 13.55 |
+
+Live has no speech-start event, so its second metric measures from when the provider received the first loud audio append, not from a speech-start event. Both bounds in the test (frame to clear under 500 ms) hold with wide margin on loopback.
+
+### Limitations
+
+- **No acoustic echo cancellation.** Agent audio played through a speaker can re-enter the caller leg. On `live_ws`, which has no provider speech-start, this can self-interrupt the agent.
+- **Energy VAD false onsets.** The local detector (`internal/audio/vad.go`) is RMS-energy based. Loud noise can start a false onset and cut audible agent audio. Thresholds are unverified on real lines.
+- **Live stale audio.** GPT-Live audio carries no item ID, so after a local cut, audio the provider already produced for the cut reply can still play if it was sent before the cut. The anonymous gate suppresses everything after the cut until caller speech ends. The bounded window is the reply generated before the cut.
+- **Real Telnyx clear latency is unmeasured.** The figures above are emulator-only.
+- **No answering-machine detection.** AMD is a separately billed Telnyx add-on and is not mandatory. A voicemail greeting is treated as caller speech.
+- **DTMF is not forwarded to the model and never logged.** Digits are dropped at the boundary.
+- **Realtime local VAD is used only for silence accounting.** On `realtime_ws`, provider speech-start drives barge-in. The local detector only feeds the silence watchdog.
 
 All emulators (`telnyxfake`, the fake Realtime server and the fake Live server) are independent implementations of the **documented** behaviour. They cannot prove undocumented live behaviour (R2–R7, R15). Real first-audio latency, jitter, interruption-to-silence timing and live codec behaviour remain unmeasured until an owner-run billable acceptance call. `Live Telnyx tested` stays **false**.

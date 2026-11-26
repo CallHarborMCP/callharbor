@@ -55,6 +55,15 @@ type Capabilities struct {
 	OutputPlayoutEvents Availability
 	// Delegation is client-side delegation support.
 	Delegation Availability
+	// SpeechStartEvents is a provider event that reports the caller starting
+	// to speak. Native means the engine can barge in on it; Unavailable means
+	// the engine must use its local caller-speech detector instead.
+	SpeechStartEvents Availability
+	// DTMFInput is provider-side keypad input. It is unavailable on both
+	// primary WebSocket protocols: DTMF arrives only on the telephony leg and
+	// is never forwarded to the model, because digits may be PINs and no
+	// documented input event carries them.
+	DTMFInput Availability
 }
 
 var (
@@ -76,6 +85,8 @@ var RealtimeCapabilities = Capabilities{
 	ResponseCancel:      true,
 	OutputPlayoutEvents: Unavailable,
 	Delegation:          Unavailable,
+	SpeechStartEvents:   Native,
+	DTMFInput:           Unavailable,
 }
 
 // LiveCapabilities documents GPT-Live over the primary WebSocket.
@@ -94,6 +105,8 @@ var LiveCapabilities = Capabilities{
 	ResponseCancel:      false,
 	OutputPlayoutEvents: Unavailable,
 	Delegation:          Native,
+	SpeechStartEvents:   Unavailable,
+	DTMFInput:           Unavailable,
 }
 
 // For returns the capability matrix for p.

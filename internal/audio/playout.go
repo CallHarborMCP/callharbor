@@ -188,8 +188,9 @@ func (l *PlayoutLedger) remove(i int) {
 // had not finished by now are split into an estimated-played prefix and a
 // discarded remainder; their eventual echoes are classified as MarkFlushed.
 // Chunks that should already have finished keep awaiting their in-flight
-// echo, which still confirms or fails them individually.
-func (l *PlayoutLedger) Clear(now time.Time) {
+// echo, which still confirms or fails them individually. It reports whether
+// any chunk was still playing at now, i.e. whether the clear cut audible audio.
+func (l *PlayoutLedger) Clear(now time.Time) (cut bool) {
 	for _, c := range l.pending {
 		if c.cleared || c.expired {
 			continue
@@ -198,6 +199,7 @@ func (l *PlayoutLedger) Clear(now time.Time) {
 			continue
 		}
 		c.cleared = true
+		cut = true
 		it := l.item(c.src)
 		played := now.Sub(c.playStart)
 		if played < 0 {
@@ -211,7 +213,12 @@ func (l *PlayoutLedger) Clear(now time.Time) {
 		it.Interrupted = true
 	}
 	l.queueEnd = now
+	return cut
 }
+
+// QueueEnd is the media time at which everything sent so far finishes playing
+// at real-time rate. A time at or before now means nothing is queued.
+func (l *PlayoutLedger) QueueEnd() time.Time { return l.queueEnd }
 
 // Expire marks chunks whose echo is overdue at now and returns
 // ErrPlayoutTimedOut if any were found. Overdue chunks count as Unconfirmed.

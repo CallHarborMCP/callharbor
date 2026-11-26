@@ -21,7 +21,12 @@ const (
 	ReasonMaxDuration        = "max_duration"
 	ReasonMediaFailed        = "media_failed"
 	ReasonAISessionClosed    = "ai_session_closed"
+	ReasonCallerSilence      = "caller_silence"
 )
+
+// SilenceTimeout is how long a call may go with neither caller speech nor
+// agent playout before CallHarbor ends it. Production uses this constant.
+const SilenceTimeout = 30 * time.Second
 
 // ErrCallUnavailable reports a stream for a call that is not accepting media.
 // The caller sees only that the stream is refused, never which check failed.
@@ -58,15 +63,15 @@ type Dial func(ctx context.Context, prof realtime.Profile, need realtime.Require
 // capped reports whether the cap ended the run. It is the only way to tell a
 // cap from a caller stop, since voice.Run returns a nil error for a clean
 // provider close. The caller uses it to choose the hangup reason.
-func Run(ctx context.Context, sess realtime.Session, bridge voice.AudioBridge, sink voice.EventSink, maxDur time.Duration) (res voice.Result, capped bool, err error) {
+func Run(ctx context.Context, sess realtime.Session, bridge voice.AudioBridge, sink voice.EventSink, opts voice.Options, maxDur time.Duration) (res voice.Result, capped bool, err error) {
 	if maxDur > 0 {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, maxDur)
 		defer cancel()
-		res, err = voice.Run(ctx, sess, bridge, sink)
+		res, err = voice.RunWith(ctx, sess, bridge, sink, opts)
 		return res, errors.Is(ctx.Err(), context.DeadlineExceeded), err
 	}
-	res, err = voice.Run(ctx, sess, bridge, sink)
+	res, err = voice.RunWith(ctx, sess, bridge, sink, opts)
 	return res, false, err
 }
 
