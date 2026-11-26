@@ -240,6 +240,178 @@
       "type": "object"
     }
   },
+  "get_transcript": {
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "call_id": {
+          "maxLength": 64,
+          "minLength": 1,
+          "type": "string"
+        },
+        "cursor": {
+          "maxLength": 512,
+          "type": "string"
+        }
+      },
+      "required": [
+        "call_id"
+      ],
+      "type": "object"
+    },
+    "outputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "call_id": {
+          "type": "string"
+        },
+        "finalized": {
+          "type": "boolean"
+        },
+        "next_cursor": {
+          "type": "string"
+        },
+        "quality_flags": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "turns": {
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "correlation_id": {
+                "maxLength": 128,
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "ended_ms": {
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "fidelity": {
+                "enum": [
+                  "played",
+                  "interrupted_text_includes_unplayed",
+                  "playout_unconfirmed",
+                  "not_played",
+                  "provider_asr_approximate",
+                  "unavailable"
+                ],
+                "type": "string"
+              },
+              "finality": {
+                "enum": [
+                  "partial",
+                  "final"
+                ],
+                "type": "string"
+              },
+              "generated_ms": {
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "played_is_estimate": {
+                "type": "boolean"
+              },
+              "played_ms": {
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "provider_item_id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "quality_flags": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "revision": {
+                "minimum": 1,
+                "type": "integer"
+              },
+              "seq": {
+                "minimum": 1,
+                "type": "integer"
+              },
+              "source_ids": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "speaker": {
+                "enum": [
+                  "assistant",
+                  "callee",
+                  "system"
+                ],
+                "type": "string"
+              },
+              "started_ms": {
+                "minimum": 0,
+                "type": "integer"
+              },
+              "text": {
+                "type": "string"
+              },
+              "timing_source": {
+                "enum": [
+                  "provider",
+                  "local_receive"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "seq",
+              "revision",
+              "speaker",
+              "finality",
+              "started_ms",
+              "ended_ms",
+              "text",
+              "fidelity",
+              "timing_source",
+              "source_ids",
+              "correlation_id",
+              "provider_item_id",
+              "generated_ms",
+              "played_ms",
+              "played_is_estimate",
+              "quality_flags"
+            ],
+            "type": "object"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "call_id",
+        "turns",
+        "quality_flags",
+        "finalized",
+        "next_cursor"
+      ],
+      "type": "object"
+    }
+  },
   "list_calls": {
     "inputSchema": {
       "additionalProperties": false,

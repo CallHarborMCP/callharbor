@@ -313,7 +313,7 @@ func TestSessionFailsClosed(t *testing.T) {
 // realtime_ws caller transcription exists only as a separately billed
 // transcription model. CallHarbor must not enable it, so a two-party
 // transcript requirement fails closed and the V1 caller transcript is
-// reported as unavailable (owner decision, option a).
+// reported as unavailable (CEO-agent decision, not owner-authorized, option a).
 func TestRealtimeTwoPartyTranscriptFailsClosed(t *testing.T) {
 	req := realtime.Requirements{Format: audio.Format{Encoding: audio.PCMU, SampleRate: 8000}, TwoPartyTranscript: true}
 	if err := realtime.RealtimeCapabilities.Check(req); !errors.Is(err, realtime.ErrCapability) {

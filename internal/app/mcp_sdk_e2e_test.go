@@ -218,7 +218,7 @@ func TestMCPSDKClientListsOnlyImplementedTools(t *testing.T) {
 		names = append(names, tool.Name)
 	}
 	sort.Strings(names)
-	want := []string{"get_call", "get_profiles", "list_calls", "make_call"}
+	want := []string{"get_call", "get_profiles", "get_transcript", "list_calls", "make_call"}
 	if strings.Join(names, ",") != strings.Join(want, ",") {
 		t.Fatalf("tools = %v, want %v", names, want)
 	}
@@ -363,7 +363,7 @@ func TestMCPSDKPlannedToolsAreNotRegistered(t *testing.T) {
 	e, token := setupMCPData(t)
 	sess := e.sdkClient(t, token)
 
-	for _, name := range []string{"get_transcript", "get_recording", "hangup_call"} {
+	for _, name := range []string{"get_recording", "hangup_call"} {
 		res, err := sess.CallTool(context.Background(), &mcp.CallToolParams{Name: name, Arguments: map[string]any{"call_id": "alice-c1"}})
 		if res != nil {
 			t.Fatalf("planned %s returned a result: %+v", name, res)
@@ -375,6 +375,31 @@ func TestMCPSDKPlannedToolsAreNotRegistered(t *testing.T) {
 		if wire.Code != jsonrpc.CodeInvalidParams || !strings.Contains(wire.Message, "unknown tool") {
 			t.Fatalf("planned %s error = code %d %q, want code %d \"unknown tool\"", name, wire.Code, wire.Message, jsonrpc.CodeInvalidParams)
 		}
+	}
+}
+
+// TestMCPSDKGetTranscriptOwnerPageAndForeignNotFound reads a seeded call's
+// transcript through the SDK. The seeded calls have no media run, so the page
+// is empty and carries no_media_session. Bob's call is refused as not_found.
+func TestMCPSDKGetTranscriptOwnerPageAndForeignNotFound(t *testing.T) {
+	e, token := setupMCPData(t)
+	sess := e.sdkClient(t, token)
+
+	m := structuredMap(t, callTool(t, sess, "get_transcript", map[string]any{"call_id": "alice-c1"}))
+	if m["call_id"] != "alice-c1" || m["finalized"] != false || m["next_cursor"] != "" {
+		t.Fatalf("page = %v", m)
+	}
+	if turns, ok := m["turns"].([]any); !ok || len(turns) != 0 {
+		t.Fatalf("turns = %v, want an empty array", m["turns"])
+	}
+	flags, _ := m["quality_flags"].([]any)
+	if len(flags) != 1 || flags[0] != "no_media_session" {
+		t.Fatalf("quality_flags = %v, want [no_media_session]", m["quality_flags"])
+	}
+
+	foreign := callTool(t, sess, "get_transcript", map[string]any{"call_id": "bob-c1"})
+	if code := toolErrorCode(t, foreign); code != "not_found" {
+		t.Fatalf("foreign transcript code = %q, want not_found", code)
 	}
 }
 

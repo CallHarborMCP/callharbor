@@ -38,13 +38,16 @@ type Store interface {
 // Service implements the shared operations. It holds no caller state: every
 // call receives its Actor explicitly.
 type Service struct {
-	store Store
-	calls *CallOperator
+	store       Store
+	calls       *CallOperator
+	transcripts TranscriptStore
+	// now is the clock for audit timestamps. Tests replace it.
+	now func() time.Time
 }
 
 // New returns a Service backed by store.
 func New(store Store) *Service {
-	return &Service{store: store}
+	return &Service{store: store, now: time.Now}
 }
 
 // WithCalls attaches the call write path. The app sets it only when calls are

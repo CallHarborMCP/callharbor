@@ -193,6 +193,8 @@ func newCallIngress(store *storage.Store, sec *secrets.Service, tokens *callstre
 		Keys:     keys,
 		Webhooks: webhooks,
 		Verifier: webhooks.Verifier,
+		// Every call's transcript and event timeline go to the same store.
+		Transcripts: store,
 		// The URL was validated above, so the only error here is one the
 		// startup check already ruled out.
 		StreamURL: func(callID, token string) string {
@@ -324,7 +326,7 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger, ln net.Lis
 	// Calls need a public origin for the provider's webhook and media URLs.
 	// Without one, MakeCall fails closed instead of queuing a call that can
 	// never be dialed.
-	svc := service.New(store)
+	svc := service.New(store).WithTranscripts(store)
 	var worker *callworker.Worker
 	var legResolver callworker.LegResolver
 	var callRoutes []func(*http.ServeMux)

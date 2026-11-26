@@ -13,6 +13,7 @@ import (
 	"github.com/CallHarborMCP/callharbor/internal/realtime"
 	"github.com/CallHarborMCP/callharbor/internal/storage"
 	"github.com/CallHarborMCP/callharbor/internal/telephony/telnyx"
+	"github.com/CallHarborMCP/callharbor/internal/transcript"
 	"github.com/CallHarborMCP/callharbor/internal/voice"
 	"github.com/CallHarborMCP/callharbor/internal/voicebridge"
 	"github.com/CallHarborMCP/callharbor/internal/voicecall"
@@ -59,6 +60,9 @@ type Media struct {
 	// Webhooks is the webhook set sharing this media service. Its orphan
 	// hangups are stopped with the media sessions, so none starts after shutdown.
 	Webhooks *Webhooks
+	// Transcripts persists each call's transcript turns and event timeline.
+	// When nil, no transcript is recorded.
+	Transcripts transcript.Store
 	// sessions holds the active media sessions: one per call id (m1), and the
 	// set shutdown cancels and waits for before the store closes (M2).
 	sessions sessions
@@ -261,6 +265,24 @@ func (m *Media) attach(sess realtime.Session, st storage.MediaCall, leg, provide
 		release()
 		return nil, err
 	}
+	sink := ab.EventSink(nil)
+	var rec *transcript.Recorder
+	if m.Transcripts != nil {
+		rec, err = transcript.New(transcript.Config{
+			CallID: st.ID, OwnerUserID: st.OwnerUserID, Caps: caps, Store: m.Transcripts,
+			Playout: ab.Playout, SourceOf: ab.SourceOf, Now: m.Now, Logger: m.Logger,
+		})
+		if err != nil {
+			_ = sess.Close()
+			release()
+			return nil, err
+		}
+		ab.OnCut = rec.OnCut
+		// The bridge tags audio before the recorder sees it, so both agree on
+		// each event's playout source.
+		sink = ab.EventSink(rec.Observe)
+		rec.Start()
+	}
 	// The run is bound to the stream. Closing the stream cancels it, and
 	// voice.Run always closes the session, so the provider connection ends
 	// with the stream.
@@ -276,11 +298,25 @@ func (m *Media) attach(sess realtime.Session, st storage.MediaCall, leg, provide
 		// is freed only after the run and its local hangup have finished.
 		defer release()
 		defer stop()
+		if rec != nil {
+			// Deferred last, so it runs first: after the run and any local
+			// hangup, before the claim is released, so shutdown's wait covers
+			// the final transcript write while the store is open. No event or
+			// cut reaches the recorder once the run has returned.
+			defer func() {
+				if err := rec.Close(context.Background()); err != nil && m.Logger != nil {
+					// Log without transcript content. The call's transcript
+					// stays unfinalized, which the service reports.
+					m.Logger.Error("transcript final write failed", "call_id", st.ID, "error", err.Error())
+				}
+			}()
+		}
 		opts := voice.Options{Caps: caps, SilenceTimeout: SilenceTimeout}
-		_, capped, runErr := Run(runCtx, sess, ab, ab.EventSink(nil), opts, time.Duration(st.MaxDurationSecs)*time.Second)
+		_, capped, runErr := Run(runCtx, sess, ab, sink, opts, time.Duration(st.MaxDurationSecs)*time.Second)
 		if m.Logger != nil && runErr != nil {
 			m.Logger.Info("call media ended", "call_id", st.ID, "error", runErr.Error())
 		}
+
 		if stream.streamClosed.Load() {
 			return
 		}
