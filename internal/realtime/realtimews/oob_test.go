@@ -464,6 +464,46 @@ func TestOutOfBandInterleavedWithMainAgentResponse(t *testing.T) {
 	if audio != 1 || agentText != 2 || caller != 2 || done != 1 {
 		t.Fatalf("audio=%d agentText=%d caller=%d done=%d; events %+v", audio, agentText, caller, done, evs)
 	}
+	// Exact order. The coordinator queues its own events in FIFO order, so the
+	// caller delta must come before the main agent's text and the caller final
+	// before the main response's done. Dropping the FIFO append in Next changes
+	// this sequence.
+	type step struct {
+		kind       realtime.EventKind
+		itemID     string
+		responseID string
+	}
+	// The emulator's OOB response also sends audio, which the coordinator turns
+	// into a failed caller event (modalities_ignored) and a targeted cancel.
+	// The main response's ignored lifecycle events are not under test.
+	want := []step{
+		{realtime.EventCallerTranscriptDelta, "item_c1", "resp_oob"},
+		{realtime.EventAudio, "item_main", "resp_main"},
+		{realtime.EventCallerTranscriptFinal, "item_c1", "resp_oob"},
+		{realtime.EventAgentTranscriptDelta, "item_main", "resp_main"},
+		{realtime.EventCallerTranscriptFailed, "item_c1", "resp_oob"},
+		{realtime.EventAgentTranscriptDone, "item_main", "resp_main"},
+		{realtime.EventResponseDone, "", "resp_main"},
+	}
+	got := make([]step, 0, len(evs))
+	for _, ev := range evs {
+		if ev.Kind == realtime.EventIgnored {
+			continue
+		}
+		got = append(got, step{ev.Kind, ev.ItemID, ev.ResponseID})
+	}
+	if len(got) != len(want) {
+		var raw []string
+		for _, ev := range evs {
+			raw = append(raw, ev.RawType)
+		}
+		t.Fatalf("event sequence length %d, want %d: raw=%v got=%+v", len(got), len(want), raw, got)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("event %d = %+v, want %+v (all %+v)", i, got[i], want[i], got)
+		}
+	}
 	// The OOB audio frame must never have become call audio.
 	for _, ev := range evs {
 		if ev.Kind == realtime.EventAudio && ev.ResponseID == "resp_oob" {
@@ -610,5 +650,330 @@ func TestUpstreamFixturesThroughCoordinator(t *testing.T) {
 	}
 	if len(st.fifo) != 0 {
 		t.Fatalf("ordinary upstream events produced out-of-band events: %+v", st.fifo)
+	}
+}
+
+// sentinelAgentDone is an ordinary agent response.done sent after the
+// out-of-band checks. Reading it proves nothing from the out-of-band response
+// was delivered ahead of it: the next call event must be this one.
+const sentinelAgentDone = `{"type":"response.done","event_id":"ev_sentinel","response":{"id":"resp_sentinel","status":"completed","metadata":null,"output":[]}}`
+
+// A response with no purpose echo and a null conversation_id is bound to the
+// oldest waiting request. Its text is the caller transcript, and nothing from
+// it reaches the call as agent output.
+// out-of-band response for the oldest waiting request. Its text is the caller
+// transcript; nothing from it reaches the call as agent output.
+func TestOutOfBandNoEchoNullConversationDeliversCallerText(t *testing.T) {
+	e := &oobEndpoint{afterUpd: []string{callerItemAdded}}
+	e.respond = func(req map[string]any) []string {
+		return []string{
+			`{"type":"response.created","event_id":"rc","response":{"id":"resp_oob","status":"in_progress","conversation_id":null,"output":[]}}`,
+			`{"type":"response.output_text.done","event_id":"od2","response_id":"resp_oob","item_id":"oob_1","output_index":0,"content_index":0,"text":"Two people."}`,
+			`{"type":"response.done","event_id":"od3","response":{"id":"resp_oob","status":"completed","conversation_id":null,"output":[]}}`,
+		}
+	}
+	s := connectOOB(t, e, time.Now)
+	ev := nextNonIgnored(t, s)
+	if ev.Kind != realtime.EventCallerTranscriptFinal || ev.Text != "Two people." || ev.ItemID != "item_c1" || !ev.OutOfBand {
+		t.Fatalf("caller final = %+v", ev)
+	}
+	e.sendNext(sentinelAgentDone)
+	ev = nextNonIgnored(t, s)
+	if ev.Kind != realtime.EventResponseDone || ev.ResponseID != "resp_sentinel" {
+		t.Fatalf("out-of-band response leaked ahead of the agent response: %+v", ev)
+	}
+}
+
+// The same response with audio first. The audio must never be call audio;
+// the item fails, and the response's later events are dropped.
+func TestOutOfBandNoEchoNullConversationAudioNeverLeaks(t *testing.T) {
+	e := &oobEndpoint{afterUpd: []string{callerItemAdded}}
+	e.respond = func(req map[string]any) []string {
+		return []string{
+			`{"type":"response.created","event_id":"rc","response":{"id":"resp_oob","status":"in_progress","conversation_id":null,"output":[]}}`,
+			`{"type":"response.output_audio.delta","event_id":"ea","response_id":"resp_oob","item_id":"oob_1","output_index":0,"content_index":0,"delta":"QUFB"}`,
+			`{"type":"response.output_audio_transcript.done","event_id":"at","response_id":"resp_oob","item_id":"oob_1","output_index":0,"content_index":0,"transcript":"agent words"}`,
+			`{"type":"response.done","event_id":"od3","response":{"id":"resp_oob","status":"completed","conversation_id":null,"output":[]}}`,
+		}
+	}
+	s := connectOOB(t, e, time.Now)
+	ev := nextNonIgnored(t, s)
+	if ev.Kind == realtime.EventAudio || ev.Kind == realtime.EventAgentTranscriptDone || ev.Kind == realtime.EventResponseDone {
+		t.Fatalf("out-of-band response leaked into the call: %+v", ev)
+	}
+	if ev.Kind != realtime.EventCallerTranscriptFailed || ev.ErrCode != "modalities_ignored" || ev.ItemID != "item_c1" {
+		t.Fatalf("audio from the out-of-band response = %+v", ev)
+	}
+	e.sendNext(sentinelAgentDone)
+	ev = nextNonIgnored(t, s)
+	if ev.Kind != realtime.EventResponseDone || ev.ResponseID != "resp_sentinel" {
+		t.Fatalf("out-of-band events leaked ahead of the agent response: %+v", ev)
+	}
+}
+
+// An echoed purpose with a non-null conversation_id means the endpoint
+// ignored conversation "none". The item fails as conversation_not_none, the
+// endpoint is latched unsupported, and the response's events are dropped.
+func TestOutOfBandConversationNotNoneFailsItemAndLatches(t *testing.T) {
+	e := &oobEndpoint{afterUpd: []string{callerItemAdded}}
+	e.respond = func(req map[string]any) []string {
+		meta := metaOf(req)
+		return []string{
+			`{"type":"response.created","event_id":"rc","response":{"id":"resp_oob","status":"in_progress","conversation_id":"conv_1","metadata":` + mustJSON(meta) + `,"output":[]}}`,
+			`{"type":"response.output_audio.delta","event_id":"ea","response_id":"resp_oob","item_id":"oob_1","output_index":0,"content_index":0,"delta":"QUFB"}`,
+			`{"type":"response.done","event_id":"od3","response":{"id":"resp_oob","status":"completed","conversation_id":"conv_1","metadata":` + mustJSON(meta) + `,"output":[]}}`,
+		}
+	}
+	s := connectOOB(t, e, time.Now)
+	ev := nextNonIgnored(t, s)
+	if ev.Kind != realtime.EventCallerTranscriptFailed || ev.ErrCode != "conversation_not_none" || ev.ItemID != "item_c1" {
+		t.Fatalf("conversation none ignored = %+v", ev)
+	}
+	e.sendNext(sentinelAgentDone)
+	ev = nextNonIgnored(t, s)
+	if ev.Kind != realtime.EventResponseDone || ev.ResponseID != "resp_sentinel" {
+		t.Fatalf("response of an ignored conversation none leaked: %+v", ev)
+	}
+	// Latched: the next caller item is not requested again.
+	e.sendNext(`{"type":"conversation.item.added","event_id":"ev_item2","item":{"id":"item_c2","type":"message","status":"completed","role":"user","content":[{"type":"input_audio"}]}}`)
+	ev = nextNonIgnored(t, s)
+	if ev.Kind != realtime.EventCallerTranscriptFailed || ev.ItemID != "item_c2" || ev.ErrCode != "out_of_band_unsupported" {
+		t.Fatalf("second item after conversation_not_none = %+v", ev)
+	}
+	if n := len(e.requests()); n != 1 {
+		t.Fatalf("requests after conversation_not_none = %d, want 1", n)
+	}
+}
+
+// Audio from an out-of-band response latches the endpoint and
+// queues a targeted response.cancel for that response id only.
+func TestOutOfBandModalitiesIgnoredSendsTargetedCancel(t *testing.T) {
+	st := newOOBState(time.Now)
+	req := &oobRequest{itemID: "item_a", eventID: "ch_oob_1", responseID: "resp_x", started: time.Now()}
+	st.pending["ch_oob_1"], st.byResponse["resp_x"] = req, req
+	raw := []byte(`{"type":"response.output_audio.delta","event_id":"ea","response_id":"resp_x","item_id":"oob_y","delta":"AAA="}`)
+	sends, consumed, err := st.handleOOB("response.output_audio.delta", raw)
+	if err != nil || !consumed {
+		t.Fatalf("consumed=%v err=%v", consumed, err)
+	}
+	if !st.unsupported {
+		t.Fatal("modalities_ignored must latch the endpoint unsupported")
+	}
+	if len(sends) != 1 {
+		t.Fatalf("sends = %d, want one cancel", len(sends))
+	}
+	var m map[string]any
+	if err := json.Unmarshal(sends[0], &m); err != nil {
+		t.Fatal(err)
+	}
+	if m["type"] != "response.cancel" || m["response_id"] != "resp_x" || len(m) != 2 {
+		t.Fatalf("cancel must name only our response: %s", sends[0])
+	}
+}
+
+// An error with no event_id is attributed to the only pending
+// request when that request has no response id and param names no other field.
+// It fails the item and does not latch the endpoint.
+func TestOutOfBandNoEventIDErrorAttributedToSoleRequest(t *testing.T) {
+	st := newOOBState(time.Now)
+	if b, _ := st.request("item_s"); b == nil {
+		t.Fatal("request not sent")
+	}
+	raw := []byte(`{"type":"error","event_id":"ev_e","error":{"type":"invalid_request_error","code":"bad","message":"m","param":"response.metadata"}}`)
+	_, consumed, _ := st.handleOOB("error", raw)
+	if !consumed || len(st.fifo) != 1 || st.fifo[0].ItemID != "item_s" || st.fifo[0].ErrCode != "out_of_band_rejected:bad" {
+		t.Fatalf("attributed error: consumed=%v fifo=%+v", consumed, st.fifo)
+	}
+	if len(st.pending) != 0 {
+		t.Fatal("attributed request must be finished")
+	}
+}
+
+// Two pending requests make an error with no event_id ambiguous,
+// so it stays an ordinary call error.
+func TestOutOfBandNoEventIDErrorWithTwoPendingStaysCallError(t *testing.T) {
+	st := newOOBState(time.Now)
+	for _, id := range []string{"item_a", "item_b"} {
+		if _, err := st.request(id); err != nil {
+			t.Fatal(err)
+		}
+	}
+	raw := []byte(`{"type":"error","event_id":"ev_e","error":{"type":"invalid_request_error","code":"bad","message":"m","param":"response"}}`)
+	if _, consumed, _ := st.handleOOB("error", raw); consumed || len(st.fifo) != 0 || len(st.pending) != 2 {
+		t.Fatalf("ambiguous error must stay a call error: consumed=%v fifo=%+v pending=%d", consumed, st.fifo, len(st.pending))
+	}
+}
+
+// A correlated request (it has a response id) is not the target
+// of an error with no event_id, so the error stays a call error.
+func TestOutOfBandNoEventIDErrorWithCorrelatedRequestStaysCallError(t *testing.T) {
+	st := newOOBState(time.Now)
+	req := &oobRequest{itemID: "item_c", eventID: "ch_oob_9", responseID: "resp_c", started: time.Now()}
+	st.pending["ch_oob_9"], st.byResponse["resp_c"] = req, req
+	raw := []byte(`{"type":"error","event_id":"ev_e","error":{"type":"invalid_request_error","code":"bad","message":"m"}}`)
+	if _, consumed, _ := st.handleOOB("error", raw); consumed || len(st.fifo) != 0 || len(st.pending) != 1 {
+		t.Fatalf("error for a correlated request must stay a call error: consumed=%v fifo=%+v", consumed, st.fifo)
+	}
+}
+
+// A rate limit fails only its item. It does not latch the
+// endpoint, so the next caller item is still requested.
+func TestOutOfBandRateLimitFailsItemWithoutLatch(t *testing.T) {
+	st := newOOBState(time.Now)
+	if _, err := st.request("item_r"); err != nil {
+		t.Fatal(err)
+	}
+	eid := ""
+	for k := range st.pending {
+		eid = k
+	}
+	raw := []byte(`{"type":"error","event_id":"ev_e","error":{"type":"rate_limit_exceeded","code":"rate_limit","message":"m","event_id":"` + eid + `"}}`)
+	if _, consumed, _ := st.handleOOB("error", raw); !consumed {
+		t.Fatal("rate-limit error for an out-of-band event must be consumed")
+	}
+	if st.unsupported {
+		t.Fatal("a rate limit must not latch the endpoint unsupported")
+	}
+	if b, _ := st.request("item_next"); b == nil {
+		t.Fatal("next item must still be requested after a rate limit")
+	}
+}
+
+// When output_text.done was already delivered, a timeout before
+// response.done must not emit timeout. The request is finished silently.
+func TestOutOfBandFinalThenTimeoutIsSilent(t *testing.T) {
+	clock := time.Unix(1000, 0)
+	st := newOOBState(func() time.Time { return clock })
+	if _, err := st.request("item_f"); err != nil {
+		t.Fatal(err)
+	}
+	req := st.pending["ch_oob_1"]
+	req.responseID = "resp_f"
+	st.byResponse["resp_f"] = req
+	st.textOrAudio("response.output_text.done", req, "od", "", "Final words.")
+	if ev, _ := st.pop(); ev.Kind != realtime.EventCallerTranscriptFinal {
+		t.Fatalf("final not delivered: %+v", ev)
+	}
+	clock = clock.Add(OutOfBandTimeout + time.Second)
+	st.expire()
+	if len(st.fifo) != 0 {
+		t.Fatalf("timeout emitted after a delivered final: %+v", st.fifo)
+	}
+	if len(st.pending) != 0 || !st.retired["resp_f"] {
+		t.Fatal("finished request must be retired silently")
+	}
+	if _, consumed, _ := st.handleOOB("response.output_audio.delta", []byte(`{"type":"response.output_audio.delta","event_id":"late","response_id":"resp_f","item_id":"x","delta":"AAA="}`)); !consumed || len(st.fifo) != 0 {
+		t.Fatal("late events of the finished response must be dropped")
+	}
+}
+
+// A request that the endpoint never answers fails with timeout when the clock
+// passes OutOfBandTimeout. The check runs when Next reads the next server
+// message, so a later message after the deadline delivers the timeout first.
+func TestOutOfBandSocketTimeoutFailsThroughNext(t *testing.T) {
+	var mu sync.Mutex
+	clock := time.Unix(1_800_000_000, 0)
+	now := func() time.Time {
+		mu.Lock()
+		defer mu.Unlock()
+		return clock
+	}
+	advance := func(d time.Duration) {
+		mu.Lock()
+		defer mu.Unlock()
+		clock = clock.Add(d)
+	}
+	e := &oobEndpoint{afterUpd: []string{callerItemAdded}}
+	s := connectOOB(t, e, now)
+
+	// The request is sent when the item arrives, and nothing answers it.
+	if n := len(e.requests()); n != 0 {
+		t.Fatalf("requests before Next = %d", n)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	// Read the item event once: Next processes the item and sends the request.
+	first, err := s.Next(ctx)
+	if err != nil {
+		t.Fatalf("next: %v", err)
+	}
+	if first.Kind != realtime.EventIgnored {
+		t.Fatalf("first event = %+v, want the ignored item event", first)
+	}
+	// The request is written by Next before it returns to the caller, but the
+	// endpoint reads it on its own goroutine. Wait for it to arrive.
+	deadline := time.Now().Add(5 * time.Second)
+	for len(e.requests()) == 0 && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+	}
+	if n := len(e.requests()); n != 1 {
+		t.Fatalf("requests after the item = %d, want 1", n)
+	}
+	advance(OutOfBandTimeout + time.Second)
+	// The endpoint now sends an ordinary agent event; reading it runs the expiry.
+	e.sendNext(`{"type":"response.done","event_id":"rd_t","response":{"id":"resp_t","status":"completed","metadata":null,"output":[]}}`)
+	var got []realtime.Event
+	for {
+		ev, err := s.Next(ctx)
+		if err != nil {
+			t.Fatalf("next after timeout: %v (got %+v)", err, got)
+		}
+		got = append(got, ev)
+		if ev.Kind == realtime.EventResponseDone {
+			break
+		}
+	}
+	if len(got) < 2 || got[0].Kind != realtime.EventCallerTranscriptFailed || got[0].ErrCode != "timeout" || got[0].ItemID != "item_c1" {
+		t.Fatalf("timeout must be delivered before the next server event: %+v", got)
+	}
+	if got[len(got)-1].ResponseID != "resp_t" {
+		t.Fatalf("agent response.done not delivered after timeout: %+v", got)
+	}
+}
+
+// A provider error code is bounded before it is stored: 64 bytes at most, and
+// only [A-Za-z0-9_.-]. Every other byte becomes '_'.
+func TestOutOfBandProviderErrorCodeIsBounded(t *testing.T) {
+	if got := providerCode("bad code<script>"); got != "bad_code_script_" {
+		t.Fatalf("unsafe characters = %q", got)
+	}
+	long := strings.Repeat("a", 100)
+	if got := providerCode(long); len(got) != 64 {
+		t.Fatalf("length = %d, want 64", len(got))
+	}
+	if got := providerCode(""); got != "unspecified" {
+		t.Fatalf("empty code = %q", got)
+	}
+	st := newOOBState(time.Now)
+	if _, err := st.request("item_code"); err != nil {
+		t.Fatal(err)
+	}
+	raw := []byte(`{"type":"error","event_id":"ev_e","error":{"type":"invalid_request_error","code":"x\n\"y","message":"m","event_id":"ch_oob_1"}}`)
+	if _, _, err := st.handleOOB("error", raw); err != nil {
+		t.Fatal(err)
+	}
+	if len(st.fifo) != 1 || st.fifo[0].ErrCode != "out_of_band_rejected:x__y" {
+		t.Fatalf("stored code = %+v", st.fifo)
+	}
+}
+
+// expire emits timeouts in sequence order, so two requests that expire together
+// always produce the same event order.
+func TestOutOfBandExpireIsDeterministicBySequence(t *testing.T) {
+	clock := time.Unix(1000, 0)
+	st := newOOBState(func() time.Time { return clock })
+	for _, id := range []string{"item_1", "item_2", "item_3"} {
+		if _, err := st.request(id); err != nil {
+			t.Fatal(err)
+		}
+	}
+	clock = clock.Add(OutOfBandTimeout + time.Second)
+	st.expire()
+	var got []string
+	for _, ev := range st.fifo {
+		got = append(got, ev.ItemID)
+	}
+	if strings.Join(got, ",") != "item_1,item_2,item_3" {
+		t.Fatalf("timeout order = %v, want sequence order", got)
 	}
 }

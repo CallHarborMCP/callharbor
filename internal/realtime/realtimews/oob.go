@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"regexp"
+	"sort"
+	"strings"
 	"time"
 
 	"github.com/CallHarborMCP/callharbor/internal/realtime"
@@ -37,6 +39,7 @@ type oobRequest struct {
 	itemID     string
 	eventID    string
 	responseID string
+	seq        int
 	started    time.Time
 	// final is set once the final text was emitted from output_text.done.
 	final bool
@@ -61,6 +64,9 @@ type oobState struct {
 	retiredList []string
 	// fifo holds normalized events that Next returns before reading again.
 	fifo []realtime.Event
+	// cancel holds targeted response.cancel messages for our own responses,
+	// sent by Next through the bounded write.
+	cancel [][]byte
 }
 
 func newOOBState(now func() time.Time) *oobState {
@@ -137,7 +143,7 @@ func (o *oobState) request(itemID string) ([]byte, error) {
 	}
 	o.seq++
 	eventID := fmt.Sprintf("%s%d", oobEventPrefix, o.seq)
-	o.pending[eventID] = &oobRequest{itemID: itemID, eventID: eventID, started: o.now()}
+	o.pending[eventID] = &oobRequest{itemID: itemID, eventID: eventID, seq: o.seq, started: o.now()}
 	return json.Marshal(map[string]any{
 		"type":     "response.create",
 		"event_id": eventID,
@@ -152,17 +158,46 @@ func (o *oobState) request(itemID string) ([]byte, error) {
 	})
 }
 
-// expire fails requests older than OutOfBandTimeout. It runs when Next
-// processes a message, so no socket read is cancelled to implement a timer.
+// expire fails requests older than OutOfBandTimeout, oldest first. It runs when
+// Next processes a message, so no socket read is cancelled to implement a timer.
+// A request whose final text was already delivered is finished silently: the
+// transcription is complete, and only its terminal response.done is missing.
 func (o *oobState) expire() {
 	now := o.now()
+	var due []*oobRequest
 	for _, req := range o.pending {
-		if now.Sub(req.started) < OutOfBandTimeout {
+		if now.Sub(req.started) >= OutOfBandTimeout {
+			due = append(due, req)
+		}
+	}
+	sort.Slice(due, func(i, j int) bool { return due[i].seq < due[j].seq })
+	for _, req := range due {
+		o.finish(req)
+		if req.final {
 			continue
 		}
-		o.finish(req)
 		o.fifo = append(o.fifo, localFail(req.itemID, "timeout"))
 	}
+}
+
+// providerCode bounds a provider error code before it is stored: at most 64
+// bytes of [A-Za-z0-9_.-], every other byte replaced by '_'.
+func providerCode(code string) string {
+	if code == "" {
+		return "unspecified"
+	}
+	b := []byte(code)
+	if len(b) > 64 {
+		b = b[:64]
+	}
+	for i, c := range b {
+		switch {
+		case c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z', c >= '0' && c <= '9', c == '_', c == '.', c == '-':
+		default:
+			b[i] = '_'
+		}
+	}
+	return string(b)
 }
 
 // callerAudioItem reports whether a conversation item is a completed user
@@ -212,11 +247,14 @@ func (o *oobState) handleOOB(typ string, raw []byte) (sends [][]byte, consumed b
 		}
 		return sends, false, nil
 	case "response.created":
-		return nil, o.correlate(raw), nil
+		consumed := o.correlate(raw)
+		return o.takeCancels(), consumed, nil
 	case "error":
-		return nil, o.rejected(raw), nil
+		consumed := o.rejected(raw)
+		return o.takeCancels(), consumed, nil
 	case "response.done":
-		return nil, o.complete(raw), nil
+		consumed := o.complete(raw)
+		return o.takeCancels(), consumed, nil
 	case "response.output_text.delta", "response.output_text.done",
 		"response.output_audio.delta", "response.output_audio_transcript.delta", "response.output_audio_transcript.done":
 		var m struct {
@@ -238,42 +276,124 @@ func (o *oobState) handleOOB(typ string, raw []byte) (sends [][]byte, consumed b
 			return nil, false, nil
 		}
 		o.textOrAudio(typ, req, m.EventID, m.Delta, m.Text)
-		return nil, true, nil
+		return o.takeCancels(), true, nil
 	}
 	return nil, false, nil
 }
 
-// correlate maps a response.created that echoes this coordinator's metadata to
-// its request. A response without the echo is an ordinary response.
+// takeCancels returns and clears the queued cancel messages.
+func (o *oobState) takeCancels() [][]byte {
+	out := o.cancel
+	o.cancel = nil
+	return out
+}
+
+// correlate handles response.created. The purpose echo and conversation_id
+// decide what the response is. conversation_id is decoded as a raw value so a
+// missing field is distinct from JSON null:
+//
+//   - echo and conversation_id null: the response was made with
+//     conversation "none", as requested. It is bound to the oldest pending
+//     request with no response id. With none pending, it is retired.
+//   - echo and conversation_id non-null: the endpoint ignored conversation
+//     "none". The request fails as conversation_not_none, the endpoint is
+//     marked unsupported, and the response is retired.
+//   - no echo and conversation_id missing: an ordinary response.
+//
+// A response retired here never reaches the call: its later events are dropped.
 func (o *oobState) correlate(raw []byte) bool {
 	var m struct {
 		Response struct {
-			ID       string         `json:"id"`
-			Metadata map[string]any `json:"metadata"`
+			ID             string          `json:"id"`
+			ConversationID json.RawMessage `json:"conversation_id"`
+			Metadata       map[string]any  `json:"metadata"`
 		} `json:"response"`
 	}
-	if json.Unmarshal(raw, &m) != nil || m.Response.Metadata == nil {
+	if json.Unmarshal(raw, &m) != nil {
 		return false
 	}
-	if m.Response.Metadata[oobPurposeKey] != oobPurpose {
+	id := m.Response.ID
+	echoed := m.Response.Metadata != nil && m.Response.Metadata[oobPurposeKey] == oobPurpose
+	convMissing := len(m.Response.ConversationID) == 0
+	convNull := string(m.Response.ConversationID) == "null"
+	// conversation_id set to a real id is the conversation's own response,
+	// unless it echoes our purpose, which only an out-of-band request does.
+	// A missing conversation_id is not evidence the endpoint ignored "none",
+	// so it is treated like null, never like a conversation response.
+	if !echoed && convMissing {
 		return false
 	}
-	item, _ := m.Response.Metadata[oobItemKey].(string)
-	if o.retired[m.Response.ID] {
+	if !echoed && !convNull {
+		return false
+	}
+	if o.retired[id] {
 		return true
 	}
-	for _, req := range o.pending {
+	if !echoed {
+		// conversation_id is null with no echo. Only an out-of-band request
+		// can produce that, so it is bound to the oldest unbound request.
+		// Without one, it is retired: its events must not reach the call.
+		o.bindOldest(id)
+		return true
+	}
+	if !convNull && !convMissing {
+		// The endpoint did not honour conversation "none". Fail the item that
+		// asked for it, latch the endpoint, and drop everything for this id.
+		if req := o.oldestUnbound(); req != nil {
+			req.responseID = id
+			o.byResponse[id] = req
+			ev := localFail(req.itemID, "conversation_not_none")
+			ev.RawType = "response.created"
+			o.fifo = append(o.fifo, ev)
+			o.finish(req)
+		}
+		o.unsupported = true
+		o.retire(id)
+		return true
+	}
+	item, _ := m.Response.Metadata[oobItemKey].(string)
+	for _, req := range o.pendingInOrder() {
 		if req.itemID == item && req.responseID == "" {
-			req.responseID = m.Response.ID
-			o.byResponse[req.responseID] = req
+			req.responseID = id
+			o.byResponse[id] = req
 			return true
 		}
 	}
 	// The echo matches no pending request. It carries CallHarbor's purpose,
-	// so its events must never become call audio or agent text: retire it
-	// and drop every event that follows.
-	o.retire(m.Response.ID)
+	// so it is retired and every event that follows is dropped.
+	o.retire(id)
 	return true
+}
+
+// pendingInOrder returns the pending requests, oldest first.
+func (o *oobState) pendingInOrder() []*oobRequest {
+	out := make([]*oobRequest, 0, len(o.pending))
+	for _, req := range o.pending {
+		out = append(out, req)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].seq < out[j].seq })
+	return out
+}
+
+// oldestUnbound returns the oldest pending request with no response id yet.
+func (o *oobState) oldestUnbound() *oobRequest {
+	for _, req := range o.pendingInOrder() {
+		if req.responseID == "" {
+			return req
+		}
+	}
+	return nil
+}
+
+// bindOldest binds a response id with no echo to the oldest unbound request,
+// or retires it when none is waiting.
+func (o *oobState) bindOldest(id string) {
+	if req := o.oldestUnbound(); req != nil {
+		req.responseID = id
+		o.byResponse[id] = req
+		return
+	}
+	o.retire(id)
 }
 
 // textOrAudio applies one event of a correlated out-of-band response. Audio
@@ -287,18 +407,39 @@ func (o *oobState) textOrAudio(typ string, req *oobRequest, eventID, delta, text
 		ev.Kind, ev.Text = realtime.EventCallerTranscriptDelta, delta
 		o.fifo = append(o.fifo, ev)
 	case "response.output_text.done":
+		// A response may carry several output_text.done parts. Each one is
+		// delivered in order, and the recorder replaces the text with each
+		// final, so only the last output_text.done is kept as the final text.
 		ev.Kind, ev.Text = realtime.EventCallerTranscriptFinal, text
 		req.final = true
 		o.fifo = append(o.fifo, ev)
 	case "response.output_audio.delta":
+		// The endpoint ignored the text-only request. The item fails, the
+		// endpoint is marked unsupported, and our own response is cancelled.
+		// The cancel names this response id only, never the conversation.
 		ev.Kind, ev.ErrCode = realtime.EventCallerTranscriptFailed, "modalities_ignored"
 		o.fifo = append(o.fifo, ev)
+		o.unsupported = true
+		o.cancel = append(o.cancel, cancelFor(req.responseID))
 		o.finish(req)
 	}
 }
 
+// cancelFor is the cancel for one out-of-band response. It names the response
+// id and nothing else, so it can never cancel the call's conversation.
+func cancelFor(responseID string) []byte {
+	b, _ := json.Marshal(map[string]string{"type": "response.cancel", "response_id": responseID})
+	return b
+}
+
 // complete handles response.done for a correlated out-of-band response. It is
 // never delivered as the agent's response.done.
+//
+// A completed response with no text part and no output_text.done is a
+// successful transcription with no speech: the prompt asks for no output when
+// there is no speech, so it is an empty final, not a missing one. missing_text
+// is reserved for a completed response whose output carries non-text content
+// and no text part, where the text genuinely cannot be found.
 func (o *oobState) complete(raw []byte) bool {
 	var m struct {
 		Response struct {
@@ -320,9 +461,8 @@ func (o *oobState) complete(raw []byte) bool {
 	}
 	req := o.byResponse[m.Response.ID]
 	if req == nil {
-		// Not correlated (for example its response.created was never seen).
-		// It is still CallHarbor's response when it carries the purpose, and
-		// its done must not surface as the agent's response.done.
+		// Not correlated. It is still CallHarbor's response when it carries
+		// the purpose, and its done must not surface as the agent's done.
 		var meta struct {
 			Response struct {
 				Metadata map[string]any `json:"metadata"`
@@ -338,27 +478,45 @@ func (o *oobState) complete(raw []byte) bool {
 	switch m.Response.Status {
 	case "completed":
 		if !req.final {
-			// The final text is absent from output_text.done. Accept the
-			// text from the response output only when it is a text part.
 			text, ok := outputText(m.Response.Output)
-			if !ok {
+			switch {
+			case ok:
+				base.Kind, base.Text = realtime.EventCallerTranscriptFinal, text
+			case outputHasNonText(m.Response.Output):
 				base.Kind, base.ErrCode = realtime.EventCallerTranscriptFailed, "missing_text"
-				o.fifo = append(o.fifo, base)
-				o.finish(req)
-				return true
+			default:
+				// Completed, no text and no other output: nothing was said.
+				base.Kind, base.Text = realtime.EventCallerTranscriptFinal, ""
 			}
-			base.Kind, base.Text = realtime.EventCallerTranscriptFinal, text
 			o.fifo = append(o.fifo, base)
 		}
 	case "cancelled", "failed", "incomplete":
 		base.Kind, base.ErrCode = realtime.EventCallerTranscriptFailed, "response_"+m.Response.Status
 		o.fifo = append(o.fifo, base)
 	default:
-		base.Kind, base.ErrCode = realtime.EventCallerTranscriptFailed, "response_"+m.Response.Status
+		base.Kind, base.ErrCode = realtime.EventCallerTranscriptFailed, "response_"+providerCode(m.Response.Status)
 		o.fifo = append(o.fifo, base)
 	}
 	o.finish(req)
 	return true
+}
+
+// outputHasNonText reports whether the response output carries any content
+// part other than a text part.
+func outputHasNonText(out []struct {
+	Content []struct {
+		Type string `json:"type"`
+		Text string `json:"text"`
+	} `json:"content"`
+}) bool {
+	for _, item := range out {
+		for _, p := range item.Content {
+			if p.Type != "text" && p.Type != "output_text" {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // outputText returns the text of the first text part of the response output.
@@ -379,30 +537,46 @@ func outputText(out []struct {
 	return "", false
 }
 
-// rejected handles an error whose event_id names a pending out-of-band client
-// event. Such an error is not a call error: it fails that transcription and
-// marks the endpoint as not supporting out-of-band responses.
+// rejected handles an error that belongs to an out-of-band request.
+//
+// An error whose error.event_id names a pending request is that request's
+// rejection. An error with no event_id is attributed only in the narrow case
+// that cannot be a call error by mistake: exactly one request is pending, it
+// has no response id yet, and error.param is empty or names a response field.
+// Any other error with no event_id is an ordinary call error and returns false.
+//
+// A rejection fails that item. The endpoint is marked unsupported only for an
+// invalid_request_error; a rate limit or server error fails the item alone.
 func (o *oobState) rejected(raw []byte) bool {
 	var m struct {
 		Error struct {
+			Type    string `json:"type"`
 			Code    string `json:"code"`
+			Param   string `json:"param"`
 			EventID string `json:"event_id"`
 		} `json:"error"`
 	}
 	if json.Unmarshal(raw, &m) != nil {
 		return false
 	}
-	req := o.pending[m.Error.EventID]
+	var req *oobRequest
+	if m.Error.EventID != "" {
+		req = o.pending[m.Error.EventID]
+	} else if len(o.pending) == 1 {
+		for _, p := range o.pending {
+			if p.responseID == "" && (m.Error.Param == "" || strings.HasPrefix(m.Error.Param, "response")) {
+				req = p
+			}
+		}
+	}
 	if req == nil {
 		return false
 	}
-	code := m.Error.Code
-	if code == "" {
-		code = "unspecified"
-	}
-	ev := localFail(req.itemID, "out_of_band_rejected:"+code)
+	ev := localFail(req.itemID, "out_of_band_rejected:"+providerCode(m.Error.Code))
 	o.fifo = append(o.fifo, ev)
 	o.finish(req)
-	o.unsupported = true
+	if m.Error.Type == "invalid_request_error" {
+		o.unsupported = true
+	}
 	return true
 }

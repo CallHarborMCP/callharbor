@@ -90,6 +90,9 @@ type dxRealtime struct {
 	oob bool
 	// oobReq receives one value when an out-of-band response.create arrives.
 	oobReq chan struct{}
+	// oobCancel receives one value when the targeted cancel of the out-of-band
+	// response arrives.
+	oobCancel chan struct{}
 }
 
 type dxTruncate struct {
@@ -175,9 +178,9 @@ func (p *dxRealtime) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			}
 			resp, _ := m["response"].(map[string]any)
 			meta := resp["metadata"]
-			_, billed := m["transcription"]
-			_, billedSess := m["session"]
-			if resp["conversation"] != "none" || resp["output_modalities"] == nil || billed || billedSess {
+			// No billed transcription key may appear anywhere in the request.
+			billed := hasKeyRecursive(m, "transcription")
+			if resp["conversation"] != "none" || resp["output_modalities"] == nil || billed {
 				p.t.Errorf("out-of-band request shape = %v", m)
 			}
 			select {
@@ -196,9 +199,18 @@ func (p *dxRealtime) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			send(map[string]any{"type": "response.done", "event_id": "evt_oob_d", "response": map[string]any{
 				"id": "resp_oob_dx", "status": "completed", "metadata": meta, "output": []any{}}})
 		case "response.cancel":
-			// The documented barge-in path on this engine never cancels a
-			// response. Any cancel is a protocol violation, so fail here.
-			p.t.Errorf("client sent response.cancel; barge-in must use Telnyx clear and truncate only")
+			// The barge-in path never cancels a response. The one permitted
+			// cancel is the targeted cancel of our own out-of-band response,
+			// sent when the endpoint produced audio for it (modalities_ignored).
+			// It must name that response id and nothing else.
+			if p.oob && m["response_id"] == "resp_oob_dx" && len(m) == 2 {
+				select {
+				case p.oobCancel <- struct{}{}:
+				default:
+				}
+			} else {
+				p.t.Errorf("client sent response.cancel for %v; barge-in must use Telnyx clear and truncate only", m["response_id"])
+			}
 		case "conversation.item.truncate":
 			item, _ := m["item_id"].(string)
 			idx, _ := m["content_index"].(float64)
@@ -521,14 +533,15 @@ func TestDuplexRealtimeBargeInWithOutOfBandCaller(t *testing.T) {
 
 func dxBargeInRealtime(t *testing.T, oob bool) {
 	prov := &dxRealtime{
-		t:       t,
-		agent:   dxChunks(50, 1),
-		stale:   dxChunks(3, 3),
-		next:    dxChunks(5, 4),
-		started: make(chan time.Time, 1),
-		truncs:  make(chan dxTruncate, 4),
-		oob:     oob,
-		oobReq:  make(chan struct{}, 1),
+		t:         t,
+		agent:     dxChunks(50, 1),
+		stale:     dxChunks(3, 3),
+		next:      dxChunks(5, 4),
+		started:   make(chan time.Time, 1),
+		truncs:    make(chan dxTruncate, 4),
+		oob:       oob,
+		oobReq:    make(chan struct{}, 1),
+		oobCancel: make(chan struct{}, 1),
 	}
 	srv := httptest.NewServer(http.HandlerFunc(prov.ServeHTTP))
 	t.Cleanup(srv.Close)
@@ -660,6 +673,13 @@ func dxBargeInRealtime(t *testing.T, oob bool) {
 		case <-prov.oobReq:
 		default:
 			t.Fatal("no out-of-band transcription request reached the endpoint")
+		}
+		// The endpoint produced audio for that response, so CallHarbor must have
+		// sent its targeted cancel. It is checked here, not just tolerated.
+		select {
+		case <-prov.oobCancel:
+		default:
+			t.Fatal("no targeted cancel of the out-of-band response was sent")
 		}
 	}
 	dxStopRun(t, s, errs, stop)
@@ -1145,4 +1165,25 @@ func dxSilence() []byte {
 		b[i] = 0xFF
 	}
 	return b
+}
+
+// hasKeyRecursive reports whether any object at any depth of v has the key.
+// The out-of-band request must never carry a transcription setting, whichever
+// object it sits in.
+func hasKeyRecursive(v any, key string) bool {
+	switch x := v.(type) {
+	case map[string]any:
+		for k, val := range x {
+			if k == key || hasKeyRecursive(val, key) {
+				return true
+			}
+		}
+	case []any:
+		for _, val := range x {
+			if hasKeyRecursive(val, key) {
+				return true
+			}
+		}
+	}
+	return false
 }

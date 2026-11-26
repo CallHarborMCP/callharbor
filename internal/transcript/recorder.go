@@ -541,7 +541,19 @@ func (r *Recorder) callerSpeechLocked(ev realtime.Event, now int64) {
 		r.addSourceLocked(t, ev.EventID)
 		r.callerByID[ev.ItemID] = t
 	case realtime.Unavailable:
-		return
+		// No caller text can ever arrive, so the turn is unavailable from
+		// speech start, as it was before out-of-band transcription existed.
+		if _, ok := r.callerByID[ev.ItemID]; ok {
+			return
+		}
+		t := r.newTurnLocked(recording.SpeakerCaller, now)
+		if t == nil {
+			return
+		}
+		t.itemID, t.corr, t.unavail = boundItemID(t, ev.ItemID), boundCorrelation(t, ev.ItemID), true
+		t.flags[FlagCallerUnavailable] = true
+		r.addSourceLocked(t, ev.EventID)
+		r.callerByID[ev.ItemID] = t
 	}
 }
 
@@ -566,13 +578,20 @@ func (r *Recorder) callerTextLocked(ev realtime.Event, now int64) {
 		if t == nil {
 			return
 		}
-		t.pending = false
 		t.modelDerived = true
-		delete(t.flags, FlagCallerPending)
 		t.flags[FlagCallerTextModelDerived] = true
 		if ev.Kind == realtime.EventCallerTranscriptFinal {
+			// Only a final (or a failure) settles the turn.
+			t.pending = false
+			delete(t.flags, FlagCallerPending)
 			r.callerFinalLocked(t, ev)
 			return
+		}
+		// A delta adds text but keeps the turn pending until its final or
+		// failure arrives.
+		if !t.failed {
+			t.pending = true
+			t.flags[FlagCallerPending] = true
 		}
 		if ev.ResponseID != "" {
 			r.addSourceLocked(t, ev.ResponseID)
@@ -799,10 +818,16 @@ func (r *Recorder) flush(ctx context.Context, final bool) error {
 		// unavailable, not a guess, and the call is flagged unresolved.
 		for _, t := range r.turns {
 			if t.speaker == recording.SpeakerCaller && t.pending {
+				// Partial out-of-band text is kept, flagged as an incomplete
+				// provider turn. With no text the turn is unavailable.
 				t.pending = false
-				t.unavail = true
 				delete(t.flags, FlagCallerPending)
 				t.flags[FlagCallerUnresolved] = true
+				if len(t.frags) == 0 {
+					t.unavail = true
+				} else {
+					t.flags[FlagProviderIncomplete] = true
+				}
 				t.dirty = true
 			}
 		}

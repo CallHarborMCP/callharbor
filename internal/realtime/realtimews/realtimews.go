@@ -216,15 +216,20 @@ func (s *Session) write(ctx context.Context, b []byte) error {
 	return s.conn.Write(ctx, websocket.MessageText, b)
 }
 
-// writeTimeout bounds one protocol write made by the downlink reader. The
-// write uses its own context, never the reader's, so a read cancellation
-// cannot abandon a frame that is half written.
+// writeTimeout bounds one protocol write made by the downlink reader.
+//
+// coder/websocket v1.8.15 closes the connection when a write context is
+// cancelled, even mid-frame. A cancelled read context must therefore not reach
+// a write: the frame would be cut and the socket torn down while the reader is
+// still shutting down. The write context keeps the values of the read context
+// but not its cancellation, and is bounded by writeTimeout instead. A frame
+// is either written whole or the write fails at the timeout.
 const writeTimeout = 5 * time.Second
 
-func (s *Session) writeBounded(b []byte) error {
-	ctx, cancel := context.WithTimeout(context.Background(), writeTimeout)
+func (s *Session) writeBounded(ctx context.Context, b []byte) error {
+	wctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), writeTimeout)
 	defer cancel()
-	return s.write(ctx, b)
+	return s.write(wctx, b)
 }
 
 func (s *Session) fail(err error) error {
@@ -283,7 +288,7 @@ func (s *Session) Next(ctx context.Context) (realtime.Event, error) {
 			return realtime.Event{}, err
 		}
 		for _, b := range sends {
-			if err := s.writeBounded(b); err != nil {
+			if err := s.writeBounded(ctx, b); err != nil {
 				return realtime.Event{}, realtime.Transport(err)
 			}
 		}
