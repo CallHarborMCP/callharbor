@@ -82,6 +82,8 @@ type dxRealtime struct {
 	next    [][]byte
 	started chan time.Time
 	truncs  chan dxTruncate
+	// closed, when non-nil, receives one value when the provider connection ends.
+	closed chan struct{}
 }
 
 type dxTruncate struct {
@@ -91,6 +93,7 @@ type dxTruncate struct {
 }
 
 func (p *dxRealtime) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	defer p.signalClosed()
 	c, err := websocket.Accept(w, r, nil)
 	if err != nil {
 		return
@@ -167,6 +170,32 @@ func (p *dxRealtime) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// signalClosed reports that the realtime fake's connection handler returned.
+func (p *dxRealtime) signalClosed() {
+	if p.closed != nil {
+		select {
+		case p.closed <- struct{}{}:
+		default:
+		}
+	}
+}
+
+// dxStopSink is the test twin of callstream's stoppingSink: closing the Telnyx
+// stream cancels the voice run, so the provider session is torn down with it.
+type dxStopSink struct {
+	*telnyx.BridgeSink
+	stop context.CancelFunc
+	// done is closed by Close, which the media endpoint calls only after its
+	// frame loop has returned.
+	done chan struct{}
+}
+
+func (s *dxStopSink) Close() error {
+	s.stop()
+	close(s.done)
+	return s.BridgeSink.Close()
+}
+
 // dxClock is the one media clock shared by the sink, the engine's audibility
 // checks and the Telnyx emulator. Provider and sink goroutines read it, so it is
 // guarded; the test advances it together with the emulator.
@@ -201,7 +230,59 @@ func dxAdvance(clk *dxClock, pl *telnyxfake.Playout, d time.Duration) {
 // and a context bounding every Telnyx-side read.
 func dxStart(t *testing.T, connect func(ctx context.Context) (realtime.Session, error), caps realtime.Capabilities, clk *dxClock, silence time.Duration) (*telnyxfake.Stream, <-chan error, context.Context, context.CancelFunc) {
 	t.Helper()
-	return dxStartWith(t, connect, caps, clk, silence, nil)
+	return dxStartWith(t, connect, caps, clk, silence, nil, nil)
+}
+
+// dxHandle exposes the production voicebridge.Bridge behind a run, so a test
+// can read the playout ledger, and a DTMF sync frame. The Telnyx read loop
+// handles frames in order, so a DTMF sent after playout echoes is observed only
+// after every earlier echo has been classified.
+type dxHandle struct {
+	bridge *voicebridge.Bridge
+	ready  chan struct{}
+	dtmf   chan string
+	// stopOnClose makes closing the Telnyx stream cancel the run (production
+	// callstream behaviour). Without it the sink's Close is a no-op.
+	stopOnClose bool
+	sinkDone    chan struct{}
+}
+
+func newDxHandle() *dxHandle {
+	return &dxHandle{ready: make(chan struct{}), dtmf: make(chan string, 4), sinkDone: make(chan struct{})}
+}
+
+// dxSync sends a DTMF frame and waits until CallHarbor has processed it.
+func dxSync(t *testing.T, s *telnyxfake.Stream, ctx context.Context, h *dxHandle, seq *int) {
+	t.Helper()
+	*seq++
+	frame := fmt.Sprintf(`{"event":"dtmf","stream_id":"dx-1","sequence_number":"%d","dtmf":{"digit":"9"}}`, *seq)
+	if err := s.Send(ctx, []byte(frame)); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-h.dtmf:
+	case <-ctx.Done():
+		t.Fatal("CallHarbor did not process the playout echoes before the sync frame")
+	}
+}
+
+// dxAssertLedger checks the production playout ledger through its public
+// accessors: every mark is classified (none pending), and each item's
+// accounting equals the exact expected value.
+func dxAssertLedger(t *testing.T, b *voicebridge.Bridge, want ...audio.ItemPlayout) {
+	t.Helper()
+	if n := b.Pending(); n != 0 {
+		t.Fatalf("%d playout mark(s) were never classified", n)
+	}
+	if got := len(b.Items()); got != len(want) {
+		t.Fatalf("ledger has %d item(s), want %d", got, len(want))
+	}
+	for _, w := range want {
+		got, ok := b.Item(w.Source)
+		if !ok || got != w {
+			t.Fatalf("ledger item %+v = %+v (present %v), want %+v", w.Source, got, ok, w)
+		}
+	}
 }
 
 // dxStartWith is dxStart with an observer on the run's event sink. observe, if
@@ -209,7 +290,7 @@ func dxStart(t *testing.T, connect func(ctx context.Context) (realtime.Session, 
 // before the event is played, in the same goroutine as the downlink. A test
 // uses it to learn that the client has processed an event (see the sentinel in
 // TestDuplexLivePathBargeIn).
-func dxStartWith(t *testing.T, connect func(ctx context.Context) (realtime.Session, error), caps realtime.Capabilities, clk *dxClock, silence time.Duration, observe func(realtime.Event)) (*telnyxfake.Stream, <-chan error, context.Context, context.CancelFunc) {
+func dxStartWith(t *testing.T, connect func(ctx context.Context) (realtime.Session, error), caps realtime.Capabilities, clk *dxClock, silence time.Duration, observe func(realtime.Event), h *dxHandle) (*telnyxfake.Stream, <-chan error, context.Context, context.CancelFunc) {
 	t.Helper()
 	pub, priv, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
@@ -242,6 +323,11 @@ func dxStartWith(t *testing.T, connect func(ctx context.Context) (realtime.Sessi
 			return nil, err
 		}
 		sink.SetClock(clk.Now)
+		if h != nil {
+			h.bridge = b
+			sink.OnDTMF = func(d string) { h.dtmf <- d }
+			close(h.ready)
+		}
 		ab, err := voicecall.NewAudioBridge(sink)
 		if err != nil {
 			return nil, err
@@ -258,6 +344,9 @@ func dxStartWith(t *testing.T, connect func(ctx context.Context) (realtime.Sessi
 			_, err := voice.RunWith(runCtx, sess, ab, sink, voice.Options{Caps: caps, Now: clk.Now, SilenceTimeout: silence})
 			errs <- err
 		}()
+		if h != nil && h.stopOnClose {
+			return &dxStopSink{BridgeSink: sink, stop: stopRunFn, done: h.sinkDone}, nil
+		}
 		return sink, nil
 	})
 	if err != nil {
@@ -274,6 +363,13 @@ func dxStartWith(t *testing.T, connect func(ctx context.Context) (realtime.Sessi
 	start := `{"event":"start","stream_id":"dx-1","sequence_number":"1","start":{"call_control_id":"v3:dx","client_state":"","media_format":{"encoding":"PCMU","sample_rate":8000,"channels":1}}}`
 	if err := s.Send(ctx, []byte(start)); err != nil {
 		t.Fatal(err)
+	}
+	if h != nil {
+		select {
+		case <-h.ready:
+		case <-ctx.Done():
+			t.Fatal("media stream never bound a bridge")
+		}
 	}
 	return s, errs, ctx, stopRunFn
 }
@@ -354,6 +450,9 @@ func dxEcho(t *testing.T, s *telnyxfake.Stream, ctx context.Context, pl *telnyxf
 
 func dxMS(d time.Duration) float64 { return float64(d) / float64(time.Millisecond) }
 
+// dxDur is n milliseconds as a duration, for exact ledger expectations.
+func dxDur(n int) time.Duration { return time.Duration(n) * time.Millisecond }
+
 // TestDuplexRealtimeBargeInProductionPath drives realtime_ws through the
 // production path. It checks, against an independent Telnyx playout emulator:
 // agent audio before the cut is byte-exact, caller speech overlapping playout
@@ -374,13 +473,14 @@ func TestDuplexRealtimeBargeInProductionPath(t *testing.T) {
 	endpoint := "ws" + strings.TrimPrefix(srv.URL, "http") + "/v1/realtime"
 
 	clk := newDxClock()
-	s, errs, ctx, stop := dxStart(t, func(ctx context.Context) (realtime.Session, error) {
+	h := newDxHandle()
+	s, errs, ctx, stop := dxStartWith(t, func(ctx context.Context) (realtime.Session, error) {
 		sess, err := realtimews.Connect(ctx, realtimews.Config{Endpoint: endpoint, APIKey: "sk-test", Model: "gpt-realtime-2.1", Voice: "marin", Instructions: "Test.", Format: dxLeg})
 		if err != nil {
 			return nil, err
 		}
 		return sess, nil
-	}, realtime.RealtimeCapabilities, clk, 0)
+	}, realtime.RealtimeCapabilities, clk, 0, nil, h)
 
 	pl := telnyxfake.NewPlayout(8000, clk.Now())
 	seq := 0
@@ -475,6 +575,16 @@ func TestDuplexRealtimeBargeInProductionPath(t *testing.T) {
 	dxAdvance(clk, pl, 100*time.Millisecond)
 	dxEcho(t, s, ctx, pl, &seq)
 
+	// Ledger classification, through the production voicebridge ledger. Item
+	// item_dx: 1000 ms sent; 10 marks echoed as played (200 ms confirmed); the
+	// 40 chunks still queued at the cut are discarded (800 ms, flushed by Telnyx's
+	// clear echoes). item_next: 100 ms sent and confirmed, nothing discarded.
+	dxSync(t, s, ctx, h, &seq)
+	dxAssertLedger(t, h.bridge,
+		audio.ItemPlayout{Source: audio.SourceRef{ItemID: "item_dx"}, Sent: dxDur(1000), Confirmed: dxDur(200), Estimated: dxDur(200), Discarded: dxDur(800), Interrupted: true},
+		audio.ItemPlayout{Source: audio.SourceRef{ItemID: "item_next"}, Sent: dxDur(100), Confirmed: dxDur(100), Estimated: dxDur(100)},
+	)
+
 	// Played audio is exactly the 200 ms prefix of the agent item followed by the
 	// whole continuation item. Nothing from the cut tail played.
 	want := append(append([]byte(nil), agentSent[:1600]...), nextSent...)
@@ -504,6 +614,13 @@ type dxLive struct {
 	closeEv  chan struct{}
 	turnEnd  chan int // one value per caller turn that ends, with the turn index
 	speech   chan time.Time
+	// late is streamed after lateGate is closed. It carries no item ID and was
+	// generated before any cut, so it models a cut reply that arrives after the
+	// caller's end edge.
+	late     [][]byte
+	lateGate chan struct{}
+	// closed, when non-nil, receives one value when the connection handler ends.
+	closed chan struct{}
 }
 
 // dxProviderTurnFrames is the silent frames after which the fake provider ends
@@ -524,6 +641,14 @@ func (p *dxLive) events() []string {
 }
 
 func (p *dxLive) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	defer func() {
+		if p.closed != nil {
+			select {
+			case p.closed <- struct{}{}:
+			default:
+			}
+		}
+	}()
 	c, err := websocket.Accept(w, r, nil)
 	if err != nil {
 		return
@@ -540,6 +665,19 @@ func (p *dxLive) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	delta := func(chunk []byte) map[string]any {
 		return map[string]any{"type": "session.output_audio.delta", "delta": base64.StdEncoding.EncodeToString(chunk)}
+	}
+
+	if p.lateGate != nil {
+		go func() {
+			select {
+			case <-p.lateGate:
+			case <-ctx.Done():
+				return
+			}
+			for _, ch := range p.late {
+				send(delta(ch))
+			}
+		}()
 	}
 
 	// Turn tracking. A turn starts on the first loud frame and ends after
@@ -669,6 +807,7 @@ func TestDuplexLivePathBargeIn(t *testing.T) {
 	var sentinelOnce sync.Once
 
 	clk := newDxClock()
+	h := newDxHandle()
 	s, errs, ctx, stop := dxStartWith(t, func(ctx context.Context) (realtime.Session, error) {
 		sess, err := livews.Connect(ctx, livews.Config{Endpoint: endpoint, APIKey: "sk-test", Model: "gpt-live-1.1", Voice: "marin", Instructions: "Test.", Format: dxLeg})
 		if err != nil {
@@ -679,7 +818,7 @@ func TestDuplexLivePathBargeIn(t *testing.T) {
 		if ev.RawType == "session.output_transcript.delta" {
 			sentinelOnce.Do(func() { close(sentinelSeen) })
 		}
-	})
+	}, h)
 
 	pl := telnyxfake.NewPlayout(8000, clk.Now())
 	seq := 0
@@ -873,6 +1012,41 @@ func TestDuplexLivePathBargeIn(t *testing.T) {
 	}
 	if got := pl.Played(); !bytes.Equal(got, want) {
 		t.Fatalf("played %d bytes, want exact 100ms turn0 prefix + turn1 + turn2 (%d bytes)", len(got), len(want))
+	}
+
+	// Ledger classification. Live has no item ID, so every chunk shares one
+	// anonymous item. Confirmed is exact: 100 ms of turn0 plus turn1 and turn2
+	// (500 ms, 4000 bytes at 8000 B/s), matching the played byte stream above.
+	// Sent is the 800 ms of scripted reply audio, plus any stale cut-reply chunk
+	// that reached the bridge before the cut landed. That race is real on this
+	// path: a stale chunk sent before the clear is queued, then discarded by it.
+	// So Sent is bounded, not exact, and the ledger must still close: everything
+	// sent is either estimated as played or discarded.
+	dxSync(t, s, ctx, h, &seq)
+	if items := h.bridge.Items(); len(items) != 1 {
+		t.Fatalf("ledger has %d item(s), want one anonymous item", len(items))
+	}
+	if n := h.bridge.Pending(); n != 0 {
+		t.Fatalf("%d playout mark(s) were never classified", n)
+	}
+	it, ok := h.bridge.Item(audio.SourceRef{})
+	if !ok {
+		t.Fatal("ledger has no anonymous item")
+	}
+	if it.Confirmed != dxDur(500) || it.Estimated != dxDur(500) {
+		t.Fatalf("confirmed %v estimated %v, want exactly 500ms", it.Confirmed, it.Estimated)
+	}
+	if it.Sent < dxDur(800) || it.Sent > dxDur(860) {
+		t.Fatalf("sent %v, want 800ms of scripted reply plus at most the 60ms stale window", it.Sent)
+	}
+	if it.Estimated+it.Discarded != it.Sent {
+		t.Fatalf("ledger does not close: estimated %v + discarded %v != sent %v", it.Estimated, it.Discarded, it.Sent)
+	}
+	if !it.Interrupted {
+		t.Fatal("the barge-in cut was not recorded on the anonymous item")
+	}
+	if n := len(pl.Played()); n != 4000 {
+		t.Fatalf("played %d bytes, want 4000 (500 ms at 8000 B/s, the ledger's confirmed duration)", n)
 	}
 
 	// No truncate or cancel was sent, and the session is closed on teardown.
