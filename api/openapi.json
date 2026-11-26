@@ -1222,7 +1222,7 @@
       },
       "Fidelity": {
         "type": "string",
-        "description": "How far the text matches what was heard and played. played: the caller heard it as written. interrupted_text_includes_unplayed: the text includes audio that was generated but cut off before it played. playout_unconfirmed: playout could not be confirmed. not_played: generated but never played. provider_asr_approximate: text from provider recognition, not an exact record. unavailable: no provenance was recorded.",
+        "description": "How far the text matches what was heard and played. played: the caller heard it as written. interrupted_text_includes_unplayed: the text includes audio that was generated but cut off before it played. playout_unconfirmed: playout could not be confirmed. not_played: generated but never played. provider_asr_approximate: approximate text from the provider's recognition or, on realtime_ws, from the voice model's out-of-band transcription (flagged caller_text_model_derived); not an exact record. unavailable: no provenance was recorded.",
         "enum": [
           "played",
           "interrupted_text_includes_unplayed",

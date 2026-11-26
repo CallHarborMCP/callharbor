@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"net/http"
 	"sync"
+	"time"
 
 	"github.com/coder/websocket"
 
@@ -28,6 +29,8 @@ type Config struct {
 	Format       audio.Format
 	Headers      map[string]string
 	HTTPClient   *http.Client
+	// Now is the clock for out-of-band timeouts. Nil means time.Now.
+	Now func() time.Time
 }
 
 func formatJSON(f audio.Format) (map[string]any, error) {
@@ -76,6 +79,9 @@ type Session struct {
 	format audio.Format
 	wmu    sync.Mutex
 	ready  bool
+	// oob is the out-of-band caller transcription coordinator. Only Next uses
+	// it.
+	oob *oobState
 	// SessionID is the provider session id from session.created.
 	SessionID string
 }
@@ -113,7 +119,11 @@ func Connect(ctx context.Context, c Config) (*Session, error) {
 		return nil, fmt.Errorf("realtimews: dial: %w", err)
 	}
 	conn.SetReadLimit(realtime.MaxServerMessage)
-	s := &Session{conn: conn, format: c.Format}
+	now := c.Now
+	if now == nil {
+		now = time.Now
+	}
+	s := &Session{conn: conn, format: c.Format, oob: newOOBState(now)}
 	first, err := s.readRaw(ctx)
 	if err != nil {
 		return nil, s.fail(err)
@@ -206,6 +216,22 @@ func (s *Session) write(ctx context.Context, b []byte) error {
 	return s.conn.Write(ctx, websocket.MessageText, b)
 }
 
+// writeTimeout bounds one protocol write made by the downlink reader.
+//
+// coder/websocket v1.8.15 closes the connection when a write context is
+// cancelled, even mid-frame. A cancelled read context must therefore not reach
+// a write: the frame would be cut and the socket torn down while the reader is
+// still shutting down. The write context keeps the values of the read context
+// but not its cancellation, and is bounded by writeTimeout instead. A frame
+// is either written whole or the write fails at the timeout.
+const writeTimeout = 5 * time.Second
+
+func (s *Session) writeBounded(ctx context.Context, b []byte) error {
+	wctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), writeTimeout)
+	defer cancel()
+	return s.write(wctx, b)
+}
+
 func (s *Session) fail(err error) error {
 	_ = s.conn.Close(websocket.StatusPolicyViolation, "protocol error")
 	return err
@@ -245,11 +271,40 @@ func (s *Session) Cancel(ctx context.Context) error {
 
 // Next returns the next normalized server event.
 func (s *Session) Next(ctx context.Context) (realtime.Event, error) {
-	m, err := s.readRaw(ctx)
-	if err != nil {
-		return realtime.Event{}, realtime.Transport(err)
+	for {
+		if ev, ok := s.oob.pop(); ok {
+			return ev, nil
+		}
+		s.oob.expire()
+		if ev, ok := s.oob.pop(); ok {
+			return ev, nil
+		}
+		m, err := s.readRaw(ctx)
+		if err != nil {
+			return realtime.Event{}, realtime.Transport(err)
+		}
+		sends, consumed, err := s.oob.handleOOB(m.Type, m.raw)
+		if err != nil {
+			return realtime.Event{}, err
+		}
+		for _, b := range sends {
+			if err := s.writeBounded(ctx, b); err != nil {
+				return realtime.Event{}, realtime.Transport(err)
+			}
+		}
+		if consumed {
+			continue
+		}
+		ev, err := ParseServerEvent(m.raw)
+		if err != nil {
+			return ev, err
+		}
+		if len(s.oob.fifo) > 0 {
+			s.oob.fifo = append(s.oob.fifo, ev)
+			continue
+		}
+		return ev, nil
 	}
-	return ParseServerEvent(m.raw)
 }
 
 // Close closes the socket. Realtime has no close handshake event.

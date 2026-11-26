@@ -1,0 +1,17 @@
+{
+  "type": "conversation.item.done",
+  "event_id": "event_CCXLgMZPo3qioWCeQa4WH",
+  "previous_item_id": "item_CCXLecNJVIVR2HUy3ABLj",
+  "item": {
+    "id": "item_CCXLfxmM5sXVJVz4mCa2S",
+    "type": "message",
+    "status": "completed",
+    "role": "assistant",
+    "content": [
+      {
+        "type": "output_audio",
+        "transcript": "Oh, I can hear you loud and clear! Sounds like we're connected just fine. What can I help you with today?"
+      }
+    ]
+  }
+}

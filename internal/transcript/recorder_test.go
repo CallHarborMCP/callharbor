@@ -216,11 +216,13 @@ func TestRealtimeAgentTextAndUnavailableCaller(t *testing.T) {
 	if a.GeneratedMS == nil || *a.GeneratedMS != 900 || a.PlayedMS == nil || *a.PlayedMS != 900 {
 		t.Fatalf("agent playout = %v/%v", a.GeneratedMS, a.PlayedMS)
 	}
-	if c.Speaker != storage.SpeakerCallee || c.Text != "" || c.Fidelity != "unavailable" || c.ProviderItemID != "item_b" || !hasFlag(c.Quality, FlagCallerUnavailable) {
+	// realtime_ws is out-of-band: this caller speech never received text, so at
+	// close the pending turn is unresolved, not presented as spoken text.
+	if c.Speaker != storage.SpeakerCallee || c.Text != "" || c.Fidelity != "unavailable" || c.ProviderItemID != "item_b" || !hasFlag(c.Quality, FlagCallerUnresolved) {
 		t.Fatalf("caller turn = %+v", c)
 	}
 	flags, complete := h.store.summary(t)
-	if complete || !hasFlag(flags, FlagCallerUnavailable) || !hasFlag(flags, FlagTwoPartyIncomplete) {
+	if complete || !hasFlag(flags, FlagCallerUnresolved) || !hasFlag(flags, FlagTwoPartyIncomplete) {
 		t.Fatalf("summary flags %v complete %v, want an incomplete two-party transcript", flags, complete)
 	}
 }
@@ -901,5 +903,294 @@ func TestConcurrentObserve(t *testing.T) {
 	h.close(t)
 	if a := h.store.latest(); len(a) != 1 || len(a[0].Text) != 800 {
 		t.Fatalf("got %d turns", len(a))
+	}
+}
+
+// outOfBandCaller returns a recorder harness for realtime_ws with out-of-band
+// caller transcription, the configuration CallHarbor actually runs.
+func outOfBandCaller(t *testing.T) *harness {
+	t.Helper()
+	return newHarness(t, realtime.RealtimeCapabilities)
+}
+
+// Out-of-band caller text on realtime_ws is model-derived: provider_asr
+// fidelity with an explicit model-derived flag, its provenance keeps the
+// out-of-band event ids and the response id, and a fully successful two-party
+// transcript is complete.
+func TestRealtimeOutOfBandCallerTextComplete(t *testing.T) {
+	h := outOfBandCaller(t)
+	src := audio.SourceRef{ItemID: "item_a"}
+	h.rec.Observe(realtime.Event{Kind: realtime.EventAudio, ItemID: "item_a", Audio: []byte{1}})
+	h.rec.Observe(realtime.Event{Kind: realtime.EventAgentTranscriptDone, EventID: "ev_a", ItemID: "item_a", Text: "Which time?"})
+	h.setPlayout(src, played(400*ms))
+	h.rec.Observe(realtime.Event{Kind: realtime.EventSpeechStarted, EventID: "sp_1", ItemID: "item_c", HasTiming: true, StartMS: 0})
+	h.rec.Observe(realtime.Event{Kind: realtime.EventCallerTranscriptDelta, EventID: "ch_oob_1", ItemID: "item_c", ResponseID: "resp_oob", Text: "A table ", OutOfBand: true})
+	h.rec.Observe(realtime.Event{Kind: realtime.EventCallerTranscriptFinal, EventID: "ch_oob_2", ItemID: "item_c", ResponseID: "resp_oob", Text: "A table for two.", OutOfBand: true})
+	h.close(t)
+
+	turns := h.store.latest()
+	var c storage.TranscriptRevision
+	for _, r := range turns {
+		if r.Speaker == storage.SpeakerCallee {
+			c = r
+		}
+	}
+	if c.Text != "A table for two." || c.Fidelity != "provider_asr_approximate" || c.ProviderItemID != "item_c" {
+		t.Fatalf("caller turn = %+v", c)
+	}
+	if !hasFlag(c.Quality, FlagCallerTextModelDerived) || hasFlag(c.Quality, FlagCallerPending) {
+		t.Fatalf("caller flags = %v", c.Quality)
+	}
+	if !slices.Contains(c.SourceIDs, "resp_oob") || !slices.Contains(c.SourceIDs, "sp_1") || !slices.Contains(c.SourceIDs, "ch_oob_2") {
+		t.Fatalf("caller provenance = %v", c.SourceIDs)
+	}
+	flags, complete := h.store.summary(t)
+	if !complete || hasFlag(flags, FlagTwoPartyIncomplete) || hasFlag(flags, FlagCallerUnavailable) {
+		t.Fatalf("summary flags %v complete %v, want a complete two-party transcript", flags, complete)
+	}
+}
+
+// A failed out-of-band transcription keeps the turn unavailable, flags the
+// failure, and makes the two-party transcript incomplete.
+func TestRealtimeOutOfBandFailedIsIncomplete(t *testing.T) {
+	h := outOfBandCaller(t)
+	h.rec.Observe(realtime.Event{Kind: realtime.EventSpeechStarted, EventID: "sp_1", ItemID: "item_f"})
+	h.rec.Observe(realtime.Event{Kind: realtime.EventCallerTranscriptFailed, EventID: "ch_oob_1", ItemID: "item_f", ErrCode: "out_of_band_rejected:unsupported", OutOfBand: true})
+	h.close(t)
+
+	var c storage.TranscriptRevision
+	for _, r := range h.store.latest() {
+		if r.Speaker == storage.SpeakerCallee {
+			c = r
+		}
+	}
+	if c.Text != "" || c.Fidelity != "unavailable" || !hasFlag(c.Quality, FlagCallerFailed) {
+		t.Fatalf("failed caller turn = %+v", c)
+	}
+	flags, complete := h.store.summary(t)
+	if complete || !hasFlag(flags, FlagCallerFailed) || !hasFlag(flags, FlagTwoPartyIncomplete) {
+		t.Fatalf("summary flags %v complete %v", flags, complete)
+	}
+	// The provider failure still reaches the timeline with its code.
+	found := false
+	for _, e := range h.store.events {
+		if e.Kind == "provider.caller_transcript_failed" && strings.Contains(e.PayloadJSON, "out_of_band_rejected:unsupported") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("failure code missing from the timeline")
+	}
+}
+
+// Partial text followed by a failure keeps the partial text, flagged as an
+// incomplete provider turn, and the transcript stays incomplete.
+func TestRealtimeOutOfBandPartialThenFailed(t *testing.T) {
+	h := outOfBandCaller(t)
+	h.rec.Observe(realtime.Event{Kind: realtime.EventCallerTranscriptDelta, EventID: "ch_oob_1", ItemID: "item_p", ResponseID: "resp_p", Text: "A table", OutOfBand: true})
+	h.rec.Observe(realtime.Event{Kind: realtime.EventCallerTranscriptFailed, EventID: "ch_oob_2", ItemID: "item_p", ErrCode: "response_cancelled", OutOfBand: true})
+	h.close(t)
+
+	var c storage.TranscriptRevision
+	for _, r := range h.store.latest() {
+		if r.Speaker == storage.SpeakerCallee {
+			c = r
+		}
+	}
+	if c.Text != "A table" || c.Fidelity != "provider_asr_approximate" {
+		t.Fatalf("partial caller turn = %+v", c)
+	}
+	for _, f := range []string{FlagCallerFailed, FlagProviderIncomplete, FlagCallerTextModelDerived} {
+		if !hasFlag(c.Quality, f) {
+			t.Fatalf("partial caller flags %v lack %s", c.Quality, f)
+		}
+	}
+	if flags, complete := h.store.summary(t); complete || !hasFlag(flags, FlagTwoPartyIncomplete) {
+		t.Fatalf("summary flags %v complete %v", flags, complete)
+	}
+}
+
+// A caller turn still pending at close is unresolved, never guessed.
+func TestRealtimeOutOfBandUnresolvedAtClose(t *testing.T) {
+	h := outOfBandCaller(t)
+	h.rec.Observe(realtime.Event{Kind: realtime.EventSpeechStarted, EventID: "sp_1", ItemID: "item_u"})
+	h.close(t)
+	var c storage.TranscriptRevision
+	for _, r := range h.store.latest() {
+		if r.Speaker == storage.SpeakerCallee {
+			c = r
+		}
+	}
+	if c.Text != "" || c.Fidelity != "unavailable" || !hasFlag(c.Quality, FlagCallerUnresolved) || hasFlag(c.Quality, FlagCallerPending) {
+		t.Fatalf("unresolved caller turn = %+v", c)
+	}
+	if flags, complete := h.store.summary(t); complete || !hasFlag(flags, FlagCallerUnresolved) {
+		t.Fatalf("summary flags %v complete %v", flags, complete)
+	}
+}
+
+// A successful out-of-band transcription with empty text is kept as empty and
+// flagged, never reported as a complete caller utterance.
+func TestRealtimeOutOfBandEmptyTextIsFlagged(t *testing.T) {
+	h := outOfBandCaller(t)
+	h.rec.Observe(realtime.Event{Kind: realtime.EventSpeechStarted, EventID: "sp_1", ItemID: "item_e"})
+	h.rec.Observe(realtime.Event{Kind: realtime.EventCallerTranscriptFinal, EventID: "ch_oob_1", ItemID: "item_e", ResponseID: "resp_e", Text: "", OutOfBand: true})
+	h.close(t)
+	var c storage.TranscriptRevision
+	for _, r := range h.store.latest() {
+		if r.Speaker == storage.SpeakerCallee {
+			c = r
+		}
+	}
+	if c.Text != "" || !hasFlag(c.Quality, FlagCallerEmpty) || !hasFlag(c.Quality, FlagCallerTextModelDerived) {
+		t.Fatalf("empty caller turn = %+v", c)
+	}
+}
+
+// Caller text that is not out-of-band on an out-of-band call is still ignored
+// and flagged, so billed transcription text can never reach the transcript.
+func TestRealtimeOutOfBandRejectsNonOutOfBandCallerText(t *testing.T) {
+	h := outOfBandCaller(t)
+	h.rec.Observe(realtime.Event{Kind: realtime.EventCallerTranscriptFinal, EventID: "ev_x", ItemID: "item_x", Text: "billed text"})
+	h.close(t)
+	for _, r := range h.store.latest() {
+		if r.Text != "" {
+			t.Fatalf("non-out-of-band caller text stored: %+v", r)
+		}
+	}
+	if flags, _ := h.store.summary(t); !hasFlag(flags, FlagUnexpectedCaller) {
+		t.Fatalf("flags %v, want %s", flags, FlagUnexpectedCaller)
+	}
+}
+
+// A local out-of-band failure (timeout or pending limit) carries no event id,
+// because CallHarbor decided it and no provider event exists. It must fail the
+// caller turn and flag it, but must add no empty source id to the turn, the
+// call, or the stored provenance.
+func TestRealtimeLocalOutOfBandFailureHasNoSourceID(t *testing.T) {
+	for _, code := range []string{"timeout", "pending_limit", "item_id_invalid", "out_of_band_unsupported"} {
+		t.Run(code, func(t *testing.T) {
+			h := outOfBandCaller(t)
+			h.rec.Observe(realtime.Event{Kind: realtime.EventSpeechStarted, EventID: "sp_1", ItemID: "item_l"})
+			h.rec.Observe(realtime.Event{Kind: realtime.EventCallerTranscriptFailed, RawType: "callharbor.out_of_band", ItemID: "item_l", ErrCode: code, OutOfBand: true})
+			h.close(t)
+
+			var c storage.TranscriptRevision
+			for _, r := range h.store.latest() {
+				if r.Speaker == storage.SpeakerCallee {
+					c = r
+				}
+			}
+			if !hasFlag(c.Quality, FlagCallerFailed) {
+				t.Fatalf("%s: caller flags = %v, want %s", code, c.Quality, FlagCallerFailed)
+			}
+			for _, id := range c.SourceIDs {
+				if id == "" {
+					t.Fatalf("%s: caller turn stored an empty source id: %v", code, c.SourceIDs)
+				}
+			}
+			flags, complete := h.store.summary(t)
+			if complete || !hasFlag(flags, FlagTwoPartyIncomplete) {
+				t.Fatalf("%s: summary flags %v complete %v, want two-party incomplete", code, flags, complete)
+			}
+		})
+	}
+}
+
+// Deltas add text but never complete a caller turn. A speech start, one
+// delta and a close is not a complete two-party transcript: the turn keeps its
+// partial text, is flagged unresolved and provider_turn_incomplete, and the
+// summary is incomplete.
+func TestRealtimeOutOfBandDeltaOnlyTurnStaysPending(t *testing.T) {
+	h := outOfBandCaller(t)
+	h.rec.Observe(realtime.Event{Kind: realtime.EventSpeechStarted, EventID: "sp_1", ItemID: "item_d", HasTiming: true, StartMS: 0})
+	h.rec.Observe(realtime.Event{Kind: realtime.EventCallerTranscriptDelta, EventID: "ch_oob_1", ItemID: "item_d", ResponseID: "resp_d", Text: "A table", OutOfBand: true})
+	h.close(t)
+
+	var c storage.TranscriptRevision
+	for _, r := range h.store.latest() {
+		if r.Speaker == storage.SpeakerCallee {
+			c = r
+		}
+	}
+	if c.Text != "A table" {
+		t.Fatalf("partial text must be kept, got %q", c.Text)
+	}
+	if c.Fidelity != "provider_asr_approximate" {
+		t.Fatalf("partial text fidelity = %q", c.Fidelity)
+	}
+	for _, f := range []string{FlagCallerUnresolved, FlagProviderIncomplete, FlagCallerTextModelDerived} {
+		if !hasFlag(c.Quality, f) {
+			t.Fatalf("caller flags %v lack %s", c.Quality, f)
+		}
+	}
+	if hasFlag(c.Quality, FlagCallerPending) {
+		t.Fatalf("pending flag left after close: %v", c.Quality)
+	}
+	flags, complete := h.store.summary(t)
+	if complete || !hasFlag(flags, FlagTwoPartyIncomplete) || !hasFlag(flags, FlagCallerUnresolved) {
+		t.Fatalf("summary flags %v complete %v; a delta-only turn must not be complete", flags, complete)
+	}
+}
+
+// While the turn is still pending, a delta-revised turn shows its text with
+// caller_transcript_pending, not as settled text.
+func TestRealtimeOutOfBandPendingRevisionFlaggedWithDeltas(t *testing.T) {
+	h := outOfBandCaller(t)
+	h.rec.Observe(realtime.Event{Kind: realtime.EventSpeechStarted, EventID: "sp_1", ItemID: "item_p2"})
+	h.rec.Observe(realtime.Event{Kind: realtime.EventCallerTranscriptDelta, EventID: "ch_oob_1", ItemID: "item_p2", ResponseID: "resp_p2", Text: "A table", OutOfBand: true})
+	if err := h.rec.flush(context.Background(), false); err != nil {
+		t.Fatal(err)
+	}
+	var sawPending bool
+	for _, r := range h.store.revs {
+		if r.Speaker == storage.SpeakerCallee && r.Text == "A table" && hasFlag(r.Quality, FlagCallerPending) {
+			sawPending = true
+		}
+	}
+	if !sawPending {
+		t.Fatal("a delta-revised pending turn must be written with caller_transcript_pending")
+	}
+}
+
+// With no out-of-band caller transcription at all, speech start still creates
+// an explicit unavailable caller turn, so the caller's speech is visible and
+// its missing text is flagged, as before out-of-band transcription existed.
+func TestRealtimeUnavailableCallerSpeechStartCreatesUnavailableTurn(t *testing.T) {
+	caps := realtime.RealtimeCapabilities
+	caps.CallerTranscript = realtime.Unavailable
+	h := newHarness(t, caps)
+	h.rec.Observe(realtime.Event{Kind: realtime.EventSpeechStarted, EventID: "sp_u", ItemID: "item_un"})
+	h.close(t)
+	var c storage.TranscriptRevision
+	for _, r := range h.store.latest() {
+		if r.Speaker == storage.SpeakerCallee {
+			c = r
+		}
+	}
+	if c.ProviderItemID != "item_un" || c.Text != "" || c.Fidelity != "unavailable" || !hasFlag(c.Quality, FlagCallerUnavailable) {
+		t.Fatalf("unavailable caller turn = %+v", c)
+	}
+	if flags, complete := h.store.summary(t); complete || !hasFlag(flags, FlagCallerUnavailable) {
+		t.Fatalf("summary flags %v complete %v", flags, complete)
+	}
+}
+
+// A transcription that delivered partial text and then failed keeps that text,
+// flagged as a failed and incomplete provider turn. This is the reachable path
+// behind the failed-with-text case in the revision code.
+func TestRealtimeOutOfBandPartialTextThenFailureKeepsText(t *testing.T) {
+	h := outOfBandCaller(t)
+	h.rec.Observe(realtime.Event{Kind: realtime.EventCallerTranscriptDelta, EventID: "ch_oob_1", ItemID: "item_pf", ResponseID: "resp_pf", Text: "Two", OutOfBand: true})
+	h.rec.Observe(realtime.Event{Kind: realtime.EventCallerTranscriptFailed, EventID: "ch_oob_2", ItemID: "item_pf", ErrCode: "response_failed", OutOfBand: true})
+	h.close(t)
+	var c storage.TranscriptRevision
+	for _, r := range h.store.latest() {
+		if r.Speaker == storage.SpeakerCallee {
+			c = r
+		}
+	}
+	if c.Text != "Two" || !hasFlag(c.Quality, FlagCallerFailed) || !hasFlag(c.Quality, FlagProviderIncomplete) {
+		t.Fatalf("partial-then-failed caller turn = %+v", c)
 	}
 }

@@ -82,6 +82,38 @@ func TestUpstreamServerEventsParse(t *testing.T) {
 				t.Fatalf("%+v", ev)
 			}
 		},
+		// response.created is ordinary for the main response: it carries no
+		// CallHarbor metadata, so it is not out-of-band and is ignored here.
+		"response.created": func(t *testing.T, ev realtime.Event) {
+			if ev.Kind != realtime.EventIgnored || ev.RawType != "response.created" || ev.OutOfBand {
+				t.Fatalf("%+v", ev)
+			}
+		},
+		// The text deltas are not parsed as call events: only the out-of-band
+		// coordinator reads them. Upstream form, so ordinary responses gain no
+		// text event.
+		"response.output_text.delta": func(t *testing.T, ev realtime.Event) {
+			if ev.Kind != realtime.EventIgnored || ev.OutOfBand {
+				t.Fatalf("%+v", ev)
+			}
+		},
+		"response.output_text.done": func(t *testing.T, ev realtime.Event) {
+			if ev.Kind != realtime.EventIgnored || ev.OutOfBand {
+				t.Fatalf("%+v", ev)
+			}
+		},
+		// conversation.item.added and .done are coordinator inputs. The parser
+		// ignores them, so they never reach call events.
+		"conversation.item.added": func(t *testing.T, ev realtime.Event) {
+			if ev.Kind != realtime.EventIgnored {
+				t.Fatalf("%+v", ev)
+			}
+		},
+		"conversation.item.done": func(t *testing.T, ev realtime.Event) {
+			if ev.Kind != realtime.EventIgnored {
+				t.Fatalf("%+v", ev)
+			}
+		},
 	}
 	for name, check := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -136,6 +168,12 @@ type fakeRealtime struct {
 	auth     string
 	updated  func(update map[string]any) map[string]any
 	afterUpd []string
+	// onClient, when set, scripts the endpoint's reply to every client message
+	// after the built-in handling (used by the out-of-band tests).
+	onClient func(ctx context.Context, c *websocket.Conn, m map[string]any)
+	// onIdle, when set, runs once per connection beside the read loop, so a
+	// test can push endpoint events on a live socket.
+	onIdle func(ctx context.Context, c *websocket.Conn)
 }
 
 func (f *fakeRealtime) handler(t *testing.T) http.HandlerFunc {
@@ -153,6 +191,9 @@ func (f *fakeRealtime) handler(t *testing.T) http.HandlerFunc {
 		}
 		defer func() { _ = c.CloseNow() }()
 		ctx := r.Context()
+		if f.onIdle != nil {
+			go f.onIdle(ctx, c)
+		}
 		_ = c.Write(ctx, websocket.MessageText, upstream(t, "session.created"))
 		for {
 			_, b, err := c.Read(ctx)
@@ -186,6 +227,9 @@ func (f *fakeRealtime) handler(t *testing.T) http.HandlerFunc {
 			case "conversation.item.truncate":
 				b, _ := json.Marshal(map[string]any{"type": "conversation.item.truncated", "event_id": "event_tr", "item_id": m["item_id"], "content_index": m["content_index"], "audio_end_ms": m["audio_end_ms"]})
 				_ = c.Write(ctx, websocket.MessageText, b)
+			}
+			if f.onClient != nil {
+				f.onClient(ctx, c, m)
 			}
 		}
 	}
@@ -310,17 +354,22 @@ func TestSessionFailsClosed(t *testing.T) {
 	})
 }
 
-// realtime_ws caller transcription exists only as a separately billed
-// transcription model. CallHarbor must not enable it, so a two-party
-// transcript requirement fails closed and the V1 caller transcript is
-// reported as unavailable (CEO-agent decision, not owner-authorized, option a).
+// realtime_ws caller text comes from out-of-band responses of the same voice
+// model, so a two-party requirement passes. Separately billed input
+// transcription is still never enabled, and an endpoint without out-of-band
+// support is handled at run time (see the out-of-band tests), not here.
 func TestRealtimeTwoPartyTranscriptFailsClosed(t *testing.T) {
 	req := realtime.Requirements{Format: audio.Format{Encoding: audio.PCMU, SampleRate: 8000}, TwoPartyTranscript: true}
-	if err := realtime.RealtimeCapabilities.Check(req); !errors.Is(err, realtime.ErrCapability) {
-		t.Fatalf("realtime_ws must not claim two-party transcript: %v", err)
+	if err := realtime.RealtimeCapabilities.Check(req); err != nil {
+		t.Fatalf("realtime_ws out-of-band must satisfy two-party transcript: %v", err)
 	}
-	if got := realtime.RealtimeCapabilities.V1CallerTranscript(); got != realtime.Unavailable {
-		t.Fatalf("realtime_ws V1 caller transcript = %q, want unavailable", got)
+	billed := realtime.RealtimeCapabilities
+	billed.CallerTranscript = realtime.OptInBilled
+	if err := billed.Check(req); !errors.Is(err, realtime.ErrCapability) {
+		t.Fatalf("billed caller transcription must fail closed: %v", err)
+	}
+	if got := realtime.RealtimeCapabilities.V1CallerTranscript(); got != realtime.OutOfBand {
+		t.Fatalf("realtime_ws V1 caller transcript = %q, want out_of_band_response", got)
 	}
 	if got := realtime.LiveCapabilities.V1CallerTranscript(); got != realtime.Native {
 		t.Fatalf("live_ws V1 caller transcript = %q, want native", got)

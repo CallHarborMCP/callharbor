@@ -228,7 +228,9 @@ func (m *Media) buildSink(ctx context.Context, st storage.MediaCall, start telny
 		m.failSetup(ctx, st.ID, ReasonCapabilityMismatch)
 		return nil, err
 	}
-	sess, err := m.Dialers.Dial(ctx, prof, realtime.Requirements{Format: format})
+	// The two-party transcript is mandatory. Both protocols satisfy it: live_ws
+	// natively, realtime_ws through out-of-band responses on the same session.
+	sess, err := m.Dialers.Dial(ctx, prof, realtime.Requirements{Format: format, TwoPartyTranscript: true})
 	if err != nil {
 		release()
 		reason := ReasonAIDialFailed

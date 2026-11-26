@@ -54,6 +54,10 @@ type Event struct {
 	ErrCode        string
 	ErrMessage     string
 	CloseReason    string
+	// OutOfBand marks caller text produced by an out-of-band model response
+	// that references the caller audio item. ResponseID is that response. Such
+	// text is model-derived and approximate, never provider ASR.
+	OutOfBand bool
 }
 
 // ErrProtocol reports a malformed or out-of-contract provider message.
