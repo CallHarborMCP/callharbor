@@ -2,6 +2,7 @@ package audio
 
 import (
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 )
@@ -335,5 +336,90 @@ func TestPlayoutLedgerTrimmedRangeSplitsCorrectly(t *testing.T) {
 	}
 	if len(l.trimmed) != 0 {
 		t.Fatalf("ranges left %v", l.trimmed)
+	}
+}
+
+// Alternating loss. Each wave sends perWave chunks, all overdue after the wave.
+// The odd ones are echoed late and leave pending. The even ones are withheld.
+// Withheld chunks expire and trimExpired drops them oldest first while they are
+// still pending. Each dropped even chunk sits between two removed odd neighbours,
+// so without the cap each would be its own trimmed range. The withheld echoes
+// are delivered at the end, after most have been trimmed, so they must be
+// accepted through the ranges or the watermark.
+func TestPlayoutLedgerAlternatingLossStaysBounded(t *testing.T) {
+	const (
+		waves   = 100
+		perWave = 128
+	)
+	l := newTestLedger(t)
+	src := SourceRef{ItemID: "alt"}
+	now := t0
+	var withheld []string
+	maxSeen := 0
+	for w := 0; w < waves; w++ {
+		wave := make([]string, 0, perWave)
+		for i := 0; i < perWave; i++ {
+			wave = append(wave, mustSend(t, l, src, 160, now))
+		}
+		// One second past the queue end is past every chunk's grace, so
+		// everything sent so far expires now.
+		now = l.QueueEnd().Add(time.Second)
+		if err := l.Expire(now); !errors.Is(err, ErrPlayoutTimedOut) {
+			t.Fatalf("wave %d: Expire = %v, want ErrPlayoutTimedOut", w, err)
+		}
+		if n := len(l.trimmed); n > maxTrimmedRanges {
+			t.Fatalf("wave %d: %d trimmed ranges, cap is %d", w, n, maxTrimmedRanges)
+		} else if n > maxSeen {
+			maxSeen = n
+		}
+		for i, m := range wave {
+			if i%2 == 0 {
+				withheld = append(withheld, m)
+				continue
+			}
+			if o, err := l.Echo(m, now); err != nil || o != MarkEarly {
+				t.Fatalf("wave %d: late echo %s = %v, %v; want early, nil", w, m, o, err)
+			}
+		}
+	}
+	if maxSeen != maxTrimmedRanges {
+		t.Fatalf("ranges peaked at %d; the cap of %d was never reached, so the fold is untested", maxSeen, maxTrimmedRanges)
+	}
+	if l.trimmedThrough == 0 {
+		t.Fatal("no range was folded into trimmedThrough")
+	}
+
+	for i, m := range withheld {
+		if o, err := l.Echo(m, now); err != nil || o != MarkEarly {
+			t.Fatalf("withheld echo %d (%s) = %v, %v; want early, nil", i, m, o, err)
+		}
+	}
+	if l.Pending() != 0 {
+		t.Fatalf("pending = %d after every echo, want 0", l.Pending())
+	}
+
+	total := time.Duration(waves*perWave) * 20 * time.Millisecond
+	it, ok := l.Item(src)
+	if !ok || it.Sent != total || it.Unconfirmed != total || it.Confirmed != 0 || it.Estimated != 0 || it.Discarded != 0 {
+		t.Fatalf("totals %+v, want Sent and Unconfirmed %v and nothing else", it, total)
+	}
+
+	// A repeat echo at or below the watermark is accepted, and changes nothing.
+	first := withheld[0]
+	if seq, _ := parseMarkSeq(first); seq > l.trimmedThrough {
+		t.Fatalf("oldest withheld %s is above the watermark %d; the repeat check needs it folded", first, l.trimmedThrough)
+	}
+	if o, err := l.Echo(first, now); err != nil || o != MarkEarly {
+		t.Fatalf("repeat echo below watermark = %v, %v; want early, nil", o, err)
+	}
+	if again, _ := l.Item(src); again != it {
+		t.Fatalf("repeat echo changed totals: before %+v after %+v", it, again)
+	}
+
+	// Above the highest issued sequence nothing is recorded, so it is unknown.
+	for _, forged := range []string{fmt.Sprintf("ch-%d", l.seq+1), fmt.Sprintf("ch-%d", l.seq+1000)} {
+		if _, err := l.Echo(forged, now); !errors.Is(err, ErrUnknownMark) {
+			t.Fatalf("never-issued mark %q = %v, want ErrUnknownMark", forged, err)
+		}
 	}
 }

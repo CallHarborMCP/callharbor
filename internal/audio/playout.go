@@ -97,12 +97,18 @@ type PlayoutLedger struct {
 	queueEnd  time.Time
 	pending   []*chunk
 	// trimmed holds the sequence numbers of expired chunks that trimExpired
-	// dropped from pending, as sorted, disjoint inclusive ranges. An echo for
-	// one of them is a genuine late echo, not a forged or unknown mark, so it
-	// is accepted without touching the accounting, which was settled at expiry.
+	// dropped from pending, as sorted, disjoint inclusive ranges, at most
+	// maxTrimmedRanges of them. Older ranges are folded into trimmedThrough.
+	// An echo for one of them is a genuine late echo, not a forged or unknown
+	// mark, so it is accepted without touching the accounting, which was
+	// settled at expiry.
 	trimmed []seqRange
-	items   map[SourceRef]*ItemPlayout
-	order   []SourceRef
+	// trimmedThrough is the highest sequence folded out of trimmed. Every
+	// sequence at or below it that is no longer pending is accepted as a late
+	// echo; see takeTrimmed.
+	trimmedThrough uint64
+	items          map[SourceRef]*ItemPlayout
+	order          []SourceRef
 }
 
 // NewPlayoutLedger creates a ledger. tolerance bounds how much earlier than
@@ -161,8 +167,9 @@ func (l *PlayoutLedger) Echo(name string, now time.Time) (MarkOutcome, error) {
 	}
 	if idx < 0 {
 		// Not pending: either trimmed (a genuine late echo, see trimExpired) or
-		// unknown. The trimmed echo is accepted once, as MarkEarly, and its
-		// accounting is not touched again: Unconfirmed was recorded at expiry.
+		// unknown. A trimmed echo is accepted as MarkEarly and changes no
+		// accounting: Unconfirmed was recorded at expiry. At or below
+		// trimmedThrough a repeat echo is accepted too, for the same reason.
 		if seq, ok := parseMarkSeq(name); ok && l.takeTrimmed(seq) {
 			return MarkEarly, nil
 		}
@@ -266,6 +273,14 @@ func (l *PlayoutLedger) Expire(now time.Time) error {
 // for a dropped chunk is no longer recognised, and it is reported as unknown.
 const MaxExpiredPending = 256
 
+// maxTrimmedRanges bounds the trimmed-sequence ranges kept for late echoes. Each
+// trim run that is not contiguous with the previous one adds a range, so an
+// alternating loss pattern would otherwise grow the list without limit. Past
+// this bound the oldest range is folded into trimmedThrough. Folding widens
+// what is accepted: a repeat echo of an already-echoed mark below the watermark
+// is accepted as well. That changes no accounting, so it is harmless.
+const maxTrimmedRanges = 64
+
 // trimExpired drops the oldest expired chunks once more than MaxExpiredPending
 // of them are waiting. Unexpired chunks are never dropped. Each dropped
 // sequence is recorded in trimmed, so its late echo is still classified.
@@ -301,14 +316,37 @@ func (l *PlayoutLedger) trimExpired() {
 func (l *PlayoutLedger) addTrimmed(seq uint64) {
 	if n := len(l.trimmed); n > 0 && l.trimmed[n-1].hi+1 == seq {
 		l.trimmed[n-1].hi = seq
-		return
+	} else {
+		l.trimmed = append(l.trimmed, seqRange{lo: seq, hi: seq})
 	}
-	l.trimmed = append(l.trimmed, seqRange{lo: seq, hi: seq})
+	l.foldTrimmed()
 }
 
-// takeTrimmed reports whether seq is a trimmed sequence and removes it, so a
-// second echo for the same mark is not classified again.
+// foldTrimmed folds the oldest ranges into trimmedThrough until the list is
+// within maxTrimmedRanges. Ranges are sorted, so the oldest has the lowest
+// sequences and folding it keeps the watermark a single upper bound.
+func (l *PlayoutLedger) foldTrimmed() {
+	for len(l.trimmed) > maxTrimmedRanges {
+		if hi := l.trimmed[0].hi; hi > l.trimmedThrough {
+			l.trimmedThrough = hi
+		}
+		copy(l.trimmed, l.trimmed[1:])
+		l.trimmed = l.trimmed[:len(l.trimmed)-1]
+	}
+}
+
+// takeTrimmed reports whether a non-pending sequence is a trimmed mark whose
+// late echo must be accepted. A sequence at or below trimmedThrough is always
+// accepted and is not removed. Its accounting was settled at expiry, so a
+// repeat echo there changes nothing. Every such sequence was issued, because
+// trimmedThrough never exceeds the last issued sequence. A sequence inside a
+// range is accepted once and removed, so a repeat echo above the watermark is
+// unknown. A sequence above the watermark outside every range was never trimmed
+// and is not accepted.
 func (l *PlayoutLedger) takeTrimmed(seq uint64) bool {
+	if seq <= l.trimmedThrough {
+		return true
+	}
 	for i, r := range l.trimmed {
 		if seq < r.lo || seq > r.hi {
 			continue
@@ -325,6 +363,7 @@ func (l *PlayoutLedger) takeTrimmed(seq uint64) bool {
 			tail := seqRange{lo: seq + 1, hi: r.hi}
 			l.trimmed[i].hi = seq - 1
 			l.trimmed = append(l.trimmed[:i+1], append([]seqRange{tail}, l.trimmed[i+1:]...)...)
+			l.foldTrimmed()
 		}
 		return true
 	}
