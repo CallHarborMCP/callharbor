@@ -110,6 +110,35 @@ func TestRoutesRejectUnsupportedMethods(t *testing.T) {
 	}
 }
 
+// TestAccessLogNeverRecordsStreamToken sends a media request through server.New
+// and checks that the access log names the route pattern, not the path. The
+// media stream token is a path segment, so logging the raw path would leak it.
+func TestAccessLogNeverRecordsStreamToken(t *testing.T) {
+	const token = "tok-SECRET-0123456789abcdefSECRET" // gitleaks:allow
+	var logs bytes.Buffer
+	routes := func(mux *http.ServeMux) {
+		mux.HandleFunc("GET /telnyx/calls/{call_id}/media/{token}", func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusUnauthorized)
+		})
+	}
+	s := New(observability.NewLogger(&logs, slog.LevelInfo), fstest.MapFS{}, routes)
+
+	for _, path := range []string{
+		"/telnyx/calls/call-1/media/" + token,
+		"/telnyx/calls/call-1/media/" + token + "/extra",
+	} {
+		get(t, s.Handler(), path)
+	}
+
+	out := logs.String()
+	if strings.Contains(out, token) {
+		t.Fatalf("access log contains the stream token: %s", out)
+	}
+	if !strings.Contains(out, "GET /telnyx/calls/{call_id}/media/{token}") {
+		t.Fatalf("access log does not name the route pattern: %s", out)
+	}
+}
+
 func TestUnbuiltWebUIReturnsServiceUnavailable(t *testing.T) {
 	s := New(observability.NewLogger(io.Discard, slog.LevelError), fstest.MapFS{
 		".gitkeep": &fstest.MapFile{},

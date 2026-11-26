@@ -31,7 +31,9 @@ type MediaSink interface {
 }
 
 // SinkFactory creates the sink for a stream after its start frame validates.
-type SinkFactory func(start Frame, send Send) (MediaSink, error)
+// ctx is the stream's frame-loop context: it ends when the stream ends or the
+// connection is cancelled, so setup work can stop with the connection.
+type SinkFactory func(ctx context.Context, start Frame, send Send) (MediaSink, error)
 
 // MediaEndpoint serves the Telnyx bidirectional media WebSocket. Every upgrade
 // is authenticated with VerifyMediaHandshake against the exact streamURL that
@@ -108,7 +110,7 @@ func dispatch(ctx context.Context, sink *MediaSink, f Frame, send Send, newSink 
 		if *sink != nil {
 			return fmt.Errorf("%w: duplicate start", ErrFrameOrder)
 		}
-		s, err := newSink(f, send)
+		s, err := newSink(ctx, f, send)
 		if err != nil {
 			return err
 		}

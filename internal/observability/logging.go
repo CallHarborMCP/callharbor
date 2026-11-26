@@ -36,11 +36,22 @@ func AccessLog(logger *slog.Logger, next http.Handler) http.Handler {
 		next.ServeHTTP(rec, r)
 		logger.InfoContext(r.Context(), "http request",
 			"method", r.Method,
-			"path", r.URL.Path,
+			"path", loggedPath(r),
 			"status", rec.status,
 			"duration_ms", time.Since(start).Milliseconds(),
 		)
 	})
+}
+
+// loggedPath returns the route pattern the request matched. A pattern names path
+// parameters, not their values. Paths can carry secrets: a media stream URL
+// holds its token in the path, so the raw path is never logged. When no pattern
+// matched, the path is replaced by a fixed label.
+func loggedPath(r *http.Request) string {
+	if r.Pattern != "" {
+		return r.Pattern
+	}
+	return "unmatched"
 }
 
 type statusRecorder struct {
@@ -60,4 +71,11 @@ func (r *statusRecorder) WriteHeader(code int) {
 func (r *statusRecorder) Write(b []byte) (int, error) {
 	r.wrote = true
 	return r.ResponseWriter.Write(b)
+}
+
+// Unwrap exposes the underlying writer. WebSocket upgrades (coder/websocket)
+// and http.ResponseController find the http.Hijacker through it. Without this,
+// every upgrade behind the access log fails with 501.
+func (r *statusRecorder) Unwrap() http.ResponseWriter {
+	return r.ResponseWriter
 }

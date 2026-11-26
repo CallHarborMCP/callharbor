@@ -278,15 +278,14 @@ func TestV1GetCallOwnershipAndShape(t *testing.T) {
 
 func TestV1MethodsOutsideContractAreNotFound(t *testing.T) {
 	f := newFixture(t)
-	req := httptest.NewRequest(http.MethodPost, "/api/v1/calls", strings.NewReader("{}"))
+	// GET /api/v1/calls is mounted and POST /api/v1/calls is mounted too. A
+	// method outside the contract on a mounted path still answers 405.
+	req := httptest.NewRequest(http.MethodDelete, "/api/v1/calls", strings.NewReader("{}"))
 	req.AddCookie(f.aliceCk)
 	rec := httptest.NewRecorder()
 	f.mux.ServeHTTP(rec, req)
-	// /api/v1/calls is mounted for GET only. The mux answers 405 for POST on
-	// that mounted path; the planned POST operation is covered by
-	// TestPlannedOperationsAreNotMounted, which requires 404.
 	if rec.Code != http.StatusMethodNotAllowed {
-		t.Fatalf("POST /api/v1/calls = %d %s, want 405", rec.Code, rec.Body.String())
+		t.Fatalf("DELETE /api/v1/calls = %d %s, want 405", rec.Code, rec.Body.String())
 	}
 }
 

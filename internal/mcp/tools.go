@@ -20,6 +20,7 @@ const (
 	ToolGetProfiles = "get_profiles"
 	ToolListCalls   = "list_calls"
 	ToolGetCall     = "get_call"
+	ToolMakeCall    = "make_call"
 )
 
 // GetProfilesInput takes no arguments.
@@ -38,6 +39,24 @@ type ListCallsInput struct {
 // CallFilters narrows list_calls.
 type CallFilters struct {
 	Status string `json:"status,omitempty"`
+}
+
+// MakeCallInput is the make_call argument object. Its fields are the public
+// schema, and the owner is never an argument. The service validates each value.
+type MakeCallInput struct {
+	ProfileID       string   `json:"profile_id"`
+	To              string   `json:"to"`
+	Recipient       string   `json:"recipient,omitempty"`
+	Language        string   `json:"language,omitempty"`
+	Objective       string   `json:"objective"`
+	Context         string   `json:"context,omitempty"`
+	Instructions    string   `json:"instructions,omitempty"`
+	Constraints     []string `json:"constraints,omitempty"`
+	Fallbacks       []string `json:"fallbacks,omitempty"`
+	SuccessCriteria []string `json:"success_criteria,omitempty"`
+	MaxDuration     *int     `json:"max_duration_seconds,omitempty"`
+	Record          bool     `json:"record,omitempty"`
+	IdempotencyKey  string   `json:"idempotency_key"`
 }
 
 // GetCallInput names one call.
@@ -112,6 +131,28 @@ func registerTools(srv *mcp.Server, svc *service.Service, logger *slog.Logger) {
 			return nil, ListCallsOutput{}, toolFailure(logger, err)
 		}
 		return nil, ListCallsOutput{Calls: res.Calls, NextCursor: res.NextCursor}, nil
+	})
+
+	addTool(srv, &mcp.Tool{
+		Name:         ToolMakeCall,
+		Description:  "Queue one outbound AI voice call. Returns the queued call id at once; the dial happens asynchronously. Requires an idempotency_key: the same key with the same request returns the original call, and the same key with a different request is a conflict. The telephony profile must be verified and the caller must have exactly one AI profile.",
+		InputSchema:  inputOf(ToolMakeCall),
+		OutputSchema: outputOf(ToolMakeCall),
+	}, func(ctx context.Context, req *mcp.CallToolRequest, in MakeCallInput) (*mcp.CallToolResult, service.MakeCallResult, error) {
+		actor, err := actorFromRequest(req)
+		if err != nil {
+			return nil, service.MakeCallResult{}, toolFailure(logger, err)
+		}
+		res, err := svc.MakeCall(ctx, actor, service.MakeCallInput{
+			ProfileID: in.ProfileID, To: in.To, Recipient: in.Recipient, Language: in.Language,
+			Objective: in.Objective, Context: in.Context, Instructions: in.Instructions,
+			Constraints: in.Constraints, Fallbacks: in.Fallbacks, SuccessCriteria: in.SuccessCriteria,
+			MaxDuration: in.MaxDuration, Record: in.Record, IdempotencyKey: in.IdempotencyKey,
+		})
+		if err != nil {
+			return nil, service.MakeCallResult{}, toolFailure(logger, err)
+		}
+		return nil, res, nil
 	})
 
 	addTool(srv, &mcp.Tool{

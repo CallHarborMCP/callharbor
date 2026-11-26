@@ -48,7 +48,7 @@ func newHarness(t *testing.T, priv ed25519.PrivateKey, pub ed25519.PublicKey) *h
 	}))
 	t.Cleanup(h.srv.Close)
 	h.streamURL = "ws" + strings.TrimPrefix(h.srv.URL, "http") + "/media?token=abc"
-	me, err := telnyx.NewMediaEndpoint(v, h.streamURL, func(start telnyx.Frame, send telnyx.Send) (telnyx.MediaSink, error) {
+	me, err := telnyx.NewMediaEndpoint(v, h.streamURL, func(_ context.Context, start telnyx.Frame, send telnyx.Send) (telnyx.MediaSink, error) {
 		b, err := voicebridge.New(start.Format, g711, time.Millisecond, time.Second)
 		if err != nil {
 			return nil, err

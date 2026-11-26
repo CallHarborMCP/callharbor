@@ -218,7 +218,7 @@ func TestMCPSDKClientListsOnlyImplementedTools(t *testing.T) {
 		names = append(names, tool.Name)
 	}
 	sort.Strings(names)
-	want := []string{"get_call", "get_profiles", "list_calls"}
+	want := []string{"get_call", "get_profiles", "list_calls", "make_call"}
 	if strings.Join(names, ",") != strings.Join(want, ",") {
 		t.Fatalf("tools = %v, want %v", names, want)
 	}
@@ -363,7 +363,7 @@ func TestMCPSDKPlannedToolsAreNotRegistered(t *testing.T) {
 	e, token := setupMCPData(t)
 	sess := e.sdkClient(t, token)
 
-	for _, name := range []string{"make_call", "get_transcript", "get_recording", "hangup_call"} {
+	for _, name := range []string{"get_transcript", "get_recording", "hangup_call"} {
 		res, err := sess.CallTool(context.Background(), &mcp.CallToolParams{Name: name, Arguments: map[string]any{"call_id": "alice-c1"}})
 		if res != nil {
 			t.Fatalf("planned %s returned a result: %+v", name, res)

@@ -2,6 +2,7 @@ package storage
 
 import (
 	"context"
+	"database/sql"
 	"embed"
 	"fmt"
 	"io/fs"
@@ -21,11 +22,25 @@ CREATE TABLE IF NOT EXISTS schema_migrations (
     applied_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
 )`
 
+// foreignKeysOffDirective, as the first line of a migration script, asks the
+// runner to disable foreign key enforcement for that script. SQLite ignores
+// PRAGMA foreign_keys inside a transaction, so the runner sets it on the
+// connection before BEGIN. It then checks foreign_key_check inside the
+// transaction and fails the migration on any violation. Enforcement is
+// restored afterward. Use it only for table rebuilds that follow the SQLite
+// ALTER TABLE procedure.
+const foreignKeysOffDirective = "-- callharbor:foreign_keys=off"
+
 type migration struct {
 	version int
 	name    string
 	up      string
 	down    string
+}
+
+func needsForeignKeysOff(script string) bool {
+	first, _, _ := strings.Cut(script, "\n")
+	return strings.TrimSpace(first) == foreignKeysOffDirective
 }
 
 func loadMigrations() ([]migration, error) {
@@ -150,18 +165,44 @@ func (s *Store) MigrateDown(ctx context.Context, target int) error {
 }
 
 func (s *Store) runMigration(ctx context.Context, script string, version int, name string, up bool) error {
-	tx, err := s.db.BeginTx(ctx, nil)
+	direction := "up"
+	if !up {
+		direction = "down"
+	}
+	// Pin one connection. The pool holds a single connection, so the pragma and
+	// the transaction that follows both act on the same session.
+	conn, err := s.db.Conn(ctx)
+	if err != nil {
+		return fmt.Errorf("connect for migration %04d_%s %s: %w", version, name, direction, err)
+	}
+	defer func() { _ = conn.Close() }()
+
+	fkOff := needsForeignKeysOff(script)
+	if fkOff {
+		if _, err := conn.ExecContext(ctx, "PRAGMA foreign_keys = OFF"); err != nil {
+			return fmt.Errorf("migration %04d_%s %s: disable foreign keys: %w", version, name, direction, err)
+		}
+		// Enforcement must be back on before the connection returns to the pool.
+		// The success path restores it and checks the result. This defer covers
+		// only the paths that return early, where the migration already failed.
+		defer func() {
+			_, _ = conn.ExecContext(context.Background(), "PRAGMA foreign_keys = ON")
+		}()
+	}
+
+	tx, err := conn.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("begin migration %04d_%s: %w", version, name, err)
 	}
 	defer func() { _ = tx.Rollback() }()
 
-	direction := "up"
-	if !up {
-		direction = "down"
-	}
 	if _, err := tx.ExecContext(ctx, script); err != nil {
 		return fmt.Errorf("migration %04d_%s %s: %w", version, name, direction, err)
+	}
+	if fkOff {
+		if err := checkForeignKeys(ctx, tx); err != nil {
+			return fmt.Errorf("migration %04d_%s %s: %w", version, name, direction, err)
+		}
 	}
 	if up {
 		_, err = tx.ExecContext(ctx,
@@ -175,5 +216,48 @@ func (s *Store) runMigration(ctx context.Context, script string, version int, na
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("commit migration %04d_%s %s: %w", version, name, direction, err)
 	}
+	if fkOff {
+		if err := restoreForeignKeys(ctx, conn); err != nil {
+			return fmt.Errorf("migration %04d_%s %s: %w", version, name, direction, err)
+		}
+	}
 	return nil
+}
+
+// restoreForeignKeys turns enforcement back on for the pinned connection and
+// re-reads the pragma. A failure to restore is reported, not ignored: a pool
+// connection with enforcement off would silently accept dangling references.
+func restoreForeignKeys(ctx context.Context, conn *sql.Conn) error {
+	if _, err := conn.ExecContext(ctx, "PRAGMA foreign_keys = ON"); err != nil {
+		return fmt.Errorf("restore foreign keys: %w", err)
+	}
+	var on int
+	if err := conn.QueryRowContext(ctx, "PRAGMA foreign_keys").Scan(&on); err != nil {
+		return fmt.Errorf("read foreign_keys pragma: %w", err)
+	}
+	if on != 1 {
+		return fmt.Errorf("foreign keys not enforced after migration (pragma = %d)", on)
+	}
+	return nil
+}
+
+// checkForeignKeys fails when foreign_key_check reports any violation. It runs
+// inside the migration transaction so a bad rebuild never commits.
+func checkForeignKeys(ctx context.Context, tx *sql.Tx) error {
+	rows, err := tx.QueryContext(ctx, "PRAGMA foreign_key_check")
+	if err != nil {
+		return fmt.Errorf("foreign_key_check: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	if rows.Next() {
+		var table string
+		var rowid sql.NullInt64
+		var parent string
+		var fkid int
+		if err := rows.Scan(&table, &rowid, &parent, &fkid); err != nil {
+			return fmt.Errorf("foreign_key_check scan: %w", err)
+		}
+		return fmt.Errorf("foreign key violation in %s referencing %s", table, parent)
+	}
+	return rows.Err()
 }

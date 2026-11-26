@@ -335,7 +335,7 @@ func TestAICallPathDrivesVoiceRunOverSignedTelnyxMedia(t *testing.T) {
 			t.Cleanup(srv.Close)
 			streamURL := "ws" + strings.TrimPrefix(srv.URL, "http") + "/media?token=it"
 
-			me, err = telnyx.NewMediaEndpoint(v, streamURL, func(start telnyx.Frame, send telnyx.Send) (telnyx.MediaSink, error) {
+			me, err = telnyx.NewMediaEndpoint(v, streamURL, func(_ context.Context, start telnyx.Frame, send telnyx.Send) (telnyx.MediaSink, error) {
 				bridge, err := voicebridge.New(start.Format, pcmu, 5*time.Millisecond, 2*time.Second)
 				if err != nil {
 					return nil, err

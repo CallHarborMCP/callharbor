@@ -26,11 +26,23 @@ const (
 	// believed when rate limits pick a client address. Entries are IP addresses
 	// or CIDR prefixes separated by commas. Unset trusts no proxy.
 	EnvTrustedProxies = "CALLHARBOR_TRUSTED_PROXIES"
+	// EnvMaxCallBriefBytes bounds the canonical JSON size of one call brief
+	// (context, instructions, constraints and the rest). Oversized briefs are
+	// rejected with brief_too_large, never truncated. The value is in bytes.
+	EnvMaxCallBriefBytes = "CALLHARBOR_MAX_CALL_BRIEF_BYTES"
 
 	defaultListenAddr      = ":8080"
 	defaultDataDir         = "/data"
 	defaultShutdownTimeout = 15 * time.Second
 	maxShutdownTimeout     = 5 * time.Minute
+
+	// DefaultMaxCallBriefBytes is the brief limit when the variable is unset.
+	DefaultMaxCallBriefBytes = 32 << 10
+	// MinMaxCallBriefBytes and MaxMaxCallBriefBytes bound the configurable
+	// limit. The floor keeps a usable brief; the ceiling keeps one request from
+	// holding an unbounded amount of memory and provider payload.
+	MinMaxCallBriefBytes = 1 << 10
+	MaxMaxCallBriefBytes = 256 << 10
 )
 
 type Config struct {
@@ -44,14 +56,17 @@ type Config struct {
 	// TrustedProxies are the peer prefixes whose X-Forwarded-For entries are
 	// used to find the client for rate limiting. Empty trusts no peer.
 	TrustedProxies []netip.Prefix
+	// MaxCallBriefBytes is the largest accepted canonical call brief, in bytes.
+	MaxCallBriefBytes int
 }
 
 func Load(getenv func(string) string) (Config, error) {
 	cfg := Config{
-		ListenAddr:      value(getenv, EnvListenAddr, defaultListenAddr),
-		DataDir:         value(getenv, EnvDataDir, defaultDataDir),
-		LogLevel:        slog.LevelInfo,
-		ShutdownTimeout: defaultShutdownTimeout,
+		ListenAddr:        value(getenv, EnvListenAddr, defaultListenAddr),
+		DataDir:           value(getenv, EnvDataDir, defaultDataDir),
+		LogLevel:          slog.LevelInfo,
+		ShutdownTimeout:   defaultShutdownTimeout,
+		MaxCallBriefBytes: DefaultMaxCallBriefBytes,
 	}
 
 	var errs []error
@@ -99,6 +114,18 @@ func Load(getenv func(string) string) (Config, error) {
 			errs = append(errs, fmt.Errorf("%s: %w", EnvTrustedProxies, err))
 		} else {
 			cfg.TrustedProxies = prefixes
+		}
+	}
+
+	if raw := strings.TrimSpace(getenv(EnvMaxCallBriefBytes)); raw != "" {
+		n, err := strconv.Atoi(raw)
+		switch {
+		case err != nil:
+			errs = append(errs, fmt.Errorf("%s: must be a whole number of bytes", EnvMaxCallBriefBytes))
+		case n < MinMaxCallBriefBytes || n > MaxMaxCallBriefBytes:
+			errs = append(errs, fmt.Errorf("%s: must be between %d and %d bytes", EnvMaxCallBriefBytes, MinMaxCallBriefBytes, MaxMaxCallBriefBytes))
+		default:
+			cfg.MaxCallBriefBytes = n
 		}
 	}
 

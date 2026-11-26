@@ -39,11 +39,30 @@ type Store interface {
 // call receives its Actor explicitly.
 type Service struct {
 	store Store
+	calls *CallOperator
 }
 
 // New returns a Service backed by store.
 func New(store Store) *Service {
 	return &Service{store: store}
+}
+
+// WithCalls attaches the call write path. The app sets it only when calls are
+// running (public URL and master key present). Until then MakeCall refuses with
+// calls_unavailable before any store access, so no queued row is ever written
+// for a call the worker cannot dial.
+func (s *Service) WithCalls(op *CallOperator) *Service {
+	s.calls = op
+	return s
+}
+
+// MakeCall is the one call-creation entry point. REST and MCP both use it.
+func (s *Service) MakeCall(ctx context.Context, actor Actor, in MakeCallInput) (MakeCallResult, error) {
+	if s.calls == nil {
+		return MakeCallResult{}, AsErrorWith(CodeUnavailable,
+			ReasonCallsUnavailable+": calls need CALLHARBOR_PUBLIC_URL and the secrets master key")
+	}
+	return s.calls.MakeCall(ctx, actor, in)
 }
 
 // TelephonyProfileView is one telephony profile as the API exposes it. Secret

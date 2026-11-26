@@ -14,6 +14,7 @@ MCP and OAuth tokens are not accepted on `/api/v1`. The MCP endpoint has its own
 | --- | --- | --- |
 | `GET` | `/api/v1/profiles` | The caller's AI and telephony profiles, without secrets |
 | `GET` | `/api/v1/calls` | The caller's calls, newest first, one page at a time |
+| `POST` | `/api/v1/calls` | Queue one outbound call; returns `202` (requires `Idempotency-Key`). See [Placing calls](#placing-calls) |
 | `GET` | `/api/v1/calls/{call_id}` | One call owned by the caller |
 | `GET` | `/api/v1/telephony-profiles` | Telephony profiles the caller owns or was granted |
 | `POST` | `/api/v1/telephony-profiles` | Create a telephony profile (owner) |
@@ -25,12 +26,12 @@ MCP and OAuth tokens are not accepted on `/api/v1`. The MCP endpoint has its own
 | `PUT` | `/api/v1/telephony-profiles/{profile_id}/grants/{user_id}` | Grant a user use of a profile (admin owner) |
 | `DELETE` | `/api/v1/telephony-profiles/{profile_id}/grants/{user_id}` | Revoke a grant (admin owner) |
 
-Only these operations are implemented. Other methods on these paths are not routed. Planned operations such as creating a call are not exposed by this API.
+Only these operations are implemented. Other methods on these paths are not routed. Planned operations (transcripts, recordings and hangup, tracked in later issues) are not exposed by this API.
 
 Planned operations are listed in `api/openapi.json` with `x-callharbor-availability: planned`. They are never mounted as operations. Their responses are never a success and never start anything:
 
 - A planned `GET` path (the transcript, recording and recording audio paths) is answered by the API itself. A request needs a valid session, as every `/api/v1` path does. Anonymous requests get `401 unauthenticated`. A signed-in request gets `404` with the `not_found` envelope, `{"error":{"code":"not_found",...}}`. It never reaches the web UI, so the answer is the same whether or not the UI is built.
-- A planned `POST` path returns `405 Method Not Allowed` from the router, plain text and not the JSON envelope. Because the web UI's `GET /` pattern matches every path, the router reports a wrong method as 405 rather than 404. For example, `POST /api/v1/calls` returns `405` because `GET /api/v1/calls` is mounted, and `POST /api/v1/calls/{call_id}/transcript` returns `405` as well.
+- A planned `POST` path returns `405 Method Not Allowed` from the router, plain text and not the JSON envelope. Because the web UI's `GET /` pattern matches every path, the router reports a wrong method as 405 rather than 404. For example, `POST /api/v1/calls/{call_id}/transcript` returns `405`, because the path is planned and no route is mounted for that method.
 
 The planned `GET` list is derived from `PlannedRoutes` in `internal/api/v1.go`, and the app tests probe every planned route with a session.
 
@@ -75,7 +76,8 @@ Every error uses one envelope:
 | `insufficient_scope` | 403 | Token scope is too narrow (not used by session routes) |
 | `not_found` | 404 | Missing, or owned by another user. The two cases are indistinguishable. |
 | `invalid_input` | 400 | Bad query parameter or path value |
-| `conflict` | 409 | State conflict |
+| `conflict` | 409 | State conflict, including `idempotency_conflict` |
+| `unavailable` | 503 | Calls are not running (see `calls_unavailable` under [Placing calls](#placing-calls)) |
 | `internal` | 500 | Unexpected failure. The message is always `internal error`; details go to the server log only. |
 
 ## MCP tool errors
@@ -89,7 +91,29 @@ The MCP tools use the same codes and the same `{"error":{"code","message"}}` tex
 
 ## Idempotency
 
-Commands that create work take an `Idempotency-Key` header. This convention is part of the planned operations only; no implemented route is a command yet. The key is 1 to 128 characters, must be valid UTF-8, and may not contain whitespace or non-printable characters. An invalid key is rejected with `invalid_input` before any work starts. The format check is `service.ValidateIdempotencyKey`. The replay behavior, where a repeated key returns the original result, is required by the planned operations and is not implemented yet.
+Commands that create work take an `Idempotency-Key` header. Today that is `POST /api/v1/calls` and the `make_call` MCP tool. The key is 1 to 128 characters, must be valid UTF-8, and may not contain whitespace or non-printable characters. An invalid key is rejected with `invalid_input` before any work starts. The format check is `service.ValidateIdempotencyKey`.
+
+Keys are scoped to the owner. A repeated request with the same key and the same request returns the current call and its original `created_at`, and does not dial again. The same key with a different request is `409 idempotency_conflict`. The comparison covers the telephony profile, the number, `record`, `max_duration_seconds` and the canonical brief. It does not cover the AI profile, which the server selects from the caller's own profiles.
+
+## Placing calls
+
+`POST /api/v1/calls` takes a JSON body with `profile_id`, `to` (E.164), `objective`, and optional `recipient`, `language`, `context`, `instructions`, `constraints`, `fallbacks`, `success_criteria`, `max_duration_seconds` (1 to 7200, default 600) and `record`. Unknown fields are rejected. It needs a session cookie and the CSRF token. The body is capped at 300 KiB.
+
+It returns `202` with `{"call_id", "status": "queued", "created_at"}`. The dial happens later, in the call worker, so a `queued` status is the only status the response can show. Poll `GET /api/v1/calls/{call_id}` for progress.
+
+Refusals and their codes:
+
+| Code | When |
+| --- | --- |
+| `invalid_input` (400) | Malformed JSON, a missing `Idempotency-Key`, or a field out of range |
+| `brief_too_large` (400) | The rendered brief is over `CALLHARBOR_MAX_CALL_BRIEF_BYTES`. The brief is never truncated. The message names the setting. |
+| `ai_profile_required` (400) | The caller owns no AI profile |
+| `ai_profile_ambiguous` (400) | The caller owns more than one AI profile. No request field selects one. |
+| `not_found` (404) | Unknown or ungranted telephony profile. The response is the same in both cases. |
+| `telephony_not_verified`, `telephony_connection_missing`, `telephony_webhook_key_missing` (400) | The telephony profile is not ready. Validate it first. |
+| `unavailable` (503), reason `calls_unavailable` | The call worker is not running (see below). No row is written. |
+
+`calls_unavailable` means the server is missing `CALLHARBOR_PUBLIC_URL` or the master key. The worker runs only when both are set, so the server refuses calls instead of queuing them. At startup the log says `calls are disabled until CALLHARBOR_PUBLIC_URL is set` (info) or `calls are disabled: they need the secrets master key` (warning). See the [calls and Telnyx setup guide](calls-telnyx.md).
 
 ## Response conventions
 

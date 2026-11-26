@@ -35,6 +35,12 @@ type ReceiptRecorder interface {
 // tx writes roll back, and the provider receives a 5xx so it retries.
 type Dispatch func(ctx context.Context, tx *sql.Tx, ev WebhookEvent, sig call.Signal) error
 
+// ErrRejectedEvent marks a verified, well-formed event that can never apply to
+// its call: a foreign control id, a client_state naming another call, or an
+// unknown call. A retry cannot change that outcome, so the ingress answers 200
+// and Telnyx stops retrying. Dispatch wraps this error and writes nothing.
+var ErrRejectedEvent = errors.New("telnyx: webhook event rejected")
+
 // WebhookIngress serves the Telnyx Call Control webhook endpoint.
 type WebhookIngress struct {
 	verifier *Verifier
@@ -87,6 +93,12 @@ func (wi *WebhookIngress) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return wi.dispatch(ctx, tx, ev, sig)
 	}
 	if _, err := wi.receipts.RecordWebhookOnce(r.Context(), Provider, sig.EventID, wi.verifier.now(), process); err != nil {
+		if errors.Is(err, ErrRejectedEvent) {
+			// Permanent: acknowledge so Telnyx does not retry a refused event.
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		// Transient (for example a database error or a lost race): retry.
 		http.Error(w, "retry", http.StatusInternalServerError)
 		return
 	}

@@ -170,15 +170,18 @@
           "items": {
             "additionalProperties": false,
             "properties": {
-              "connection_id": {
-                "type": "string",
-                "maxLength": 128
-              },
               "access": {
                 "enum": [
                   "owner",
                   "granted"
                 ],
+                "type": "string"
+              },
+              "caller_number": {
+                "type": "string"
+              },
+              "connection_id": {
+                "maxLength": 128,
                 "type": "string"
               },
               "connectivity_reason": {
@@ -201,9 +204,6 @@
                   "verified",
                   "failed"
                 ],
-                "type": "string"
-              },
-              "caller_number": {
                 "type": "string"
               },
               "id": {
@@ -396,6 +396,113 @@
       "required": [
         "calls",
         "next_cursor"
+      ],
+      "type": "object"
+    }
+  },
+  "make_call": {
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "constraints": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "context": {
+          "description": "Configurable server limit; oversized input is rejected, never truncated.",
+          "type": "string"
+        },
+        "fallbacks": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "idempotency_key": {
+          "maxLength": 128,
+          "minLength": 1,
+          "type": "string"
+        },
+        "instructions": {
+          "description": "Configurable server limit; oversized input is rejected, never truncated. The limit applies to the full session text, so an oversize request is refused before queueing.",
+          "type": "string"
+        },
+        "language": {
+          "description": "BCP 47 language tag.",
+          "maxLength": 35,
+          "type": "string"
+        },
+        "max_duration_seconds": {
+          "maximum": 7200,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "objective": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "profile_id": {
+          "maxLength": 64,
+          "minLength": 1,
+          "type": "string"
+        },
+        "recipient": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "record": {
+          "description": "Optional per-call request. Never enables recording unless the account owner has opted in through the WebGUI setting. Omission means no recording unless the per-user default policy enables it. An owner-disabled setting is never bypassed.",
+          "type": "boolean"
+        },
+        "success_criteria": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "to": {
+          "minLength": 1,
+          "pattern": "^\\+[1-9][0-9]{6,14}$",
+          "type": "string"
+        }
+      },
+      "required": [
+        "profile_id",
+        "to",
+        "objective",
+        "idempotency_key"
+      ],
+      "type": "object"
+    },
+    "outputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "call_id": {
+          "type": "string"
+        },
+        "created_at": {
+          "format": "date-time",
+          "type": "string"
+        },
+        "status": {
+          "enum": [
+            "queued",
+            "initiating",
+            "ringing",
+            "active",
+            "ending",
+            "ended",
+            "failed"
+          ],
+          "type": "string"
+        }
+      },
+      "required": [
+        "call_id",
+        "status",
+        "created_at"
       ],
       "type": "object"
     }

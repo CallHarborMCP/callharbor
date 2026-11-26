@@ -244,3 +244,52 @@ func storageGrant(profileID, grantee string) storage.TelephonyGrant {
 func storageSecret(id, owner, purpose string) storage.Secret {
 	return storage.Secret{ID: id, OwnerUserID: owner, Name: id, Purpose: purpose, Ciphertext: []byte("sealed")}
 }
+
+// A grant revoked while its call is live must not strand the leg: the hangup
+// path still reads the owner's key. The general resolver still refuses the
+// revoked grantee, so the hangup path is the only exception.
+// A grantee's leg is dialed on alice's profile. After alice revokes bob, the
+// leg must still be hung up with alice's key. The leg carries the profile owner
+// (alice), not the call owner (bob), so the lookup is by alice (R1, m2).
+func TestResolveForHangupSurvivesRevokedGrant(t *testing.T) {
+	h, id := resolveHarness(t)
+	ctx := context.Background()
+	if _, err := h.svc.Grant(ctx, adminAlice, id, "bob"); err != nil {
+		t.Fatal(err)
+	}
+	// bob can dial on the grant: this is the grantee leg being placed.
+	if _, err := h.svc.Resolve(ctx, userBob, id); err != nil {
+		t.Fatalf("grantee dial resolve before revoke: %v", err)
+	}
+	if err := h.svc.Revoke(ctx, adminAlice, id, "bob"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.svc.Resolve(ctx, userBob, id); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("revoked grantee resolve = %v, want ErrNotFound", err)
+	}
+	// The hangup resolves by the profile owner, as a grantee's leg now does.
+	got, err := h.svc.ResolveForHangup(ctx, "alice", id)
+	if err != nil {
+		t.Fatalf("hangup resolve after revoke: %v", err)
+	}
+	if got.APIKey != goodKey || got.OwnerUserID != "alice" {
+		t.Fatalf("hangup resolve = %+v", got)
+	}
+	// Resolving by the grantee's own id, the bug R1 fixes, is refused.
+	if _, err := h.svc.ResolveForHangup(ctx, "bob", id); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("hangup keyed by grantee = %v, want ErrNotFound", err)
+	}
+}
+
+// The hangup path is keyed by the owner. A stranger's id, or a profile the
+// owner does not hold, gets no key.
+func TestResolveForHangupRefusesNonOwner(t *testing.T) {
+	h, id := resolveHarness(t)
+	ctx := context.Background()
+	if _, err := h.svc.ResolveForHangup(ctx, "carol", id); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("stranger hangup resolve = %v, want ErrNotFound", err)
+	}
+	if _, err := h.svc.ResolveForHangup(ctx, "", id); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("empty owner = %v, want ErrNotFound", err)
+	}
+}

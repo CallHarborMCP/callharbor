@@ -96,7 +96,7 @@ func runBargeInStreaming(t *testing.T, leg audio.Format, resume bool, connect fu
 	t.Cleanup(srv.Close)
 	streamURL := "ws" + strings.TrimPrefix(srv.URL, "http") + "/media?token=bargein-stream"
 
-	me, err = telnyx.NewMediaEndpoint(v, streamURL, func(start telnyx.Frame, send telnyx.Send) (telnyx.MediaSink, error) {
+	me, err = telnyx.NewMediaEndpoint(v, streamURL, func(_ context.Context, start telnyx.Frame, send telnyx.Send) (telnyx.MediaSink, error) {
 		b, err := voicebridge.New(start.Format, leg, 5*time.Millisecond, 2*time.Second)
 		if err != nil {
 			return nil, err
@@ -251,7 +251,7 @@ func runBargeIn(t *testing.T, leg audio.Format, connect func(ctx context.Context
 	t.Cleanup(srv.Close)
 	streamURL := "ws" + strings.TrimPrefix(srv.URL, "http") + "/media?token=bargein"
 
-	me, err = telnyx.NewMediaEndpoint(v, streamURL, func(start telnyx.Frame, send telnyx.Send) (telnyx.MediaSink, error) {
+	me, err = telnyx.NewMediaEndpoint(v, streamURL, func(_ context.Context, start telnyx.Frame, send telnyx.Send) (telnyx.MediaSink, error) {
 		b, err := voicebridge.New(start.Format, leg, 5*time.Millisecond, 2*time.Second)
 		if err != nil {
 			return nil, err

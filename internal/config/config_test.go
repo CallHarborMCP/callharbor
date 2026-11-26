@@ -236,3 +236,27 @@ func TestLoadRejectsInvalidTrustedProxies(t *testing.T) {
 		}
 	}
 }
+
+func TestLoadMaxCallBriefBytes(t *testing.T) {
+	cfg, err := Load(env(nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.MaxCallBriefBytes != DefaultMaxCallBriefBytes {
+		t.Fatalf("default = %d, want %d", cfg.MaxCallBriefBytes, DefaultMaxCallBriefBytes)
+	}
+	cfg, err = Load(env(map[string]string{EnvMaxCallBriefBytes: " 65536 "}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.MaxCallBriefBytes != 65536 {
+		t.Fatalf("override = %d, want 65536", cfg.MaxCallBriefBytes)
+	}
+	for _, bad := range []string{"12x", "1023", "262145", "-5"} {
+		if _, err := Load(env(map[string]string{EnvMaxCallBriefBytes: bad})); err == nil {
+			t.Fatalf("%s=%q accepted", EnvMaxCallBriefBytes, bad)
+		} else if !strings.Contains(err.Error(), EnvMaxCallBriefBytes) {
+			t.Fatalf("error does not name the variable: %v", err)
+		}
+	}
+}

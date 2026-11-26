@@ -382,6 +382,9 @@ type Resolved struct {
 	Access           string
 	APIKey           string
 	WebhookPublicKey string
+	// ConnectivityStatus is the last validation result: unknown, verified or
+	// failed. Only the call path gates on it.
+	ConnectivityStatus string
 }
 
 // String redacts the keys. fmt uses it for %v and %+v.
@@ -424,6 +427,7 @@ func (s *Service) Resolve(ctx context.Context, actor Actor, id string) (Resolved
 	out := Resolved{
 		ID: rec.ID, OwnerUserID: rec.OwnerUserID, CallerNumber: rec.CallerNumber,
 		ConnectionID: rec.ConnectionID, Access: u.Access, APIKey: string(apiKey),
+		ConnectivityStatus: rec.ConnectivityStatus,
 	}
 	if rec.WebhookPublicKeySecretID != "" {
 		webhook, err := s.secrets.Resolve(ctx, u.OwnerUserID, rec.WebhookPublicKeySecretID, secrets.PurposeTelnyxWebhookKey)
@@ -433,6 +437,32 @@ func (s *Service) Resolve(ctx context.Context, actor Actor, id string) (Resolved
 		out.WebhookPublicKey = string(webhook)
 	}
 	return out, nil
+}
+
+// ResolveForHangup returns the owner's key for a profile that placed a call
+// the owner owns. It is for ending a live leg only, never for placing a call.
+//
+// It reads the profile by its owner and id and does not re-check a grantee,
+// so a grant revoked mid-call still lets CallHarbor end the leg that grant
+// dialed. A profile the owner no longer owns still returns ErrNotFound. The
+// dial path keeps using Resolve, which checks the actor each time.
+func (s *Service) ResolveForHangup(ctx context.Context, ownerUserID, id string) (Resolved, error) {
+	if ownerUserID == "" || !validID(id) {
+		return Resolved{}, ErrNotFound
+	}
+	rec, err := s.store.GetTelephonyProfile(ctx, ownerUserID, id)
+	if err != nil {
+		return Resolved{}, mapNotFound(err)
+	}
+	apiKey, err := s.secrets.Resolve(ctx, ownerUserID, rec.APISecretID, secrets.PurposeTelnyxAPIKey)
+	if err != nil {
+		return Resolved{}, s.secretFault(err)
+	}
+	return Resolved{
+		ID: rec.ID, OwnerUserID: rec.OwnerUserID, CallerNumber: rec.CallerNumber,
+		ConnectionID: rec.ConnectionID, APIKey: string(apiKey),
+		ConnectivityStatus: rec.ConnectivityStatus,
+	}, nil
 }
 
 // secretFault maps every failure to open a stored secret to ErrSecretsDown.
