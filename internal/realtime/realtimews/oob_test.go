@@ -19,6 +19,7 @@ import (
 type oobEndpoint struct {
 	mu      sync.Mutex
 	reqs    []map[string]any
+	all     []map[string]any
 	respond func(req map[string]any) []string
 	// afterUpd is written after session.updated, as the endpoint's own events.
 	afterUpd []string
@@ -32,6 +33,9 @@ func (e *oobEndpoint) fake() *fakeRealtime {
 	f := &fakeRealtime{afterUpd: e.afterUpd}
 	e.push = make(chan string, 16)
 	f.onClient = func(ctx context.Context, c *websocket.Conn, m map[string]any) {
+		e.mu.Lock()
+		e.all = append(e.all, m)
+		e.mu.Unlock()
 		if m["type"] != "response.create" {
 			return
 		}
@@ -64,6 +68,13 @@ func (e *oobEndpoint) fake() *fakeRealtime {
 
 // sendNext queues one endpoint event for the live connection.
 func (e *oobEndpoint) sendNext(msg string) { e.push <- msg }
+
+// allClient returns every client message the endpoint has seen on its socket.
+func (e *oobEndpoint) allClient() []map[string]any {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return append([]map[string]any(nil), e.all...)
+}
 
 func (e *oobEndpoint) requests() []map[string]any {
 	e.mu.Lock()
@@ -464,10 +475,12 @@ func TestOutOfBandInterleavedWithMainAgentResponse(t *testing.T) {
 	if audio != 1 || agentText != 2 || caller != 2 || done != 1 {
 		t.Fatalf("audio=%d agentText=%d caller=%d done=%d; events %+v", audio, agentText, caller, done, evs)
 	}
-	// Exact order. The coordinator queues its own events in FIFO order, so the
-	// caller delta must come before the main agent's text and the caller final
-	// before the main response's done. Dropping the FIFO append in Next changes
-	// this sequence.
+	// Exact order of the normalized events. The coordinator queues its own
+	// events and Next returns them in the order they were queued, interleaved
+	// with the main response's events as the socket delivers them. This test
+	// pins that sequence. The FIFO-order guarantee for an event read while the
+	// queue is non-empty is pinned separately by
+	// TestOutOfBandQueuedFailureDeliveredBeforeFollowingItemEvent.
 	type step struct {
 		kind       realtime.EventKind
 		itemID     string
@@ -766,8 +779,8 @@ func TestOutOfBandModalitiesIgnoredSendsTargetedCancel(t *testing.T) {
 	if err := json.Unmarshal(sends[0], &m); err != nil {
 		t.Fatal(err)
 	}
-	if m["type"] != "response.cancel" || m["response_id"] != "resp_x" || len(m) != 2 {
-		t.Fatalf("cancel must name only our response: %s", sends[0])
+	if m["type"] != "response.cancel" || m["response_id"] != "resp_x" || len(m) != 3 || !strings.HasPrefix(m["event_id"].(string), oobCancelPrefix) {
+		t.Fatalf("cancel must name only our response and carry our event id: %s", sends[0])
 	}
 }
 
@@ -786,6 +799,29 @@ func TestOutOfBandNoEventIDErrorAttributedToSoleRequest(t *testing.T) {
 	}
 	if len(st.pending) != 0 {
 		t.Fatal("attributed request must be finished")
+	}
+	// Heuristic attribution never latches the endpoint, whatever the error type.
+	if st.unsupported {
+		t.Fatal("heuristic attribution must not latch the endpoint unsupported")
+	}
+}
+
+// Heuristic attribution with the invalid_request_error type still fails only
+// its item. Only a matched event id may latch the endpoint.
+func TestOutOfBandNoEventIDInvalidRequestDoesNotLatch(t *testing.T) {
+	st := newOOBState(time.Now)
+	if _, err := st.request("item_h"); err != nil {
+		t.Fatal(err)
+	}
+	raw := []byte(`{"type":"error","event_id":"ev_h","error":{"type":"invalid_request_error","code":"bad","message":"m","param":"response"}}`)
+	if _, consumed, _ := st.handleOOB("error", raw); !consumed {
+		t.Fatal("sole-request heuristic error must be consumed")
+	}
+	if st.unsupported {
+		t.Fatal("invalid_request_error on the heuristic path must not latch")
+	}
+	if b, _ := st.request("item_after"); b == nil {
+		t.Fatal("the next item must still be requested after a heuristic failure")
 	}
 }
 
@@ -975,5 +1011,172 @@ func TestOutOfBandExpireIsDeterministicBySequence(t *testing.T) {
 	}
 	if strings.Join(got, ",") != "item_1,item_2,item_3" {
 		t.Fatalf("timeout order = %v, want sequence order", got)
+	}
+}
+
+// A targeted cancel can race the response it cancels. If the response has
+// already finished, the server answers the cancel with an error that names the
+// cancel's event id. That error is consumed: the call keeps going, the item's
+// modalities_ignored failure is reported once, and no call error is surfaced.
+func TestOutOfBandCancelRaceErrorIsNotCallError(t *testing.T) {
+	e := &oobEndpoint{afterUpd: []string{callerItemAdded}}
+	e.respond = func(req map[string]any) []string {
+		meta := metaOf(req)
+		return []string{
+			responseCreated("resp_oob", meta),
+			`{"type":"response.output_audio.delta","event_id":"ea","response_id":"resp_oob","item_id":"oob_1","output_index":0,"content_index":0,"delta":"QUFB"}`,
+			`{"type":"response.done","event_id":"od","response":{"id":"resp_oob","status":"completed","conversation_id":null,"metadata":` + mustJSON(meta) + `,"output":[]}}`,
+		}
+	}
+	s := connectOOB(t, e, time.Now)
+	ev := nextNonIgnored(t, s)
+	if ev.Kind != realtime.EventCallerTranscriptFailed || ev.ErrCode != "modalities_ignored" || ev.ItemID != "item_c1" {
+		t.Fatalf("first event = %+v, want modalities_ignored once", ev)
+	}
+	// The cancel names our event id. The endpoint has already finished the
+	// response, so it answers with an error for that cancel event.
+	var cancelID string
+	deadline := time.Now().Add(5 * time.Second)
+	for cancelID == "" && time.Now().Before(deadline) {
+		for _, m := range e.allClient() {
+			if m["type"] == "response.cancel" {
+				cancelID, _ = m["event_id"].(string)
+			}
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if cancelID == "" {
+		t.Fatal("no targeted response.cancel was sent")
+	}
+	e.sendNext(`{"type":"error","event_id":"ev_cancel_err","error":{"type":"invalid_request_error","code":"response_cancel_not_active","message":"not active","param":null,"event_id":"` + cancelID + `"}}`)
+	e.sendNext(`{"type":"response.done","event_id":"ev_sentinel","response":{"id":"resp_sentinel","status":"completed","metadata":null,"output":[]}}`)
+	ev = nextNonIgnored(t, s)
+	if ev.Kind == realtime.EventError {
+		t.Fatalf("cancel race surfaced as a call error: %+v", ev)
+	}
+	if ev.Kind != realtime.EventResponseDone || ev.ResponseID != "resp_sentinel" {
+		t.Fatalf("after the cancel race the call must continue with the agent response: %+v", ev)
+	}
+}
+
+// A late error for a request that already timed out is dropped: it names a
+// CallHarbor event id, so it is never a call error.
+func TestOutOfBandLateErrorForTimedOutRequestIsDropped(t *testing.T) {
+	var mu sync.Mutex
+	clock := time.Unix(1_800_000_000, 0)
+	now := func() time.Time { mu.Lock(); defer mu.Unlock(); return clock }
+	advance := func(d time.Duration) { mu.Lock(); defer mu.Unlock(); clock = clock.Add(d) }
+
+	e := &oobEndpoint{afterUpd: []string{callerItemAdded}}
+	s := connectOOB(t, e, now)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if _, err := s.Next(ctx); err != nil {
+		t.Fatalf("item event: %v", err)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for len(e.requests()) == 0 && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+	}
+	if len(e.requests()) != 1 {
+		t.Fatal("request was not sent")
+	}
+	eid, _ := e.requests()[0]["event_id"].(string)
+
+	advance(OutOfBandTimeout + time.Second)
+	e.sendNext(`{"type":"response.done","event_id":"ev_t","response":{"id":"resp_t","status":"completed","metadata":null,"output":[]}}`)
+	// The timeout is delivered first. The agent response that triggered the
+	// expiry check is delivered after it.
+	ev, err := s.Next(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ev.Kind != realtime.EventCallerTranscriptFailed || ev.ErrCode != "timeout" {
+		t.Fatalf("timeout event = %+v", ev)
+	}
+	ev, err = s.Next(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ev.Kind != realtime.EventResponseDone || ev.ResponseID != "resp_t" {
+		t.Fatalf("agent response after timeout = %+v", ev)
+	}
+
+	// The late error names the timed-out request. It is dropped, and the agent
+	// response that follows is delivered next.
+	e.sendNext(`{"type":"error","event_id":"ev_late","error":{"type":"invalid_request_error","code":"late","message":"m","param":null,"event_id":"` + eid + `"}}`)
+	e.sendNext(`{"type":"response.done","event_id":"ev_sentinel","response":{"id":"resp_sentinel","status":"completed","metadata":null,"output":[]}}`)
+	ev = nextNonIgnored(t, s)
+	if ev.Kind == realtime.EventError {
+		t.Fatalf("late error for a timed-out request surfaced as a call error: %+v", ev)
+	}
+	if ev.Kind != realtime.EventResponseDone || ev.ResponseID != "resp_sentinel" {
+		t.Fatalf("after the late error the call must continue: %+v", ev)
+	}
+}
+
+// A completed out-of-band response with no output at all is a successful empty
+// transcription: exactly one final with empty text, bound to the right item and
+// response, and never a missing_text failure.
+func TestOutOfBandEmptyCompletedResponseIsEmptyFinal(t *testing.T) {
+	st := newOOBState(time.Now)
+	if _, err := st.request("item_empty"); err != nil {
+		t.Fatal(err)
+	}
+	var eid string
+	for k := range st.pending {
+		eid = k
+	}
+	req := st.pending[eid]
+	req.responseID = "resp_empty"
+	st.byResponse["resp_empty"] = req
+	raw := []byte(`{"type":"response.done","event_id":"rd","response":{"id":"resp_empty","status":"completed","metadata":{},"output":[]}}`)
+	if _, consumed, _ := st.handleOOB("response.done", raw); !consumed {
+		t.Fatal("completed out-of-band response must be consumed")
+	}
+	if len(st.fifo) != 1 {
+		t.Fatalf("events = %+v, want exactly one final", st.fifo)
+	}
+	ev := st.fifo[0]
+	if ev.Kind != realtime.EventCallerTranscriptFinal || ev.Text != "" || !ev.OutOfBand || ev.ItemID != "item_empty" || ev.ResponseID != "resp_empty" {
+		t.Fatalf("empty completed response = %+v, want an empty caller final", ev)
+	}
+}
+
+// Once the endpoint is latched unsupported, a further caller item fails inside
+// the coordinator and the item event is still passed on. Next must deliver the
+// queued failure before that item event, so it appends the item event behind
+// the queue rather than returning it first. The exact raw order is asserted,
+// including ignored events, so removing the append reorders the sequence.
+func TestOutOfBandQueuedFailureDeliveredBeforeFollowingItemEvent(t *testing.T) {
+	e := &oobEndpoint{afterUpd: []string{callerItemAdded}}
+	e.respond = func(req map[string]any) []string {
+		eid, _ := req["event_id"].(string)
+		return []string{
+			`{"type":"error","event_id":"ev_rej","error":{"type":"invalid_request_error","code":"unsupported_parameter","message":"no","event_id":"` + eid + `"}}`,
+		}
+	}
+	s := connectOOB(t, e, time.Now)
+	if ev := nextNonIgnored(t, s); ev.Kind != realtime.EventCallerTranscriptFailed || ev.ItemID != "item_c1" {
+		t.Fatalf("first rejection = %+v", ev)
+	}
+	// The endpoint is now latched unsupported. The next item is queued as a
+	// failure inside the coordinator, and its own event follows it.
+	e.sendNext(`{"type":"conversation.item.added","event_id":"ev_item2","item":{"id":"item_c2","type":"message","status":"completed","role":"user","content":[{"type":"input_audio"}]}}`)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	var got []realtime.Event
+	for len(got) < 2 {
+		ev, err := s.Next(ctx)
+		if err != nil {
+			t.Fatalf("next: %v (got %+v)", err, got)
+		}
+		got = append(got, ev)
+	}
+	if got[0].Kind != realtime.EventCallerTranscriptFailed || got[0].ItemID != "item_c2" || got[0].ErrCode != "out_of_band_unsupported" {
+		t.Fatalf("queued failure must be delivered first: %+v", got)
+	}
+	if got[1].RawType != "conversation.item.added" || got[1].EventID != "ev_item2" {
+		t.Fatalf("the item event must follow the queued failure: %+v", got)
 	}
 }

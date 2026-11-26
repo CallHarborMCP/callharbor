@@ -23,6 +23,7 @@ const (
 	oobPurpose          = "caller_transcript"
 	oobItemKey          = "callharbor_item_id"
 	oobEventPrefix      = "ch_oob_"
+	oobCancelPrefix     = "ch_oob_cancel_"
 	oobMaxOutputTokens  = 1024
 	maxOOBTracked       = 4096
 	MaxPendingOutOfBand = 8
@@ -50,6 +51,7 @@ type oobRequest struct {
 type oobState struct {
 	now         func() time.Time
 	seq         int
+	cancelSeq   int
 	unsupported bool
 	// requested is the bounded set of item ids already requested or failed.
 	requested     map[string]bool
@@ -420,15 +422,18 @@ func (o *oobState) textOrAudio(typ string, req *oobRequest, eventID, delta, text
 		ev.Kind, ev.ErrCode = realtime.EventCallerTranscriptFailed, "modalities_ignored"
 		o.fifo = append(o.fifo, ev)
 		o.unsupported = true
-		o.cancel = append(o.cancel, cancelFor(req.responseID))
+		o.cancelSeq++
+		o.cancel = append(o.cancel, cancelFor(fmt.Sprintf("%s%d", oobCancelPrefix, o.cancelSeq), req.responseID))
 		o.finish(req)
 	}
 }
 
 // cancelFor is the cancel for one out-of-band response. It names the response
-// id and nothing else, so it can never cancel the call's conversation.
-func cancelFor(responseID string) []byte {
-	b, _ := json.Marshal(map[string]string{"type": "response.cancel", "response_id": responseID})
+// id and nothing else, so it can never cancel the call's conversation. It
+// carries its own event id, so an error about it is recognised and dropped if
+// the response had already finished.
+func cancelFor(eventID, responseID string) []byte {
+	b, _ := json.Marshal(map[string]string{"type": "response.cancel", "event_id": eventID, "response_id": responseID})
 	return b
 }
 
@@ -559,24 +564,31 @@ func (o *oobState) rejected(raw []byte) bool {
 	if json.Unmarshal(raw, &m) != nil {
 		return false
 	}
-	var req *oobRequest
-	if m.Error.EventID != "" {
-		req = o.pending[m.Error.EventID]
-	} else if len(o.pending) == 1 {
-		for _, p := range o.pending {
-			if p.responseID == "" && (m.Error.Param == "" || strings.HasPrefix(m.Error.Param, "response")) {
-				req = p
-			}
+	if strings.HasPrefix(m.Error.EventID, oobEventPrefix) {
+		// An error about one of our own events is never a call error. A
+		// cancel or request that already finished drops out here.
+		req := o.pending[m.Error.EventID]
+		if req == nil {
+			return true
 		}
+		o.fifo = append(o.fifo, localFail(req.itemID, "out_of_band_rejected:"+providerCode(m.Error.Code)))
+		o.finish(req)
+		if m.Error.Type == "invalid_request_error" {
+			o.unsupported = true
+		}
+		return true
 	}
-	if req == nil {
+	if m.Error.EventID != "" || len(o.pending) != 1 {
 		return false
 	}
-	ev := localFail(req.itemID, "out_of_band_rejected:"+providerCode(m.Error.Code))
-	o.fifo = append(o.fifo, ev)
-	o.finish(req)
-	if m.Error.Type == "invalid_request_error" {
-		o.unsupported = true
+	// Heuristic attribution: no event id to match, so the item fails but the
+	// endpoint is never latched on this path.
+	for _, p := range o.pending {
+		if p.responseID == "" && (m.Error.Param == "" || strings.HasPrefix(m.Error.Param, "response")) {
+			o.fifo = append(o.fifo, localFail(p.itemID, "out_of_band_rejected:"+providerCode(m.Error.Code)))
+			o.finish(p)
+			return true
+		}
 	}
-	return true
+	return false
 }

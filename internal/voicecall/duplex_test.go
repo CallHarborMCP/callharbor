@@ -203,7 +203,10 @@ func (p *dxRealtime) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			// cancel is the targeted cancel of our own out-of-band response,
 			// sent when the endpoint produced audio for it (modalities_ignored).
 			// It must name that response id and nothing else.
-			if p.oob && m["response_id"] == "resp_oob_dx" && len(m) == 2 {
+			// The cancel carries CallHarbor's own cancel event id, so it is
+			// recognised as ours and never mistaken for barge-in.
+			eid, _ := m["event_id"].(string)
+			if p.oob && m["response_id"] == "resp_oob_dx" && len(m) == 3 && strings.HasPrefix(eid, "ch_oob_cancel_") {
 				select {
 				case p.oobCancel <- struct{}{}:
 				default:
@@ -676,9 +679,12 @@ func dxBargeInRealtime(t *testing.T, oob bool) {
 		}
 		// The endpoint produced audio for that response, so CallHarbor must have
 		// sent its targeted cancel. It is checked here, not just tolerated.
+		// The cancel is written by the downlink reader, which may run after the
+		// playout check above, so wait for it with a bound instead of a single
+		// non-blocking read.
 		select {
 		case <-prov.oobCancel:
-		default:
+		case <-time.After(5 * time.Second):
 			t.Fatal("no targeted cancel of the out-of-band response was sent")
 		}
 	}

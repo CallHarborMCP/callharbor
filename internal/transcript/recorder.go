@@ -588,7 +588,11 @@ func (r *Recorder) callerTextLocked(ev realtime.Event, now int64) {
 			return
 		}
 		// A delta adds text but keeps the turn pending until its final or
-		// failure arrives.
+		// failure arrives. A delta after a final reopens the turn. That is
+		// intended for multi-part text, where more output_text.done parts and
+		// deltas follow one another. A stray late delta after a final is a
+		// provider protocol violation: the turn is reopened, and it settles
+		// again only at its next final or failure.
 		if !t.failed {
 			t.pending = true
 			t.flags[FlagCallerPending] = true
