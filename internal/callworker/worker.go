@@ -107,6 +107,13 @@ type Options struct {
 	// RingTimeoutSeconds is the Telnyx ring timeout the dial sends. The
 	// reconciliation deadlines use it. Zero means DefaultRingTimeoutSeconds.
 	RingTimeoutSeconds int
+	// PollInterval is how often Run ticks without a wake. Zero means
+	// DefaultPollInterval. Tests shorten it so evaluation runs promptly.
+	PollInterval time.Duration
+	// OutcomeGrace overrides how long a terminal call waits before its outcome
+	// is evaluated. Zero means OutcomeGrace (2 minutes), the production value.
+	// Tests shorten it so an unanswered call is judged promptly.
+	OutcomeGrace time.Duration
 }
 
 // Worker dials queued calls. It is safe to call Tick from one goroutine.
@@ -304,10 +311,14 @@ func (w *Worker) Run(parent context.Context) error {
 	}
 	// Dial what is already queued (for example, calls made before a restart)
 	// without waiting for the first poll.
-	if err := w.Tick(ctx); err != nil && ctx.Err() == nil {
+	if err := w.Tick(ctx); err != nil && ctx.Err() == nil && !isOutcomeLogged(err) {
 		w.opts.Logger.Error("dial tick failed", "error", err.Error())
 	}
-	ticker := time.NewTicker(DefaultPollInterval)
+	poll := w.opts.PollInterval
+	if poll <= 0 {
+		poll = DefaultPollInterval
+	}
+	ticker := time.NewTicker(poll)
 	defer ticker.Stop()
 	for {
 		select {
@@ -318,10 +329,18 @@ func (w *Worker) Run(parent context.Context) error {
 		case <-w.wake:
 		case <-ticker.C:
 		}
-		if err := w.Tick(ctx); err != nil && ctx.Err() == nil {
+		if err := w.Tick(ctx); err != nil && ctx.Err() == nil && !isOutcomeLogged(err) {
 			w.opts.Logger.Error("dial tick failed", "error", err.Error())
 		}
 	}
+}
+
+// isOutcomeLogged reports whether err is exactly an outcome failure that
+// evaluateOutcomes already logged. Run skips logging only that. Any error joined
+// with it, such as a list or dial failure, is still logged.
+func isOutcomeLogged(err error) bool {
+	_, ok := err.(outcomeLoggedError)
+	return ok
 }
 
 // Tick dials up to BatchSize queued calls, one at a time. A failure on one call
@@ -341,6 +360,9 @@ func (w *Worker) Tick(ctx context.Context) error {
 			first = err
 		}
 	}
+	// Dialing is never blocked by outcome evaluation: the outcome pass runs after
+	// the dials, so a slow or failing evaluation cannot delay a queued call. Its
+	// errors are logged once by evaluateOutcomes and returned here for the caller.
 	queued, err := w.store.ListQueuedCalls(ctx, w.opts.BatchSize)
 	if err != nil {
 		return errors.Join(first, fmt.Errorf("list queued: %w", err))
@@ -357,6 +379,11 @@ func (w *Worker) Tick(ctx context.Context) error {
 		if err := w.dialOne(ctx, c); err != nil && first == nil {
 			first = err
 		}
+	}
+	// The outcome error is already logged by evaluateOutcomes. It is returned
+	// only when nothing else failed, so Run does not log it a second time.
+	if err := w.evaluateOutcomes(ctx); err != nil && first == nil {
+		first = err
 	}
 	return first
 }

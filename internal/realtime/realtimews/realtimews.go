@@ -16,6 +16,7 @@ import (
 	"github.com/coder/websocket"
 
 	"github.com/CallHarborMCP/callharbor/internal/audio"
+	"github.com/CallHarborMCP/callharbor/internal/outcome"
 	"github.com/CallHarborMCP/callharbor/internal/realtime"
 )
 
@@ -69,6 +70,10 @@ func SessionUpdate(c Config) ([]byte, error) {
 			"output_modalities": []string{"audio"},
 			"instructions":      c.Instructions,
 			"audio":             map[string]any{"input": in, "output": out},
+			// The one declared tool is the self-report. tool_choice auto lets
+			// the model call it, or not, as the instructions direct.
+			"tools":       []any{outcome.ReportTool()},
+			"tool_choice": "auto",
 		},
 	})
 }
@@ -259,6 +264,39 @@ func (s *Session) Truncate(ctx context.Context, itemID string, contentIndex int,
 	}
 	msg, _ := json.Marshal(map[string]any{"type": "conversation.item.truncate", "item_id": itemID, "content_index": contentIndex, "audio_end_ms": audioEndMS})
 	return s.write(ctx, msg)
+}
+
+// AckTaskReport returns the function output for one task report. status is
+// "recorded" or "invalid", and any other value is refused. It is a conversation
+// item only: it never sends response.create, so the model does not speak in
+// reply and the call's conversation is unchanged. It goes through the same write
+// mutex as every other client message, bounded by writeBounded so a cancelled
+// read context cannot cut the frame.
+func (s *Session) AckTaskReport(ctx context.Context, callID, status string) error {
+	if !s.ready {
+		return realtime.ErrNotReady
+	}
+	if callID == "" || len(callID) > realtime.MaxTaskReportCallID {
+		return errors.New("realtimews: task report ack requires a bounded call id")
+	}
+	var output string
+	switch status {
+	case "recorded":
+		output = `{"status":"recorded"}`
+	case "invalid":
+		output = `{"status":"invalid"}`
+	default:
+		return errors.New("realtimews: task report ack status must be recorded or invalid")
+	}
+	msg, _ := json.Marshal(map[string]any{
+		"type": "conversation.item.create",
+		"item": map[string]string{
+			"type":    "function_call_output",
+			"call_id": callID,
+			"output":  output,
+		},
+	})
+	return s.writeBounded(ctx, msg)
 }
 
 // Cancel cancels the in-progress response.

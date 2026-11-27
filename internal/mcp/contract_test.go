@@ -243,7 +243,7 @@ func TestSchemasCompileAndValidateOutputs(t *testing.T) {
 		t.Fatal(err)
 	}
 	listOut := compileSchema(t, "list_calls.output", embedded[ToolListCalls].OutputSchema)
-	good := decodeArgs(t, `{"calls":[{"call_id":"c1","telephony_profile_id":"t","ai_profile_id":"a","to_number":"+14155550111","technical_status":"queued","task_outcome":null,"details":{"max_duration_seconds":300,"record_requested":false,"record_effective":false,"cost":{"status":"unavailable","amount":null,"currency":null,"source":null}},"transcript_available":false,"recording_available":false,"created_at":"2026-11-23T10:00:00.000Z","updated_at":"2026-11-23T10:00:00.000Z","ended_at":null}],"next_cursor":""}`)
+	good := decodeArgs(t, `{"calls":[{"call_id":"c1","telephony_profile_id":"t","ai_profile_id":"a","to_number":"+14155550111","technical_status":"queued","task_outcome":null,"details":{"max_duration_seconds":300,"record_requested":false,"record_effective":false,"cost":{"status":"unavailable","amount":null,"currency":null,"source":null},"task_assessment":null},"transcript_available":false,"recording_available":false,"created_at":"2026-11-23T10:00:00.000Z","updated_at":"2026-11-23T10:00:00.000Z","ended_at":null}],"next_cursor":""}`)
 	if err := listOut.Validate(good); err != nil {
 		t.Fatalf("valid list output rejected: %v", err)
 	}

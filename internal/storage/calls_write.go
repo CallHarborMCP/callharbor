@@ -238,7 +238,7 @@ func (s *Store) MarkCallFailed(ctx context.Context, callID, reasonCode string, n
 		return fmt.Errorf("read call owner: %w", err)
 	}
 	if err := appendCallEvent(ctx, tx, CallEvent{
-		CallID: callID, OwnerUserID: owner, Kind: "call.failed", State: "failed",
+		CallID: callID, OwnerUserID: owner, Kind: CallEventFailed, State: "failed",
 		ReasonCode: reasonCode, Provider: "internal", OccurredAt: ts,
 	}); err != nil {
 		return err

@@ -5,6 +5,8 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+
+	"github.com/CallHarborMCP/callharbor/internal/outcome"
 )
 
 // ErrCallNotFound reports a missing call or one owned by another user.
@@ -38,6 +40,12 @@ type Call struct {
 	// Provider is the cost the provider reported through call.cost. Its status
 	// is success or error; amount is set only for a known success.
 	Provider CostFigure
+	// OutcomeReasonCodes, OutcomeEvidence, OutcomeSource and OutcomeAssessedAt
+	// are set together with Outcome, or all empty while it is unset.
+	OutcomeReasonCodes []string
+	OutcomeEvidence    []outcome.Evidence
+	OutcomeSource      string
+	OutcomeAssessedAt  string
 }
 
 // CostFigure is one stored cost figure. Amount is nil when none is known.
@@ -60,7 +68,8 @@ const callReadColumns = `c.id, c.owner_user_id, c.telephony_profile_id, c.ai_pro
 	EXISTS (SELECT 1 FROM transcript_turns t WHERE t.call_id = c.id AND t.owner_user_id = c.owner_user_id AND t.finality = 'final'),
 	(SELECT r.status FROM recordings r WHERE r.call_id = c.id AND r.owner_user_id = c.owner_user_id),
 	c.cost_status, c.cost_amount_micros, c.cost_currency,
-	c.provider_cost_status, c.provider_cost_amount_micros, c.provider_cost_currency`
+	c.provider_cost_status, c.provider_cost_amount_micros, c.provider_cost_currency,
+	c.outcome_reason_codes, c.outcome_evidence, c.outcome_source, c.outcome_assessed_at`
 
 // ListCalls returns up to limit of the owner's calls, newest first. An empty
 // status matches every status; otherwise the caller must have validated it
@@ -119,25 +128,30 @@ type rowScanner interface {
 
 func scanCall(r rowScanner) (Call, error) {
 	var (
-		c                                      Call
-		outcome, reason, endedAt, recStatus    sql.NullString
-		recordRequested, recordEffective       int
-		hasTranscript                          int
-		estStatus, estCur, provStatus, provCur sql.NullString
-		estAmt, provAmt                        sql.NullInt64
+		c                                       Call
+		outcomeCol, reason, endedAt, recStatus  sql.NullString
+		recordRequested, recordEffective        int
+		hasTranscript                           int
+		estStatus, estCur, provStatus, provCur  sql.NullString
+		estAmt, provAmt                         sql.NullInt64
+		reasonCodes, evidence, source, assessed sql.NullString
 	)
 	err := r.Scan(&c.ID, &c.OwnerUserID, &c.TelephonyProfileID, &c.AIProfileID, &c.ToNumber,
-		&c.Status, &outcome, &reason, &recordRequested, &recordEffective,
+		&c.Status, &outcomeCol, &reason, &recordRequested, &recordEffective,
 		&c.MaxDurationSeconds, &c.CreatedAt, &c.UpdatedAt, &endedAt,
 		&hasTranscript, &recStatus,
-		&estStatus, &estAmt, &estCur, &provStatus, &provAmt, &provCur)
+		&estStatus, &estAmt, &estCur, &provStatus, &provAmt, &provCur,
+		&reasonCodes, &evidence, &source, &assessed)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return Call{}, err
 		}
 		return Call{}, fmt.Errorf("storage: scan call: %w", err)
 	}
-	c.Outcome = outcome.String
+	if err := decodeOutcomeFields(&c, reasonCodes, evidence, source, assessed); err != nil {
+		return Call{}, err
+	}
+	c.Outcome = outcomeCol.String
 	c.OutcomeReasonCode = reason.String
 	c.EndedAt = endedAt.String
 	c.RecordingStatus = recStatus.String

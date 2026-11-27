@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/CallHarborMCP/callharbor/internal/outcome"
 	"github.com/CallHarborMCP/callharbor/internal/storage"
 )
 
@@ -381,7 +382,12 @@ func TestListCallsStoreFailureIsInternal(t *testing.T) {
 func TestGetCallShapeOwnershipAndNotFound(t *testing.T) {
 	ended := sampleCall("c1", "alice", ts)
 	ended.Status = "ended"
+	// A recorded outcome always carries its four supporting fields together.
 	ended.Outcome = "success"
+	ended.OutcomeReasonCodes = []string{"confirmed"}
+	ended.OutcomeEvidence = []outcome.Evidence{}
+	ended.OutcomeSource = "voice_session"
+	ended.OutcomeAssessedAt = ts
 	ended.EndedAt = ts
 	ended.HasTranscript = true
 	ended.RecordingStatus = "complete"

@@ -86,13 +86,97 @@
             },
             "record_requested": {
               "type": "boolean"
+            },
+            "task_assessment": {
+              "additionalProperties": false,
+              "properties": {
+                "assessed_at": {
+                  "format": "date-time",
+                  "type": "string"
+                },
+                "evidence": {
+                  "items": {
+                    "additionalProperties": false,
+                    "properties": {
+                      "code": {
+                        "type": "string"
+                      },
+                      "criterion": {
+                        "maximum": 20,
+                        "minimum": 1,
+                        "type": "integer"
+                      },
+                      "met": {
+                        "type": ["boolean", "null"]
+                      },
+                      "fidelity": {
+                        "type": "string"
+                      },
+                      "kind": {
+                        "enum": [
+                          "transcript_turn",
+                          "call_event"
+                        ],
+                        "type": "string"
+                      },
+                      "quote": {
+                        "maxLength": 500,
+                        "type": "string"
+                      },
+                      "seq": {
+                        "minimum": 0,
+                        "type": "integer"
+                      },
+                      "speaker": {
+                        "enum": [
+                          "assistant",
+                          "callee",
+                          "system"
+                        ],
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "kind",
+                      "seq"
+                    ],
+                    "type": "object"
+                  },
+                  "maxItems": 32,
+                  "type": "array"
+                },
+                "reason_codes": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                "source": {
+                  "enum": [
+                    "technical",
+                    "voice_session"
+                  ],
+                  "type": "string"
+                }
+              },
+              "required": [
+                "reason_codes",
+                "evidence",
+                "source",
+                "assessed_at"
+              ],
+              "type": [
+                "object",
+                "null"
+              ]
             }
           },
           "required": [
             "max_duration_seconds",
             "record_requested",
             "record_effective",
-            "cost"
+            "cost",
+            "task_assessment"
           ],
           "type": "object"
         },
@@ -689,13 +773,103 @@
             },
             "record_requested": {
               "type": "boolean"
+            },
+            "task_assessment": {
+              "$ref": "#/$defs/taskAssessment"
             }
           },
           "required": [
             "max_duration_seconds",
             "record_requested",
             "record_effective",
-            "cost"
+            "cost",
+            "task_assessment"
+          ],
+          "type": "object"
+        },
+        "taskAssessment": {
+          "additionalProperties": false,
+          "properties": {
+            "assessed_at": {
+              "format": "date-time",
+              "type": "string"
+            },
+            "evidence": {
+              "items": {
+                "$ref": "#/$defs/taskEvidence"
+              },
+              "maxItems": 32,
+              "type": "array"
+            },
+            "reason_codes": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "source": {
+              "enum": [
+                "technical",
+                "voice_session"
+              ],
+              "type": "string"
+            }
+          },
+          "required": [
+            "reason_codes",
+            "evidence",
+            "source",
+            "assessed_at"
+          ],
+          "type": [
+            "object",
+            "null"
+          ]
+        },
+        "taskEvidence": {
+          "additionalProperties": false,
+          "properties": {
+            "code": {
+              "type": "string"
+            },
+            "criterion": {
+              "maximum": 20,
+              "minimum": 1,
+              "type": "integer"
+            },
+            "met": {
+              "type": ["boolean", "null"]
+            },
+            "fidelity": {
+              "type": "string"
+            },
+            "kind": {
+              "enum": [
+                "transcript_turn",
+                "call_event"
+              ],
+              "type": "string"
+            },
+            "quote": {
+              "maxLength": 500,
+              "type": "string"
+            },
+            "seq": {
+              "minimum": 0,
+              "type": "integer"
+            },
+            "speaker": {
+              "enum": [
+                "assistant",
+                "callee",
+                "system"
+              ],
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "seq"
           ],
           "type": "object"
         }
@@ -727,6 +901,7 @@
           "items": {
             "type": "string"
           },
+          "maxItems": 20,
           "type": "array"
         },
         "context": {
@@ -779,6 +954,7 @@
           "items": {
             "type": "string"
           },
+          "maxItems": 20,
           "type": "array"
         },
         "to": {

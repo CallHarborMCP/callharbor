@@ -235,6 +235,8 @@ func newCallWorker(store *storage.Store, resolver callworker.ProfileResolver, cf
 		Legs: planner,
 		// The reconciliation deadlines use the same ring timeout the dial sends.
 		RingTimeoutSeconds: cfg.CallPolicy.RingTimeoutSeconds,
+		PollInterval:       opts.WorkerPoll,
+		OutcomeGrace:       opts.OutcomeGrace,
 	})
 	if err != nil {
 		return nil, callworker.ProductionPlanner{}, fmt.Errorf("call worker: %w", err)
@@ -269,6 +271,12 @@ type runOptions struct {
 	AIDialers realtime.Dialers
 	// Now overrides the clock. nil means time.Now.
 	Now func() time.Time
+	// WorkerPoll overrides the dial worker's poll interval. Zero keeps the
+	// production default. Tests use it so outcome evaluation runs promptly.
+	WorkerPoll time.Duration
+	// OutcomeGrace overrides the outcome grace period. Zero keeps the production
+	// value (callworker.OutcomeGrace). Tests shorten it.
+	OutcomeGrace time.Duration
 }
 
 // Run serves the application until ctx is cancelled.

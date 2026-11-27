@@ -138,14 +138,41 @@
           },
           "callDetails": {
             "type": "object",
-            "required": ["max_duration_seconds", "record_requested", "record_effective", "cost"],
+            "required": ["max_duration_seconds", "record_requested", "record_effective", "cost", "task_assessment"],
             "additionalProperties": false,
             "properties": {
               "outcome_reason_code": { "type": "string" },
               "max_duration_seconds": { "type": "integer" },
               "record_requested": { "type": "boolean" },
               "record_effective": { "type": "boolean" },
-              "cost": {"type": "object", "required": ["status", "amount", "currency", "source"], "additionalProperties": false, "properties": {"status": {"type": "string", "enum": ["known", "estimated", "unavailable"]}, "amount": {"type": ["string", "null"], "pattern": "^[0-9]{1,12}(\\.[0-9]{1,6})?$"}, "currency": {"type": ["string", "null"], "pattern": "^[A-Z]{3}$"}, "source": {"type": ["string", "null"], "enum": ["provider", "estimate", null]}}}
+              "cost": {"type": "object", "required": ["status", "amount", "currency", "source"], "additionalProperties": false, "properties": {"status": {"type": "string", "enum": ["known", "estimated", "unavailable"]}, "amount": {"type": ["string", "null"], "pattern": "^[0-9]{1,12}(\\.[0-9]{1,6})?$"}, "currency": {"type": ["string", "null"], "pattern": "^[A-Z]{3}$"}, "source": {"type": ["string", "null"], "enum": ["provider", "estimate", null]}}},
+              "task_assessment": { "$ref": "#/$defs/taskAssessment" }
+            }
+          },
+          "taskAssessment": {
+            "type": ["object", "null"],
+            "required": ["reason_codes", "evidence", "source", "assessed_at"],
+            "additionalProperties": false,
+            "properties": {
+              "reason_codes": { "type": "array", "items": { "type": "string" } },
+              "evidence": { "type": "array", "maxItems": 32, "items": { "$ref": "#/$defs/taskEvidence" } },
+              "source": { "type": "string", "enum": ["technical", "voice_session"] },
+              "assessed_at": { "type": "string", "format": "date-time" }
+            }
+          },
+          "taskEvidence": {
+            "type": "object",
+            "required": ["kind", "seq"],
+            "additionalProperties": false,
+            "properties": {
+              "kind": { "type": "string", "enum": ["transcript_turn", "call_event"] },
+              "seq": { "type": "integer", "minimum": 0 },
+              "criterion": { "type": "integer", "minimum": 1, "maximum": 20 },
+              "met": { "type": ["boolean", "null"] },
+              "quote": { "type": "string", "maxLength": 500 },
+              "speaker": { "type": "string", "enum": ["assistant", "callee", "system"] },
+              "fidelity": { "type": "string" },
+              "code": { "type": "string" }
             }
           }
         }
@@ -182,14 +209,39 @@
           "task_outcome": { "type": ["string", "null"], "enum": ["success", "partial", "failed", "unknown", null] },
           "details": {
             "type": "object",
-            "required": ["max_duration_seconds", "record_requested", "record_effective", "cost"],
+            "required": ["max_duration_seconds", "record_requested", "record_effective", "cost", "task_assessment"],
             "additionalProperties": false,
             "properties": {
               "outcome_reason_code": { "type": "string" },
               "max_duration_seconds": { "type": "integer" },
               "record_requested": { "type": "boolean" },
               "record_effective": { "type": "boolean" },
-              "cost": {"type": "object", "required": ["status", "amount", "currency", "source"], "additionalProperties": false, "properties": {"status": {"type": "string", "enum": ["known", "estimated", "unavailable"]}, "amount": {"type": ["string", "null"], "pattern": "^[0-9]{1,12}(\\.[0-9]{1,6})?$"}, "currency": {"type": ["string", "null"], "pattern": "^[A-Z]{3}$"}, "source": {"type": ["string", "null"], "enum": ["provider", "estimate", null]}}}
+              "cost": {"type": "object", "required": ["status", "amount", "currency", "source"], "additionalProperties": false, "properties": {"status": {"type": "string", "enum": ["known", "estimated", "unavailable"]}, "amount": {"type": ["string", "null"], "pattern": "^[0-9]{1,12}(\\.[0-9]{1,6})?$"}, "currency": {"type": ["string", "null"], "pattern": "^[A-Z]{3}$"}, "source": {"type": ["string", "null"], "enum": ["provider", "estimate", null]}}},
+              "task_assessment": {
+                "type": ["object", "null"],
+                "required": ["reason_codes", "evidence", "source", "assessed_at"],
+                "additionalProperties": false,
+                "properties": {
+                  "reason_codes": { "type": "array", "items": { "type": "string" } },
+                  "evidence": { "type": "array", "maxItems": 32, "items": {
+                    "type": "object",
+                    "required": ["kind", "seq"],
+                    "additionalProperties": false,
+                    "properties": {
+                      "kind": { "type": "string", "enum": ["transcript_turn", "call_event"] },
+                      "seq": { "type": "integer", "minimum": 0 },
+                      "criterion": { "type": "integer", "minimum": 1, "maximum": 20 },
+                      "met": { "type": ["boolean", "null"] },
+                      "quote": { "type": "string", "maxLength": 500 },
+                      "speaker": { "type": "string", "enum": ["assistant", "callee", "system"] },
+                      "fidelity": { "type": "string" },
+                      "code": { "type": "string" }
+                    }
+                  } },
+                  "source": { "type": "string", "enum": ["technical", "voice_session"] },
+                  "assessed_at": { "type": "string", "format": "date-time" }
+                }
+              }
             }
           },
           "transcript_available": { "type": "boolean" },
@@ -218,9 +270,9 @@
           "objective": { "type": "string", "minLength": 1 },
           "context": { "type": "string", "description": "Configurable server limit; oversized input is rejected, never truncated." },
           "instructions": { "type": "string", "description": "Configurable server limit; oversized input is rejected, never truncated. The limit applies to the full session text, so an oversize request is refused before queueing." },
-          "constraints": { "type": "array", "items": { "type": "string" } },
+          "constraints": { "type": "array", "maxItems": 20, "items": { "type": "string" } },
           "fallbacks": { "type": "array", "items": { "type": "string" } },
-          "success_criteria": { "type": "array", "items": { "type": "string" } },
+          "success_criteria": { "type": "array", "maxItems": 20, "items": { "type": "string" } },
           "max_duration_seconds": { "type": "integer", "minimum": 1, "maximum": 7200 },
           "record": {
             "type": "boolean",

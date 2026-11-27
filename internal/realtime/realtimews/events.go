@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 
+	"github.com/CallHarborMCP/callharbor/internal/outcome"
 	"github.com/CallHarborMCP/callharbor/internal/realtime"
 )
 
@@ -18,6 +19,9 @@ type serverEvent struct {
 	Transcript   *string `json:"transcript"`
 	AudioStartMS *int64  `json:"audio_start_ms"`
 	AudioEndMS   *int64  `json:"audio_end_ms"`
+	CallID       string  `json:"call_id"`
+	Name         string  `json:"name"`
+	Arguments    *string `json:"arguments"`
 	Response     *struct {
 		ID     string `json:"id"`
 		Status string `json:"status"`
@@ -98,6 +102,35 @@ func ParseServerEvent(b []byte) (realtime.Event, error) {
 			return ev, err
 		}
 		ev.Kind, ev.EndMS = realtime.EventTruncated, *e.AudioEndMS
+	case "response.function_call_arguments.done":
+		// Only the report tool is ours. Any other function call is ignored, so
+		// the model calling an undeclared tool never ends a call.
+		if e.Name != outcome.ReportToolName {
+			ev.Kind = realtime.EventIgnored
+			break
+		}
+		// A report that is unusable is flagged, never a protocol error: a bad
+		// report must not end the call. Without a usable call_id there is no
+		// output to acknowledge, so the engine skips the ack.
+		ev.Kind = realtime.EventTaskReport
+		switch {
+		case e.CallID == "" || len(e.CallID) > realtime.MaxTaskReportCallID:
+			ev.ReportInvalid = true
+		default:
+			ev.FunctionCallID = e.CallID
+		}
+		// The arguments are checked here with the same parser the recorder uses,
+		// so an invalid report is flagged at the adapter and never handed on as a
+		// usable one. The parse result is not kept; the recorder parses again.
+		switch {
+		case e.Arguments == nil || len(*e.Arguments) > realtime.MaxTaskReportArgs:
+			ev.ReportInvalid = true
+		default:
+			if _, err := outcome.ParseReport([]byte(*e.Arguments)); err != nil {
+				ev.ReportInvalid = true
+			}
+			ev.Arguments = *e.Arguments
+		}
 	case "response.done":
 		if err := need(e.Response != nil && e.Response.Status != "", "response.status"); err != nil {
 			return ev, err
