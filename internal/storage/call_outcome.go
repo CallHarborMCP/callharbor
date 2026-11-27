@@ -40,6 +40,13 @@ const (
 // and the media-failure test checks it end to end.
 const mediaFailedReason = "media_failed"
 
+// notConnectedNoAnswerOrBusy reports whether an effective reason says the callee
+// never answered a call that rang: no answer, or busy. Such a call is not
+// answered without an answered event, whatever early media said.
+func notConnectedNoAnswerOrBusy(reason string) bool {
+	return reason == string(call.ReasonNoAnswer) || reason == string(call.ReasonBusy)
+}
+
 // Bounds on what one evaluation reads. maxOutcomeTurns equals the transcript
 // recorder's MaxTurns, the most turns one call can ever store, so a call that
 // the recorder wrote is always evaluable. A call beyond a bound is not evaluated
@@ -251,7 +258,12 @@ func (s *Store) LoadOutcomeFacts(ctx context.Context, callID string) (OutcomeFac
 	).Scan(&answered, &mediaFailed, &started, &finalized, &calleeFinal); err != nil {
 		return OutcomeFacts{}, fmt.Errorf("storage: load outcome flags: %w", err)
 	}
-	f.Answered = answered == 1 || calleeFinal == 1
+	// N10: carrier early media can produce a final callee turn for a call that
+	// never connected. When the effective reason says it was not answered
+	// (no_answer or busy) and no answered event exists, the turn does not make it
+	// answered. Live early-media behaviour is unverified (FEASIBILITY R19).
+	calleeCounts := calleeFinal == 1 && (answered == 1 || !notConnectedNoAnswerOrBusy(f.ReasonCode))
+	f.Answered = answered == 1 || calleeCounts
 	f.MediaFailed = mediaFailed == 1
 	f.TranscriptStarted, f.TranscriptFinalized = started == 1, finalized == 1
 

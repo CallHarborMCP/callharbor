@@ -427,46 +427,82 @@ const (
 var negations = map[string]bool{
 	"not": true, "never": true, "cannot": true, "cant": true,
 	"wont": true, "dont": true, "isnt": true, "unable": true,
+	"nobody": true, "nothing": true, "neither": true, "nor": true, "without": true,
 }
 
 // clausePunct are the runes that end a clause. A "no" only negates the words
 // that follow it when no clause punctuation sits between them.
 const clausePunct = ",;:.!?"
 
+// sentenceEnd are the runes that end a sentence. A matched quote must not span
+// one: "We cannot. Book a table" is two statements, not one.
+const sentenceEnd = ".!?"
+
+// apostrophes are the runes that join a contraction, such as can't. The ASCII
+// apostrophe, the typographic quotes, the modifier letter apostrophe, the
+// fullwidth apostrophe and the backtick all join words the same way.
+const apostrophes = "'\u2019\u2018\u02bc\uff07`"
+
 // token is one word of a turn or a quote: lowercased, letters and digits only.
-// brk reports whether clause punctuation sits between this word and the one
-// before it. An apostrophe is dropped without a break, so "can't" and "won’t"
-// are the words "cant" and "wont".
+//   - brk reports whether clause punctuation sits between this word and the one
+//     before it.
+//   - sent reports whether sentence-ending punctuation sits between them.
+//   - contraction reports whether the word was joined across an apostrophe and
+//     ends in "nt", such as "didn't" or "haven't". Such a word is a negation.
+//
+// An apostrophe joins its letters into one word, so "can't" is "cant".
 type token struct {
-	word string
-	brk  bool
+	word        string
+	brk         bool
+	sent        bool
+	contraction bool
+}
+
+// negating reports whether the token is a negation by itself: a negation word
+// or a contraction ending in "nt".
+func (t token) negating() bool {
+	return negations[t.word] || t.contraction
 }
 
 // tokenize splits raw text into words. It works on the raw text, not on a
-// normalized copy, so clause punctuation is still known when negation is
-// checked.
+// normalized copy, so clause and sentence punctuation are still known when
+// negation is checked.
 func tokenize(s string) []token {
 	var out []token
 	var cur strings.Builder
-	brk := false
+	brk, sent, joined, pending := false, false, false, false
 	flush := func() {
 		if cur.Len() == 0 {
 			return
 		}
-		out = append(out, token{word: cur.String(), brk: brk})
+		w := cur.String()
+		out = append(out, token{
+			word: w, brk: brk, sent: sent,
+			contraction: joined && strings.HasSuffix(w, "nt"),
+		})
 		cur.Reset()
-		brk = false
+		brk, sent, joined, pending = false, false, false, false
 	}
 	for _, r := range strings.ToLower(s) {
 		switch {
-		case r == '\'' || r == '’':
-			// Dropped, so the letters on either side join into one word.
+		case strings.ContainsRune(apostrophes, r):
+			// Dropped, so the letters on either side join into one word. Whether
+			// the word is joined is decided by the letter that follows: a closing
+			// quote such as 'agent' is followed by a space, so it does not join.
+			pending = cur.Len() > 0
 		case unicode.IsLetter(r) || unicode.IsDigit(r):
+			if pending {
+				joined = true
+				pending = false
+			}
 			cur.WriteRune(r)
 		default:
 			flush()
 			if strings.ContainsRune(clausePunct, r) {
 				brk = true
+			}
+			if strings.ContainsRune(sentenceEnd, r) {
+				sent = true
 			}
 		}
 	}
@@ -540,17 +576,49 @@ func supportsTurn(quote string, negate bool, t Turn) bool {
 		return false
 	}
 	tt := tokenize(t.Text)
+	if negate && quoteIsNegative(qt) {
+		// A met quote that is itself a negative statement, such as "could not
+		// book a table", is never support for a met criterion.
+		return false
+	}
 	found := false
 	for i := 0; i+len(qt) <= len(tt); i++ {
 		if !sameWords(tt[i:i+len(qt)], qt) {
 			continue
 		}
-		if negate && negatedAt(tt, i) {
+		if negate && (negatedAt(tt, i) || spansSentence(tt, i, len(qt))) {
 			return false
 		}
 		found = true
 	}
 	return found
+}
+
+// quoteIsNegative reports whether a met quote contains negation by itself: a
+// negation token or contraction anywhere in it, or "no" followed by a word with
+// no clause break between them. "No problem, booked" is not negative, because a
+// comma breaks the "no" from the word after it.
+func quoteIsNegative(qt []token) bool {
+	for i, t := range qt {
+		if t.negating() {
+			return true
+		}
+		if t.word == "no" && i+1 < len(qt) && !qt[i+1].brk {
+			return true
+		}
+	}
+	return false
+}
+
+// spansSentence reports whether a match that starts at token i and is n tokens
+// long crosses a sentence end. Only the breaks between its own tokens count.
+func spansSentence(tt []token, i, n int) bool {
+	for j := i + 1; j < i+n; j++ {
+		if tt[j].sent {
+			return true
+		}
+	}
+	return false
 }
 
 // sameWords reports whether the words of a and b are equal, in order.
@@ -572,7 +640,7 @@ func sameWords(a, b []token) bool {
 //     is therefore a confirmation, and "No, booked..." is not negated either.
 func negatedAt(tt []token, i int) bool {
 	for j := i - 1; j >= 0 && j >= i-2; j-- {
-		if negations[tt[j].word] {
+		if tt[j].negating() {
 			return true
 		}
 	}

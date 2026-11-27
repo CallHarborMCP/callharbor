@@ -119,7 +119,9 @@ until an outcome is recorded, and then it is an object:
   outcome-level quotes.
 - `source`: `technical` when no voice-session self-report was used, or
   `voice_session` when the outcome rests on one.
-- `assessed_at`: the RFC 3339 UTC time the outcome was recorded.
+- `assessed_at`: the RFC 3339 UTC time the outcome was recorded. Recording the
+  outcome does not change the call's `updated_at`; watch `task_outcome` or
+  `task_assessment.assessed_at` to see that it has been recorded.
 
 The same object appears on `GET /api/v1/calls/{call_id}`, on list items, and on
 the MCP tools `get_call` and `list_calls`.
@@ -168,20 +170,37 @@ Task codes name why the outcome is what it is:
   substring match. Quotes longer than 500 characters are unverified.
 - A quote needs at least 3 words or 12 letters after normalization. A shorter
   quote such as `yes` is unverified, so it can never make an outcome a success.
-- Negation applies only to a met quote. A met quote is unverified when a negation
-  word (`not`, `never`, `cannot`, `can't`, `won't`, `don't`, `isn't`, `unable`)
-  appears within the two words before it in the same callee turn, so `we cannot
-  book a table for two` does not verify `book a table for two`. Apostrophes are
-  removed, so `can't` and `won’t` (curly apostrophe) are read as one word.
-  `no` negates only when it is the word immediately before the quote, with no
-  comma or sentence punctuation between them. So `No problem, booked a table for
-  two` verifies, and `No table for two` does not.
+- Negation applies only to a met quote. A met quote is unverified when:
+  - a negation word appears within the two words before it in the same callee
+    turn. The negation words are `not`, `never`, `cannot`, `can't`, `won't`,
+    `don't`, `isn't`, `unable`, `nobody`, `nothing`, `neither`, `nor` and
+    `without`. So `we cannot book a table for two` does not verify `book a table
+    for two`;
+  - a contraction ending in `nt`, such as `didn't`, `couldn't`, `wasn't`,
+    `wouldn't` or `haven't`, appears in that window;
+  - the quote itself is negative: it contains a negation word or contraction, or
+    `no` followed by a word with no comma or sentence punctuation between them.
+    So `could not book a table for two` and `no table for two at eight` never
+    verify a met criterion;
+  - the matched span crosses a sentence end (`.`, `!` or `?`), so `We cannot.
+    Book a table` does not verify `cannot book a table`.
+  - An apostrophe joins the letters on either side into one word, so `can't` is
+    `cant`. The apostrophe characters are `'`, `’` (U+2019), `‘` (U+2018), `ʼ`
+    (U+02BC), `＇` (U+FF07) and the backtick. A word is joined only when a letter
+    follows the apostrophe, so a quoted word such as `'agent'` is not negated. A
+    joined word ending in `nt` (`didn't`, `couldn't`, `haven't`) is a negation.
+    `no` negates only when it is the word immediately before the quote, with no
+    comma or sentence punctuation between them. So `No problem, booked a table
+    for two` verifies, and `No table for two` does not.
 - A quote for an unmet criterion, such as a refusal, is never checked for
   negation. Outcome-level quotes are not checked for negation under a failed
   outcome, because any verified quote supports failure.
 - A quote resolves to the earliest final callee turn that fully supports it, by
   the same rule used to verify it. Only final callee turns can support evidence.
   Caller turns and partial turns never do. An unmatched quote stays unverified.
+- A final callee turn makes a call answered only when the call's effective reason
+  is not `no_answer` or `busy`, or an answered event exists. Carrier early media
+  can produce a callee turn for a call that never connected.
 - Callee turns are the words the other party spoke. On `realtime_ws` the
   transcript of those words is model-derived and approximate. Verification
   proves provenance only: the quoted words appear in the stored transcript of

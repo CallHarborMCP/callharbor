@@ -596,3 +596,38 @@ func TestRecordTaskOutcomeKeepsUpdatedAt(t *testing.T) {
 		t.Fatalf("updated_at moved from %q to %q; recording an outcome must not change it", before, after)
 	}
 }
+
+// TestEarlyMediaCalleeTurnIsNotAnsweredOnNoAnswer (N10): carrier early media can
+// produce a final callee turn before a call that never connects is hung up with
+// no_answer. With no answered event, the turn must not make the call answered,
+// so the facts evaluate to failed with no_answer.
+func TestEarlyMediaCalleeTurnIsNotAnsweredOnNoAnswer(t *testing.T) {
+	ctx := context.Background()
+	s := openMigrated(t, filepath.Join(t.TempDir(), "m10earlymedia.db"))
+	seedTenants(t, s)
+	o10Insert(t, s, "c-early", `{"objective":"x","success_criteria":["a"]}`)
+	o10Ringing(t, s, "c-early")
+	if err := s.RecordTranscript(ctx, "c-early", "alice", []TranscriptRevision{
+		{Seq: 1, Speaker: SpeakerCallee, Finality: FinalityFinal, Text: "Hello, this is the restaurant.", Fidelity: "played", TimingSource: TimingProvider},
+	}, []CallEvent{
+		{Kind: TranscriptStartedKind, Provider: "internal", PayloadJSON: `{"quality_flags":[]}`, OccurredAt: o10Now.Format(storageTime)},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	o10Hangup(t, s, "c-early", call.ReasonNoAnswer)
+
+	f, err := s.LoadOutcomeFacts(ctx, "c-early")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if f.Answered {
+		t.Fatal("early-media callee turn with no answered event must not read as answered")
+	}
+	got := outcome.Evaluate(outcome.Input{
+		Protocol: f.Protocol, Answered: f.Answered, ReasonCode: f.ReasonCode,
+		CriteriaCount: f.Criteria, CallEvents: callEventRefs(f.CallEvents),
+	})
+	if got.Outcome != outcome.Failed || !slices.Equal(got.ReasonCodes, []string{outcome.CodeNoAnswer}) {
+		t.Fatalf("evaluated = %+v, want failed with no_answer", got)
+	}
+}

@@ -557,3 +557,153 @@ func TestNegationUnderFailedOutcomeFollowsClaimKind(t *testing.T) {
 		t.Fatalf("outcome-level quote under failed = %s %v, want failed", got.Outcome, got.ReasonCodes)
 	}
 }
+
+// metSuccess evaluates a met criterion quote against one callee turn.
+func metSuccess(turn, quote string) Result {
+	i := base()
+	i.CriteriaCount = 1
+	i.Transcript.Turns[1].Text = turn
+	return Evaluate(withAssessment(i, Assessment{Outcome: "success", Reason: ReasonConfirmed,
+		Claims: []Claim{{Criterion: 1, Seq: 2, Quote: quote, Met: true}}}))
+}
+
+// N8a: a met quote that itself contains a negation token is not success, even
+// when the callee's turn is the same negative sentence.
+func TestMetQuoteWithNegationTokenIsNotSuccess(t *testing.T) {
+	for _, c := range []struct{ turn, quote string }{
+		{"We could not book a table for two.", "could not book a table for two"},
+		{"We cannot book a table for two.", "cannot book a table for two"},
+	} {
+		// The control: the quote's words occur in the turn, with negation switched
+		// off. Without this, a quote that never matched would also be not success.
+		if !supportsTurn(c.quote, false, Turn{Text: c.turn}) {
+			t.Fatalf("control: quote %q does not occur in %q, so the negated check proves nothing", c.quote, c.turn)
+		}
+		if got := metSuccess(c.turn, c.quote); got.Outcome == Success {
+			t.Fatalf("met quote %q in %q produced success: %+v", c.quote, c.turn, got)
+		}
+	}
+}
+
+// N8b: a "no" followed by a word inside a met quote negates it, because the
+// quote itself is the negative statement.
+func TestMetQuoteWithNoInsideIsNotSuccess(t *testing.T) {
+	got := metSuccess("Sorry, no. Table for two at eight is taken.", "no table for two at eight")
+	if got.Outcome == Success {
+		t.Fatalf("met quote with inner no produced success: %+v", got)
+	}
+	// Isolated: the turn has no sentence break inside the quote, so only the
+	// inner "no" rule can reject it.
+	if got := metSuccess("No table for two at eight is free.", "no table for two at eight"); got.Outcome == Success {
+		t.Fatalf("isolated inner no produced success: %+v", got)
+	}
+}
+
+// N8c: a matched span that crosses a sentence end is not one statement. The
+// negation before the sentence end does not carry over, but the span is
+// rejected, so "We cannot. Book a table..." never verifies "cannot book a table".
+func TestMetQuoteAcrossSentenceEndIsNotSuccess(t *testing.T) {
+	got := metSuccess("We cannot. Book a table for two elsewhere.", "cannot book a table for two")
+	if got.Outcome == Success {
+		t.Fatalf("met quote across a sentence end produced success: %+v", got)
+	}
+	// Isolated: no negation sits in the two words before the match, so only the
+	// sentence end can reject this quote. The control, with a comma, succeeds.
+	if got := metSuccess("Lunch is free. Book a table for two elsewhere.", "free book a table for two"); got.Outcome == Success {
+		t.Fatalf("isolated span across a sentence end produced success: %+v", got)
+	}
+	if got := metSuccess("Lunch is free, book a table for two elsewhere.", "free book a table for two"); got.Outcome != Success {
+		t.Fatalf("control without a sentence end = %s %v, want success", got.Outcome, got.ReasonCodes)
+	}
+}
+
+// N8: the same negative quotes are accepted as evidence where negation does not
+// apply: an unmet refusal, and outcome-level evidence under a failed outcome.
+func TestNegativeQuotesStillSupportUnmetAndFailedEvidence(t *testing.T) {
+	i := base()
+	i.CriteriaCount = 1
+	i.Transcript.Turns[1].Text = "We could not book a table for two."
+	unmet := Evaluate(withAssessment(i, Assessment{Outcome: "failed", Reason: ReasonCalleeRefused,
+		Claims: []Claim{{Criterion: 1, Seq: 2, Quote: "could not book a table for two", Met: false}}}))
+	if unmet.Outcome != Failed {
+		t.Fatalf("unmet refusal quote = %s %v, want failed", unmet.Outcome, unmet.ReasonCodes)
+	}
+	outcomeLevel := Evaluate(withAssessment(i, Assessment{Outcome: "failed", Reason: ReasonCalleeRefused,
+		Claims: []Claim{{Criterion: 0, Seq: 2, Quote: "could not book a table for two", Met: true}}}))
+	if outcomeLevel.Outcome != Failed {
+		t.Fatalf("outcome-level refusal quote = %s %v, want failed", outcomeLevel.Outcome, outcomeLevel.ReasonCodes)
+	}
+}
+
+// N8 regression guard: a "No problem" confirmation still verifies after the
+// inner-negation and sentence rules are added.
+func TestNoProblemStillVerifiesAfterInnerNoRule(t *testing.T) {
+	if got := metSuccess("No problem, booked a table for two at eight.", "booked a table for two at eight"); got.Outcome != Success {
+		t.Fatalf("No problem confirmation = %s %v, want success", got.Outcome, got.ReasonCodes)
+	}
+}
+
+// negatedVsControl checks a negated callee sentence against its positive
+// control. The control is the same sentence without the negation, and it must
+// verify the quote, so the negated case is not passing only because the quote
+// never matched.
+func negatedVsControl(t *testing.T, negated, control, quote string) {
+	t.Helper()
+	if got := metSuccess(control, quote); got.Outcome != Success {
+		t.Fatalf("control %q with quote %q = %s %v, want success (the quote must match)", control, quote, got.Outcome, got.ReasonCodes)
+	}
+	if got := metSuccess(negated, quote); got.Outcome == Success {
+		t.Fatalf("%q: negated met quote %q produced success: %+v", negated, quote, got)
+	}
+}
+
+// N9: contractions and alternative apostrophes negate a met quote. The generic
+// n't rule covers didn't, couldn't, wasn't, wouldn't and haven't, and the
+// alternative apostrophes are U+2018, U+02BC, U+FF07 and backtick. Each negated
+// sentence has a positive control in which the quote matches.
+func TestContractionsAndApostrophesNegateMetQuote(t *testing.T) {
+	const quote = "book a table for two"
+	for _, c := range []struct{ negated, control string }{
+		{"We didn't book a table for two.", "We did book a table for two."},
+		{"We couldn't book a table for two.", "We could book a table for two."},
+		{"We weren't able book a table for two.", "We were able book a table for two."},
+		{"We wouldn't book a table for two.", "We would book a table for two."},
+		{"We haven't book a table for two.", "We have book a table for two."},
+		{"We can\u2018t book a table for two.", "We can book a table for two."},
+		{"We can\u02bct book a table for two.", "We can book a table for two."},
+		{"We can\uff07t book a table for two.", "We can book a table for two."},
+		{"We can`t book a table for two.", "We can book a table for two."},
+	} {
+		negatedVsControl(t, c.negated, c.control, quote)
+	}
+}
+
+// N9: the new negation words nobody, nothing, neither, nor and without negate a
+// met quote that follows them. Each has a positive control, and no other
+// negation word is present in the negated sentence.
+func TestNewNegationWordsNegateMetQuote(t *testing.T) {
+	const quote = "book a table for two"
+	for _, c := range []struct{ negated, control string }{
+		{"Nobody can book a table for two tonight.", "Everyone can book a table for two tonight."},
+		{"Neither can book a table for two tonight.", "Either can book a table for two tonight."},
+		{"We can do it without book a table for two tonight.", "We can do it, book a table for two tonight."},
+		{"We can do it nor book a table for two tonight.", "We can do it and book a table for two tonight."},
+		{"Nothing, book a table for two tonight.", "Something, book a table for two tonight."},
+	} {
+		negatedVsControl(t, c.negated, c.control, quote)
+	}
+}
+
+// N9: an apostrophe only joins a contraction when a letter follows it. A quoted
+// word that ends in "nt", such as 'agent' or 'front', is not a negation.
+func TestQuotedWordEndingInNtIsNotNegation(t *testing.T) {
+	const quote = "book a table for two"
+	for _, turn := range []string{
+		"Ask the 'agent' to book a table for two.",
+		"Ask the 'front' book a table for two.",
+	} {
+		if got := metSuccess(turn, quote); got.Outcome != Success {
+			t.Fatalf("%q: quoted word ending in nt negated the met quote: %s %v", turn, got.Outcome, got.ReasonCodes)
+		}
+	}
+}
