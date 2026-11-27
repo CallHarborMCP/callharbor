@@ -1,0 +1,10 @@
+{
+    "event_id": "event_5556",
+    "type": "response.function_call_arguments.done",
+    "response_id": "resp_002",
+    "item_id": "fc_001",
+    "output_index": 0,
+    "call_id": "call_001",
+    "name": "get_weather",
+    "arguments": "{\"location\": \"San Francisco\"}"
+}

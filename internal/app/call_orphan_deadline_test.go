@@ -34,12 +34,12 @@ func TestOldTerminalOrphanGetsNoHangupAfterDeadline(t *testing.T) {
 	createAIFixture(t, first, h, realtime.ProtocolRealtime, newFakeAI(t, realtime.ProtocolRealtime).endpoint())
 	first.stop()
 
-	seedTerminalOrphans(t, first.dataDir, tpID, map[string]string{
+	t0 := time.Date(2026, 11, 27, 10, 0, 0, 0, time.UTC)
+	seedTerminalOrphans(t, first.dataDir, tpID, t0, map[string]string{
 		"call_old_terminal":   ctlOld,
 		"call_fresh_terminal": ctlFresh,
 	})
 
-	t0 := time.Date(2026, 11, 27, 10, 0, 0, 0, time.UTC)
 	// Created two hours before the clock's start: far past the 600 s default cap
 	// plus ring timeout and grace. The fresh call is created 100 s before t0, which
 	// is inside the window (cap 600 s + ring + grace).
@@ -70,7 +70,10 @@ func TestOldTerminalOrphanGetsNoHangupAfterDeadline(t *testing.T) {
 // hangup marker, the state a call from before the hangup markers existed leaves.
 // Terminal rows need ended_at, which the shared restart seed does not set, so
 // these rows are written here. Each call is owned by the admin, with a brief.
-func seedTerminalOrphans(t *testing.T, dataDir, tpID string, controls map[string]string) {
+// Timestamps are set to at, the fake clock's start, so the sweep compares them
+// against the same clock the test moves, not the wall clock. setCreatedAt then
+// places each call's created_at; ended_at = at stays at or after it.
+func seedTerminalOrphans(t *testing.T, dataDir, tpID string, at time.Time, controls map[string]string) {
 	t.Helper()
 	db, err := sql.Open("sqlite", "file:"+filepath.Join(dataDir, databaseFileName)+"?_pragma=busy_timeout(5000)")
 	if err != nil {
@@ -84,7 +87,7 @@ func seedTerminalOrphans(t *testing.T, dataDir, tpID string, controls map[string
 	if err := db.QueryRow(`SELECT id FROM ai_profiles WHERE owner_user_id = ? LIMIT 1`, owner).Scan(&ai); err != nil {
 		t.Fatalf("ai profile: %v", err)
 	}
-	now := time.Now().UTC().Format("2006-01-02T15:04:05.000Z")
+	now := at.UTC().Format("2006-01-02T15:04:05.000Z")
 	for id, ctl := range controls {
 		if _, err := db.Exec(`INSERT INTO calls (id, owner_user_id, telephony_profile_id, ai_profile_id, idempotency_key, to_number, status, outcome_reason_code, provider_call_control_id, ended_at, max_duration_seconds, created_at, updated_at) VALUES (?, ?, ?, ?, ?, '+14155550111', 'failed', 'hangup', ?, ?, 600, ?, ?)`,
 			id, owner, tpID, ai, "restart-"+id, ctl, now, now, now); err != nil {

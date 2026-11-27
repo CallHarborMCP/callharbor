@@ -18,6 +18,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/CallHarborMCP/callharbor/internal/audio"
+	"github.com/CallHarborMCP/callharbor/internal/outcome"
 	"github.com/CallHarborMCP/callharbor/internal/realtime"
 	"github.com/CallHarborMCP/callharbor/internal/recording"
 	"github.com/CallHarborMCP/callharbor/internal/storage"
@@ -387,7 +388,32 @@ func (r *Recorder) Observe(ev realtime.Event) {
 	case realtime.EventTruncated, realtime.EventResponseDone, realtime.EventDelegation,
 		realtime.EventError, realtime.EventClosed:
 		r.providerEventLocked(ev)
+	case realtime.EventTaskReport:
+		r.taskReportLocked(ev)
 	}
+}
+
+// taskReportLocked records one voice-session self-report. It stores only the
+// validated, canonical payload, or the invalid marker. Raw arguments, quotes and
+// transcript text are never logged here or put in any other event.
+func (r *Recorder) taskReportLocked(ev realtime.Event) {
+	payload := outcome.InvalidPayload
+	if !ev.ReportInvalid {
+		if rep, err := outcome.ParseReport([]byte(ev.Arguments)); err == nil {
+			if p, err := rep.Payload(); err == nil {
+				payload = p
+			}
+		}
+	}
+	e := storage.CallEvent{
+		CallID:        r.cfg.CallID,
+		OwnerUserID:   r.cfg.OwnerUserID,
+		Kind:          storage.AssessmentReportedKind,
+		Provider:      "realtime_ws",
+		CorrelationID: ev.FunctionCallID,
+		PayloadJSON:   payload,
+	}
+	r.addEventLocked(e)
 }
 
 // OnCut records a barge-in cut with its cause. callerTurn is the local caller

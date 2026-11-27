@@ -100,6 +100,14 @@ func startCallApp(t *testing.T, tel *fakeTelnyx, aiDialers realtime.Dialers) *ca
 // startCallAppWith is startCallApp with a hook to adjust the config first.
 func startCallAppWith(t *testing.T, tel *fakeTelnyx, aiDialers realtime.Dialers, adjust func(*config.Config)) *callTestEnv {
 	t.Helper()
+	return startCallAppTuned(t, tel, aiDialers, adjust, observability.NewLogger(io.Discard, slog.LevelError), 0, 0)
+}
+
+// startCallAppTuned is startCallAppWith with the logger, the dial worker's poll
+// interval and the outcome grace period as parameters. A zero value keeps the
+// production default for that setting.
+func startCallAppTuned(t *testing.T, tel *fakeTelnyx, aiDialers realtime.Dialers, adjust func(*config.Config), logger *slog.Logger, poll, grace time.Duration) *callTestEnv {
+	t.Helper()
 	t.Setenv(secrets.EnvKey, validKeyB64())
 	ln, roots := newTLSListener(t)
 	pub, priv, err := ed25519.GenerateKey(rand.Reader)
@@ -115,11 +123,13 @@ func startCallAppWith(t *testing.T, tel *fakeTelnyx, aiDialers realtime.Dialers,
 		TelnyxBaseURL:  tel.baseURL(),
 		EndpointPolicy: realtime.EndpointPolicy{AllowPrivate: true},
 		AIDialers:      aiDialers,
+		WorkerPoll:     poll,
+		OutcomeGrace:   grace,
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() {
-		done <- run(ctx, cfg, observability.NewLogger(io.Discard, slog.LevelError), ln, opts)
+		done <- run(ctx, cfg, logger, ln, opts)
 	}()
 	// stop cancels run and waits for it. It is idempotent, so a test can stop
 	// the app itself and cleanup can still call it.

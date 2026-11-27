@@ -6,6 +6,8 @@ import (
 	"net"
 	"net/url"
 	"time"
+
+	"github.com/CallHarborMCP/callharbor/internal/outcome"
 )
 
 // EventKind is a protocol-neutral voice session event.
@@ -26,7 +28,19 @@ const (
 	EventDelegation
 	EventError
 	EventClosed
+	// EventTaskReport is a voice-session self-report: the model called the
+	// report_task_outcome tool. Appended last so existing kind values do not move.
+	EventTaskReport
 )
+
+// MaxTaskReportArgs bounds the arguments of one task report. Larger arguments
+// are not kept: the event is still delivered, flagged ReportInvalid. It is the
+// same limit the outcome parser enforces, so the two cannot drift apart.
+const MaxTaskReportArgs = outcome.MaxReportBytes
+
+// MaxTaskReportCallID bounds the function call id of a task report. A longer id
+// is treated as unusable: the report is flagged and not acknowledged.
+const MaxTaskReportCallID = 128
 
 // Event is a normalized server event. Provider IDs are kept verbatim for
 // provenance; fields not supplied by the protocol stay zero and HasTiming
@@ -54,6 +68,12 @@ type Event struct {
 	ErrCode        string
 	ErrMessage     string
 	CloseReason    string
+	// FunctionCallID is the function call id of an EventTaskReport. Arguments holds
+	// its raw JSON arguments, empty when they were oversized. ReportInvalid is set
+	// when the report cannot be used, so it is recorded as invalid, never parsed.
+	FunctionCallID string
+	Arguments      string
+	ReportInvalid  bool
 	// OutOfBand marks caller text produced by an out-of-band model response
 	// that references the caller audio item. ResponseID is that response. Such
 	// text is model-derived and approximate, never provider ASR.

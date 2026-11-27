@@ -81,6 +81,22 @@ type Truncater interface {
 	Truncate(ctx context.Context, itemID string, contentIndex int, audioEndMS int64) error
 }
 
+// TaskAcker is implemented by sessions whose protocol can acknowledge a
+// voice-session task report. The acknowledgement is a function output only: it
+// must never start a response, so the call's conversation is not changed.
+//
+// status is TaskAckRecorded for a usable report and TaskAckInvalid for one
+// that was received but could not be used.
+type TaskAcker interface {
+	AckTaskReport(ctx context.Context, callID, status string) error
+}
+
+// Task report acknowledgement statuses, sent as the function output.
+const (
+	TaskAckRecorded = "recorded"
+	TaskAckInvalid  = "invalid"
+)
+
 // EventSink receives every normalized event, including the ones the engine
 // acts on, so callers can record transcripts, usage and errors.
 type EventSink func(realtime.Event)
@@ -520,8 +536,31 @@ func pumpDownlink(ctx context.Context, sess realtime.Session, bridge AudioBridge
 			return Result{}, fmt.Errorf("%w: %s %s", ErrProviderError, ev.ErrCode, ev.ErrMessage)
 		case realtime.EventClosed:
 			return Result{Closed: true, UsageSeconds: ev.UsageSeconds, UsageConfirmed: ev.UsageSeconds > 0}, nil
+		case realtime.EventTaskReport:
+			// The report is recorded by the sink above. It is acknowledged here,
+			// without response.create. An unusable report has no call id to ack,
+			// and an ack failure is not a call failure: the report is still stored.
+			ackTaskReport(ctx, sess, ev)
 		}
 	}
+}
+
+// ackTaskReport acknowledges a task report on sessions that support it. A
+// report with a usable call id is acknowledged as recorded, or as invalid when
+// it could not be used, so the model's function call never waits for output. A
+// session without TaskAcker, or a report with no usable call id, sends nothing.
+// A failed ack is ignored here: the protocol error, if any, surfaces on the next
+// read, and the report itself was already handled.
+func ackTaskReport(ctx context.Context, sess realtime.Session, ev realtime.Event) {
+	acker, ok := sess.(TaskAcker)
+	if !ok || ev.FunctionCallID == "" {
+		return
+	}
+	status := TaskAckRecorded
+	if ev.ReportInvalid {
+		status = TaskAckInvalid
+	}
+	_ = acker.AckTaskReport(ctx, ev.FunctionCallID, status)
 }
 
 // bargeIn cuts model audio on a caller barge-in and, when the cut item was

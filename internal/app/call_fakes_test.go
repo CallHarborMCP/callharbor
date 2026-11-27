@@ -294,6 +294,13 @@ type fakeAI struct {
 	// oobRequests holds every out-of-band response.create the app sent, in
 	// arrival order (realtime_ws caller transcription, #113).
 	oobRequests []map[string]any
+	// toolOutputs holds every function_call_output item the app sent back for
+	// a task report, in arrival order (the ack, #64).
+	toolOutputs []map[string]any
+	// plainResponses counts response.create messages that are not out-of-band.
+	// A task report must never make the model speak, so this stays zero for
+	// report cases.
+	plainResponses int
 }
 
 // outOfBandRequests returns the out-of-band response.create messages recorded.
@@ -301,6 +308,21 @@ func (f *fakeAI) outOfBandRequests() []map[string]any {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return append([]map[string]any(nil), f.oobRequests...)
+}
+
+// toolOutputsSeen returns the function_call_output items the app sent, in order.
+func (f *fakeAI) toolOutputsSeen() []map[string]any {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]map[string]any(nil), f.toolOutputs...)
+}
+
+// plainResponseCount returns how many non-out-of-band response.create messages
+// the app sent.
+func (f *fakeAI) plainResponseCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.plainResponses
 }
 
 // hasKey reports whether key appears as an object key anywhere in v.
@@ -423,9 +445,19 @@ func (f *fakeAI) handle(ctx context.Context, c *websocket.Conn, m map[string]any
 		f.mu.Unlock()
 	}
 	if m["type"] == "response.create" {
-		if resp, _ := m["response"].(map[string]any); resp != nil && resp["conversation"] == "none" {
-			f.mu.Lock()
+		resp, _ := m["response"].(map[string]any)
+		f.mu.Lock()
+		if resp != nil && resp["conversation"] == "none" {
 			f.oobRequests = append(f.oobRequests, m)
+		} else {
+			f.plainResponses++
+		}
+		f.mu.Unlock()
+	}
+	if m["type"] == "conversation.item.create" {
+		if item, _ := m["item"].(map[string]any); item != nil && item["type"] == "function_call_output" {
+			f.mu.Lock()
+			f.toolOutputs = append(f.toolOutputs, item)
 			f.mu.Unlock()
 		}
 	}

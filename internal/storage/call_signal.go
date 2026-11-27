@@ -61,7 +61,7 @@ func ReadCallForSignal(ctx context.Context, tx *sql.Tx, callID string) (CallSign
 // webhook's receipt transaction.
 func RecordHangupSeen(ctx context.Context, tx *sql.Tx, from CallSignalState, providerEventID string, now time.Time) error {
 	return appendCallEvent(ctx, tx, CallEvent{
-		CallID: from.ID, OwnerUserID: from.OwnerUserID, Kind: "hangup", State: from.Status,
+		CallID: from.ID, OwnerUserID: from.OwnerUserID, Kind: CallEventHangup, State: from.Status,
 		Provider: "telnyx", ProviderEventID: providerEventID, OccurredAt: now.UTC().Format(storageTime),
 	})
 }
