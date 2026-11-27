@@ -185,7 +185,7 @@ test.describe.serial("OAuth consent and connected apps", () => {
     const mcp = await mcpToolsList(context, accessToken);
     expect(mcp.status()).toBe(200);
     const listed = (await mcp.json()) as { result?: { tools?: { name: string }[] } };
-    expect(listed.result?.tools?.map((tool) => tool.name).sort()).toEqual(["get_call", "get_profiles", "get_transcript", "hangup_call", "list_calls", "make_call"]);
+    expect(listed.result?.tools?.map((tool) => tool.name).sort()).toEqual(["get_call", "get_profiles", "get_recording", "get_transcript", "hangup_call", "list_calls", "make_call"]);
   });
 
   test("connected apps lists the client, and revoking it stops MCP access", async () => {
