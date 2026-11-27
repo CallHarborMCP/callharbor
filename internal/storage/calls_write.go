@@ -105,8 +105,12 @@ func (s *Store) InsertCall(ctx context.Context, c CallInsert) error {
 	return nil
 }
 
-// storageTime is the timestamp layout used for rows written by this package.
-const storageTime = "2006-01-02T15:04:05.000Z"
+// TimeLayout is the timestamp layout of every row this package writes. Callers
+// outside the package format timestamps with it, so they match the stored form.
+const TimeLayout = "2006-01-02T15:04:05.000Z"
+
+// storageTime is TimeLayout under the name this package uses internally.
+const storageTime = TimeLayout
 
 func validateCallInsert(c CallInsert) error {
 	switch {
@@ -430,15 +434,18 @@ func (s *Store) ListLiveCallLegs(ctx context.Context) ([]LiveCallLeg, error) {
 	return out, nil
 }
 
-// ListUnconfirmedInitiating returns calls left in initiating with no provider
-// control id. After a restart these may have been dialed without the response
-// being recorded, so they must never be redialed.
-func (s *Store) ListUnconfirmedInitiating(ctx context.Context) ([]string, error) {
+// ListUnconfirmedDials returns calls in initiating, or ending after a hangup
+// requested during the dial, with no provider control id. After a restart these
+// may have been dialed without the response being recorded, so they must never
+// be redialed. Recovery fails them with dial_unconfirmed, which also releases
+// their concurrency slot. This is startup-only: it must not be used while a dial
+// may still be in flight in this process.
+func (s *Store) ListUnconfirmedDials(ctx context.Context) ([]string, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT id FROM calls
-		WHERE status = 'initiating' AND provider_call_control_id IS NULL AND ended_at IS NULL
+		WHERE status IN ('initiating', 'ending') AND provider_call_control_id IS NULL AND ended_at IS NULL
 		ORDER BY created_at, id`)
 	if err != nil {
-		return nil, fmt.Errorf("list unconfirmed initiating calls: %w", err)
+		return nil, fmt.Errorf("list unconfirmed dials: %w", err)
 	}
 	defer func() { _ = rows.Close() }()
 	var ids []string

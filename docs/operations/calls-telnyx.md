@@ -177,12 +177,24 @@ A stream closed by Telnyx, or a caller who has left, is not hung up again.
 
 ### Emergency hangup
 
-An operator or the call's owner can end a call on request, through
-`POST /api/v1/calls/{call_id}/hangup` or the MCP `hangup_call` tool. The owner
-may always end their own call. An administrator may end any call. Any other
-caller gets `not_found`, and that refusal is audited with no owner in it.
-The MCP tool needs the `mcp:call` scope. A repeat request is safe: it returns the
-current state and resends the same hangup command.
+The call's owner can end their own call, through
+`POST /api/v1/calls/{call_id}/hangup` or the MCP `hangup_call` tool. An
+administrator can end any call, but only through the REST route: MCP actors are
+never administrators, so the MCP tool ends only the caller's own calls. The REST
+route needs a session and the CSRF token, and the MCP tool needs the `mcp:call`
+scope. A repeat request is safe: it returns the current state. For a call still
+`ending` it may send the hangup again, with the same command id each time.
+
+Refusals differ in what they record, so the audit trail is exact:
+
+- A caller who does not own the call and is not an administrator gets `not_found`.
+  That refusal writes one `call.hangup` audit row with outcome `denied` and no
+  target, so the owner is not revealed.
+- A missing call (`not_found`), an invalid `call_id`, a missing scope, and a
+  missing or invalid CSRF token are refused before any audit write. They write
+  no `call.hangup` row.
+- A successful hangup writes one `call.hangup` row with outcome `success`. Only an
+  administrator ending another user's call records that user as the target.
 
 What happens depends on the call's state. A queued call is failed without a
 dial. A dial in flight is ended when it returns. A live call's leg is hung up and
@@ -198,8 +210,10 @@ ends through the normal hangup path.
 ### Restart reconciliation
 
 At startup, before the first dial, the server reconciles calls left by the
-previous process. A call left in `initiating` with no provider id is failed,
-because its dial may have reached Telnyx without an id being recorded. A call with
+previous process. A call left in `initiating`, or in `ending` after a hangup
+during its dial, with no provider id is failed with `dial_unconfirmed`, because
+its dial may have reached Telnyx without an id being recorded. Failing it frees
+its concurrency slot. A call with
 a provider id that was live (`initiating`, `ringing`, `active` or `ending`) has no
 media session in this process, so it is ended, with one hangup for its leg. Queued
 calls are dialed once, after reconciliation.
@@ -230,6 +244,17 @@ is also past its expiry deadline ends with `reconcile_expired`. Until then the
 hangup is still resent, so a leg is never given up while it may still be live.
 
 These constants are fixed in code. They are not configuration.
+
+Every deadline is measured from the call's `created_at`, not from when the call
+started or was last updated. A leg's expiry deadline is `created_at` plus the
+Telnyx time limit (the call's cap clamped to 30 to 14400 seconds), plus the ring
+timeout and the grace. This is the cost-safe choice: a leg is never given up
+before Telnyx could have ended it, however long the call waited to start.
+
+The orphan sweep covers only terminal calls whose expiry deadline has not passed.
+A terminal call from before the hangup markers existed, whose deadline is past,
+gets no hangup, because Telnyx has already ended its leg. A call still inside its
+window is hung up as before.
 
 ### Cost
 
@@ -279,6 +304,20 @@ Today the only purge is the storage function `PurgeCall`, which deletes one call
 and its retained data. No operator command or HTTP route exposes it yet, so
 removing these calls is not a supported operator step. Until a supported purge
 exists, do not roll back past 0007 on an instance that has placed grantee calls.
+
+## Rollback of migration 0009
+
+Migration `0009_call_safety` adds the per-user call policy, the cost columns, and
+the hangup markers. Rolling it back, to 0008, drops two things permanently:
+
+- **Per-user policies.** The `user_call_policies` table is dropped, so every
+  per-user limit and allowance is lost. Installation policy from the environment
+  still applies after a rollback, but the per-user values cannot be recovered.
+- **Cost data.** The estimate and provider cost columns are dropped, so recorded
+  costs are lost. Calls are kept.
+
+The hangup-marker columns are also dropped, so the restart and sweep state for
+in-flight hangups is lost. Roll back only on an instance with no live calls.
 
 ## What is not yet verified
 

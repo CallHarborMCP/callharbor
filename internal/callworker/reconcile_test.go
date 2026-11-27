@@ -72,7 +72,7 @@ func (s *reconStore) ListOverdueCalls(context.Context, time.Time, int, int) ([]s
 	return s.overdue, nil
 }
 
-func (s *reconStore) ListOrphanedTerminal(context.Context, time.Time, int, int) ([]storage.ReconcileCall, error) {
+func (s *reconStore) ListOrphanedTerminal(context.Context, storage.OrphanBounds, int) ([]storage.ReconcileCall, error) {
 	return s.orphans, nil
 }
 

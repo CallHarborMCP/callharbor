@@ -40,7 +40,7 @@ const (
 // owner's calls.
 type Store interface {
 	ListQueuedCalls(ctx context.Context, limit int) ([]storage.QueuedCallRef, error)
-	ListUnconfirmedInitiating(ctx context.Context) ([]string, error)
+	ListUnconfirmedDials(ctx context.Context) ([]string, error)
 	ListLiveCallLegs(ctx context.Context) ([]storage.LiveCallLeg, error)
 	ClaimQueuedCall(ctx context.Context, callID string, now time.Time) error
 	MarkCallFailed(ctx context.Context, callID, reasonCode string, now time.Time) error
@@ -51,7 +51,7 @@ type Store interface {
 	RecordHangupSent(ctx context.Context, callID string, now time.Time) error
 	ListEndingForReconcile(ctx context.Context, lastHangupBefore time.Time, limit int) ([]storage.ReconcileCall, error)
 	ListOverdueCalls(ctx context.Context, now time.Time, slackSeconds, limit int) ([]storage.ReconcileCall, error)
-	ListOrphanedTerminal(ctx context.Context, lastHangupBefore time.Time, maxAttempts, limit int) ([]storage.ReconcileCall, error)
+	ListOrphanedTerminal(ctx context.Context, b storage.OrphanBounds, limit int) ([]storage.ReconcileCall, error)
 	MarkReconcileEnded(ctx context.Context, callID, reasonCode string, now time.Time) (bool, error)
 }
 
@@ -145,12 +145,13 @@ func New(store Store, planner Planner, opts Options) (*Worker, error) {
 // Recover settles the calls a previous process left open. It runs once, before
 // the first Tick, and never redials anything.
 //
-// A call left in initiating without a provider id is failed: its dial may have
-// reached Telnyx, but the id was never recorded. A call with a provider id that
+// A call left in initiating, or in ending after a hangup during the dial, without
+// a provider id is failed: its dial may have reached Telnyx, but the id was never
+// recorded. Failing it releases its concurrency slot. A call with a provider id that
 // was live (initiating, ringing, active or ending) has no media session in this
 // process, so it is ended and one hangup is sent for its leg.
 func (w *Worker) Recover(ctx context.Context) error {
-	ids, err := w.store.ListUnconfirmedInitiating(ctx)
+	ids, err := w.store.ListUnconfirmedDials(ctx)
 	if err != nil {
 		return fmt.Errorf("recover: %w", err)
 	}

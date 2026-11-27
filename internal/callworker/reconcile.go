@@ -237,7 +237,14 @@ func (w *Worker) reconcileOverdue(ctx context.Context, now time.Time) error {
 // reconcileOrphans resends the hangup for terminal calls whose leg has no
 // confirmed hangup. The attempts are bounded by ReconcileMaxAttempts.
 func (w *Worker) reconcileOrphans(ctx context.Context, now time.Time) error {
-	calls, err := w.store.ListOrphanedTerminal(ctx, now.Add(-ReconcileRetryInterval), ReconcileMaxAttempts, w.opts.BatchSize)
+	calls, err := w.store.ListOrphanedTerminal(ctx, storage.OrphanBounds{
+		LastHangupBefore: now.Add(-ReconcileRetryInterval),
+		Now:              now,
+		MaxAttempts:      ReconcileMaxAttempts,
+		LimitMin:         telnyxMinTimeLimit,
+		LimitMax:         telnyxMaxTimeLimit,
+		ExpiryPadSeconds: w.ringTimeout() + ReconcileGraceSeconds,
+	}, w.opts.BatchSize)
 	if err != nil {
 		return fmt.Errorf("list orphaned calls: %w", err)
 	}

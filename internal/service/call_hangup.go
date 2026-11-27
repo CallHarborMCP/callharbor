@@ -103,7 +103,7 @@ func (o *CallOperator) hangupAudit(actor Actor, owner, callID, outcome string) s
 	}
 	detail, _ := json.Marshal(map[string]string{"outcome": outcome})
 	return storage.AuditEvent{
-		OccurredAt:   o.deps.Now().UTC().Format("2006-01-02T15:04:05.000Z"),
+		OccurredAt:   o.deps.Now().UTC().Format(storage.TimeLayout),
 		ActorUserID:  actor.UserID,
 		ActorRole:    roleOf(actor),
 		TargetUserID: target,

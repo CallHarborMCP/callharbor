@@ -47,7 +47,7 @@ func (s *fakeStore) ListQueuedCalls(_ context.Context, limit int) ([]storage.Que
 	return out, nil
 }
 
-func (s *fakeStore) ListUnconfirmedInitiating(context.Context) ([]string, error) {
+func (s *fakeStore) ListUnconfirmedDials(context.Context) ([]string, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return append([]string(nil), s.unconf...), nil
@@ -78,7 +78,9 @@ func (s *fakeStore) ClaimQueuedCall(_ context.Context, id string, _ time.Time) e
 func (s *fakeStore) MarkCallFailed(_ context.Context, id, reason string, _ time.Time) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.status[id] != "queued" && s.status[id] != "initiating" {
+	// Mirrors storage: queued, initiating, or ending with no control id.
+	st := s.status[id]
+	if st != "queued" && st != "initiating" && (st != "ending" || s.controlID[id] != "") {
 		return errors.New("not failable")
 	}
 	s.status[id] = "failed"
@@ -129,7 +131,7 @@ func (s *fakeStore) ListOverdueCalls(context.Context, time.Time, int, int) ([]st
 	return nil, nil
 }
 
-func (s *fakeStore) ListOrphanedTerminal(context.Context, time.Time, int, int) ([]storage.ReconcileCall, error) {
+func (s *fakeStore) ListOrphanedTerminal(context.Context, storage.OrphanBounds, int) ([]storage.ReconcileCall, error) {
 	return nil, nil
 }
 
@@ -317,6 +319,30 @@ func TestRecoverFailsUnconfirmedWithoutRedial(t *testing.T) {
 	}
 	if len(d.dials) != 0 {
 		t.Fatal("recovered call was redialed")
+	}
+}
+
+// TestRecoverFailsEndingWithoutControlIDWithoutRedial covers a call that was
+// dialing when a hangup arrived, so it is ending, and the process died before
+// Telnyx's control id was recorded. Recovery fails it with dial_unconfirmed and
+// never redials it.
+func TestRecoverFailsEndingWithoutControlIDWithoutRedial(t *testing.T) {
+	store := newFakeStore()
+	store.status["ending-no-id"] = "ending"
+	store.unconf = []string{"ending-no-id"}
+	d := &fakeDialer{}
+	w := newWorker(t, store, fixedPlanner{dialer: d}, true)
+	if err := w.Recover(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if store.status["ending-no-id"] != "failed" || store.reasons["ending-no-id"] != ReasonDialUnconfirmed {
+		t.Fatalf("status=%s reason=%s, want failed/%s", store.status["ending-no-id"], store.reasons["ending-no-id"], ReasonDialUnconfirmed)
+	}
+	if err := w.Tick(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(d.dials) != 0 {
+		t.Fatal("recovered ending call was redialed")
 	}
 }
 

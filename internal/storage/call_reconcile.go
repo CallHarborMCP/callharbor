@@ -64,17 +64,38 @@ func (s *Store) ListOverdueCalls(ctx context.Context, now time.Time, slackSecond
 		slackSeconds, now.Unix(), slackSeconds, now.Unix(), limit)
 }
 
+// OrphanBounds limits the orphan sweep to legs that may still be up. The leg
+// deadline is created_at + the Telnyx time limit (clamped to [LimitMin,
+// LimitMax] as the dial sends it) + ExpiryPadSeconds (ring timeout and grace).
+// A call whose deadline has passed is not re-hung-up: Telnyx has ended its leg,
+// so a terminal call from before an upgrade is never hung up again.
+type OrphanBounds struct {
+	// LastHangupBefore is the earliest the next hangup for a call may be sent.
+	LastHangupBefore time.Time
+	// Now is the instant a leg must still be possibly up at.
+	Now time.Time
+	// MaxAttempts is the number of hangups after which the sweep stops.
+	MaxAttempts int
+	// LimitMin and LimitMax are the Telnyx accepted time limit range, in seconds.
+	LimitMin, LimitMax int
+	// ExpiryPadSeconds is the ring timeout plus the grace period, in seconds.
+	ExpiryPadSeconds int
+}
+
 // ListOrphanedTerminal returns terminal calls that have a control id, no
-// call.hangup and no reconciled end, and fewer than maxAttempts hangups sent,
-// with the last send before lastHangupBefore. These legs may still be carried
-// by Telnyx, so the sweep retries the hangup a bounded number of times.
-func (s *Store) ListOrphanedTerminal(ctx context.Context, lastHangupBefore time.Time, maxAttempts, limit int) ([]ReconcileCall, error) {
+// call.hangup and no reconciled end, fewer than MaxAttempts hangups sent, the
+// last send before LastHangupBefore, and whose leg deadline has not passed at
+// Now. These legs may still be carried by Telnyx, so the sweep retries the hangup
+// a bounded number of times, and only while the leg can still be up.
+func (s *Store) ListOrphanedTerminal(ctx context.Context, b OrphanBounds, limit int) ([]ReconcileCall, error) {
 	return s.queryReconcile(ctx, `WHERE c.status IN ('ended', 'failed') AND c.provider_call_control_id IS NOT NULL
 		AND c.hangup_attempts < ?
 		AND CAST(strftime('%s', COALESCE(c.hangup_requested_at, c.updated_at)) AS INTEGER) < ?
+		AND CAST(strftime('%s', c.created_at) AS INTEGER)
+		    + MIN(MAX(c.max_duration_seconds, ?), ?) + ? > ?
 		AND NOT EXISTS (SELECT 1 FROM call_events e WHERE e.call_id = c.id AND e.kind IN ('hangup', 'call.reconciled'))
 		ORDER BY COALESCE(c.hangup_requested_at, c.updated_at), c.id LIMIT ?`,
-		maxAttempts, lastHangupBefore.Unix(), limit)
+		b.MaxAttempts, b.LastHangupBefore.Unix(), b.LimitMin, b.LimitMax, b.ExpiryPadSeconds, b.Now.Unix(), limit)
 }
 
 // queryReconcile runs one bounded reconciliation query. The where clause and

@@ -158,16 +158,21 @@ explanation. The full list, and the setting behind each, is in the
 
 `POST /api/v1/calls/{call_id}/hangup` ends a call. It takes no body and needs the
 session cookie and the CSRF token. The owner may end their own call, and an
-administrator may end any call. Any other caller gets `404 not_found`, and the
-refusal is audited with no owner in it.
+administrator may end any call through this REST route. Any other caller gets
+`404 not_found`, and that refusal is audited with outcome `denied` and no owner in
+it. A missing CSRF token gets `403 forbidden` and changes nothing.
 
 The response is `200` with `{"call_id", "technical_status", "task_outcome"}`. It
 is the state the request leaves the call in. A live call reports `ending` until
 Telnyx confirms the hangup. A call that has not been dialed is ended without a
-dial. Repeating the request is safe: it returns the current state and does
-not dial or hang up again. The MCP tool `hangup_call` does the same and needs the
-`mcp:call` scope. Each successful or refused request writes one `call.hangup`
-audit row. See the [calls guide](calls-telnyx.md#emergency-hangup).
+dial. A repeat request returns the current state. For a call still `ending`, it
+may send the hangup again, but every send carries the same command id, so Telnyx
+receives one distinct command. The MCP tool `hangup_call` does the same for the caller's own calls and
+needs the `mcp:call` scope. MCP actors are never administrators.
+
+Only a successful hangup and a cross-owner refusal write a `call.hangup` audit row.
+A `404` for a missing call, an invalid `call_id`, a missing scope, and a CSRF
+refusal write none. See the [calls guide](calls-telnyx.md#emergency-hangup).
 
 ## Call policy
 

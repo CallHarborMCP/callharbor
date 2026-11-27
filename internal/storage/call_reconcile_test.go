@@ -156,7 +156,7 @@ func TestListOrphanedTerminalStopsAtMaxAttempts(t *testing.T) {
 	}
 
 	cutoff := reconcileNow(t).Add(time.Minute)
-	got, err := s.ListOrphanedTerminal(ctx, cutoff, 3, 10)
+	got, err := s.ListOrphanedTerminal(ctx, orphanBounds(t, cutoff, 3), 10)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -169,12 +169,56 @@ func TestListOrphanedTerminalStopsAtMaxAttempts(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	got, err = s.ListOrphanedTerminal(ctx, cutoff, 3, 10)
+	got, err = s.ListOrphanedTerminal(ctx, orphanBounds(t, cutoff, 3), 10)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(got) != 0 {
 		t.Fatalf("orphans after max attempts = %d, want none", len(got))
+	}
+}
+
+// orphanBounds builds the sweep bounds the worker uses by default: the Telnyx
+// clamp of 30 to 14400 seconds, a 30 second ring timeout and a 60 second grace.
+func orphanBounds(t *testing.T, lastHangupBefore time.Time, maxAttempts int) OrphanBounds {
+	t.Helper()
+	return OrphanBounds{
+		LastHangupBefore: lastHangupBefore,
+		Now:              reconcileNow(t),
+		MaxAttempts:      maxAttempts,
+		LimitMin:         30,
+		LimitMax:         14400,
+		ExpiryPadSeconds: 30 + 60,
+	}
+}
+
+// TestListOrphanedTerminalSkipsLegsPastTheirDeadline covers should-fix 3. A
+// terminal call with a control id whose leg deadline has passed (created_at plus
+// the clamped time limit, ring timeout and grace) must not be hung up again. A
+// call created recently, whose leg may still be up, is still listed.
+func TestListOrphanedTerminalSkipsLegsPastTheirDeadline(t *testing.T) {
+	s := openMigrated(t, filepath.Join(t.TempDir(), "reconcile.db"))
+	seedTenants(t, s)
+	ctx := context.Background()
+	seedLiveCall(t, s, "c-old", "ended", "v3:old")
+	seedLiveCall(t, s, "c-recent", "ended", "v3:recent")
+	// The old call was created long before now, with a 600 second cap: its deadline
+	// (created + 600 + 90) has passed. The recent one is still inside its window.
+	old := reconcileNow(t).Add(-2 * time.Hour).UTC().Format(storageTime)
+	recent := reconcileNow(t).Add(-100 * time.Second).UTC().Format(storageTime)
+	if _, err := s.db.ExecContext(ctx, `UPDATE calls SET created_at = ?, max_duration_seconds = 600, hangup_attempts = 0 WHERE id = 'c-old'`, old); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.db.ExecContext(ctx, `UPDATE calls SET created_at = ?, max_duration_seconds = 600, hangup_attempts = 0 WHERE id = 'c-recent'`, recent); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := s.ListOrphanedTerminal(ctx, orphanBounds(t, reconcileNow(t).Add(time.Minute), 3), 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0].ID != "c-recent" {
+		t.Fatalf("orphans = %+v, want only c-recent (c-old is past its deadline)", got)
 	}
 }
 
