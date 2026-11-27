@@ -176,12 +176,12 @@ Task codes name why the outcome is what it is:
     `don't`, `isn't`, `unable`, `nobody`, `nothing`, `neither`, `nor` and
     `without`. So `we cannot book a table for two` does not verify `book a table
     for two`;
-  - a contraction ending in `nt`, such as `didn't`, `couldn't`, `wasn't`,
+  - an n't contraction (see below), such as `didn't`, `couldn't`, `wasn't`,
     `wouldn't` or `haven't`, appears in that window;
   - the quote itself is negative: it contains a negation word or contraction, or
     `no` followed by a word with no comma or sentence punctuation between them.
     So `could not book a table for two` and `no table for two at eight` never
-    verify a met criterion;
+    verify a met criterion.
 - An apostrophe joins the letters on either side into one word, so `can't` is
   `cant`. The apostrophe characters are `'`, `’` (U+2019), `‘` (U+2018), `ʼ`
   (U+02BC), `＇` (U+FF07), the prime `′` (U+2032) and the backtick. A word is
