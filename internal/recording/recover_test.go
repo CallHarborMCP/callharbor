@@ -86,12 +86,12 @@ func TestRecoverCrashedFileKeepsAuthenticatedPrefix(t *testing.T) {
 	if res.PlainBytes != 2*SegmentSize {
 		t.Fatalf("authenticated bytes = %d, want %d", res.PlainBytes, 2*SegmentSize)
 	}
-	// The file on disk now ends at the last authenticated segment.
+	// The file ends with an empty final segment sealed after the two full ones.
 	st, err := os.Stat(filepath.Join(dataDir, rel))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if want := int64(HeaderSize) + 2*(SegmentSize+TagSize); st.Size() != want {
+	if want := int64(HeaderSize) + 2*(SegmentSize+TagSize) + TagSize; st.Size() != want {
 		t.Fatalf("size after recovery = %d, want %d", st.Size(), want)
 	}
 }
@@ -116,7 +116,9 @@ func TestRecoverTruncatesTornTail(t *testing.T) {
 		t.Fatalf("authenticated bytes = %d, want %d", res.PlainBytes, SegmentSize)
 	}
 	st, _ := os.Stat(path)
-	if st.Size() != int64(HeaderSize)+SegmentSize+TagSize {
+	// The torn bytes are gone; one full segment and the sealed empty final
+	// segment remain.
+	if st.Size() != int64(HeaderSize)+SegmentSize+TagSize+TagSize {
 		t.Fatalf("torn tail not truncated: size %d", st.Size())
 	}
 }

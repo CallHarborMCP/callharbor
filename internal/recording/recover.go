@@ -48,7 +48,8 @@ func Recover(in RecoverInput) (RecoverResult, error) {
 		return RecoverResult{}, ErrNoKeyring
 	}
 	path := filepath.Join(in.DataDir, filepath.FromSlash(in.RelPath))
-	f, err := os.OpenFile(path, os.O_RDWR, 0) // #nosec G304 -- RelPath is checked against the id-derived path by the caller before recovery
+	// #nosec G304 -- path is joined from in.DataDir and in.RelPath. RelPath must be the id-derived path; callstream.recoverOne checks that before calling Recover, and the caller must do the same.
+	f, err := os.OpenFile(path, os.O_RDWR, 0)
 	if errors.Is(err, os.ErrNotExist) {
 		return RecoverResult{}, ErrMissing
 	}
@@ -79,28 +80,50 @@ func Recover(in RecoverInput) (RecoverResult, error) {
 	if err != nil {
 		return RecoverResult{}, fmt.Errorf("recording: stat: %w", err)
 	}
-	keep, plain, complete, err := scanSegments(f, st.Size(), aead, aad)
+	keep, plain, complete, next, err := scanSegments(f, st.Size(), aead, aad)
 	if err != nil {
 		return RecoverResult{}, err
 	}
 	// Truncate only when some segment authenticated. With none, a short tail is
 	// indistinguishable from a wrong key over a torn write, so the file is kept.
-	if keep != st.Size() && keep > HeaderSize {
+	if keep > HeaderSize && keep != st.Size() {
 		if err := f.Truncate(keep); err != nil {
 			return RecoverResult{}, fmt.Errorf("recording: truncate tail: %w", err)
 		}
-		if err := f.Sync(); err != nil {
-			return RecoverResult{}, fmt.Errorf("recording: sync after truncate: %w", err)
+	}
+	if complete {
+		return RecoverResult{PlainBytes: plain, Complete: true, SampleRate: h.SampleRate}, nil
+	}
+	// The authenticated prefix has no final segment, so the reader could not
+	// open it. Seal an empty final segment after the prefix, at the next
+	// counter, so the recovered audio is readable. Only a prefix that ends on a
+	// full segment is resealed; the scan never keeps a short segment as non-final.
+	if keep > HeaderSize {
+		if err := sealPrefixFinal(f, keep, next, aead, aad); err != nil {
+			return RecoverResult{}, err
 		}
 	}
-	return RecoverResult{PlainBytes: plain, Complete: complete, SampleRate: h.SampleRate}, nil
+	return RecoverResult{PlainBytes: plain, Complete: false, SampleRate: h.SampleRate}, nil
+}
+
+// sealPrefixFinal appends an empty final segment at counter segments and syncs
+// the file. The caller guarantees the prefix holds only full non-final segments.
+func sealPrefixFinal(f *os.File, off int64, counter uint64, aead cipher.AEAD, aad []byte) error {
+	sealed := sealSegment(aead, aad, counter, true, nil)
+	if _, err := f.WriteAt(sealed, off); err != nil {
+		return fmt.Errorf("recording: reseal final segment: %w", err)
+	}
+	if err := f.Sync(); err != nil {
+		return fmt.Errorf("recording: sync reseal: %w", err)
+	}
+	return nil
 }
 
 // scanSegments walks the segments and returns the byte offset just past the
-// last authenticated segment, the plaintext it covers, and whether the final
-// flag authenticated. A non-final segment is always full, so a short segment
-// is the tail and ends the walk.
-func scanSegments(f io.ReaderAt, size int64, aead cipher.AEAD, aad []byte) (keep, plain int64, complete bool, err error) {
+// last authenticated segment, the plaintext it covers, whether the final flag
+// authenticated, and the counter the next segment would carry. A non-final
+// segment is always full, so a short segment is the tail and ends the walk.
+func scanSegments(f io.ReaderAt, size int64, aead cipher.AEAD, aad []byte) (keep, plain int64, complete bool, next uint64, err error) {
 	stride := int64(SegmentSize + TagSize)
 	off := int64(HeaderSize)
 	var idx uint64
@@ -108,28 +131,28 @@ func scanSegments(f io.ReaderAt, size int64, aead cipher.AEAD, aad []byte) (keep
 	for {
 		remain := size - off
 		if remain <= 0 {
-			return off, plain, false, nil
+			return off, plain, false, idx, nil
 		}
 		n := min(remain, stride)
 		sealed := buf[:n]
 		if _, err := f.ReadAt(sealed, off); err != nil && (!errors.Is(err, io.EOF) || int64(n) != remain) {
-			return off, plain, false, fmt.Errorf("recording: read during recovery: %w", err)
+			return off, plain, false, idx, fmt.Errorf("recording: read during recovery: %w", err)
 		}
 		// Try as final first: a final segment is the only one shorter than full
 		// that can authenticate. A full segment authenticates as non-final.
 		if pt, ok := tryOpen(aead, aad, idx, true, sealed); ok {
-			return off + n, plain + int64(len(pt)), true, nil
+			return off + n, plain + int64(len(pt)), true, idx + 1, nil
 		}
 		if n < stride {
 			// Short and not final: a torn tail. Keep what authenticated before.
-			return off, plain, false, nil
+			return off, plain, false, idx, nil
 		}
 		pt, ok := tryOpen(aead, aad, idx, false, sealed)
 		if !ok {
 			// A full-size segment that fails is damage or a wrong key, not a torn
 			// write: a crash can only leave a shorter tail. Refuse the file rather
 			// than truncate away the evidence.
-			return off, plain, false, ErrCorrupt
+			return off, plain, false, idx, ErrCorrupt
 		}
 		plain += int64(len(pt))
 		off += stride

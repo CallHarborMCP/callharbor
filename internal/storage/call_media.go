@@ -57,6 +57,15 @@ func (s *Store) LoadCallForMedia(ctx context.Context, callID string) (MediaCall,
 	m.ControlID = control.String
 	m.WebhookKeySecretID = key.String
 	m.RecordEffective = recordEffective == 1 && optIn == 1
+	if recordEffective == 1 && optIn == 0 {
+		// The owner opted out before media start. The stored effective flag is
+		// cleared, so the call view stops reporting recording for this call.
+		// The clear is conditional, so a repeated read changes nothing.
+		if _, err := s.db.ExecContext(ctx, `UPDATE calls SET record_effective = 0
+			WHERE id = ? AND record_effective = 1`, callID); err != nil {
+			return MediaCall{}, fmt.Errorf("clear record effective: %w", err)
+		}
+	}
 	return m, nil
 }
 

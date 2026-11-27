@@ -23,6 +23,7 @@ type RecordingStore interface {
 	FinalizeRecording(ctx context.Context, f storage.RecordingFinal) (bool, error)
 	OwnerRecordingRetentionDays(ctx context.Context, ownerUserID string) (int, error)
 	GetRecordingForCall(ctx context.Context, ownerUserID, callID string) (storage.Recording, error)
+	MarkRecordingReconnected(ctx context.Context, ownerUserID, callID, flag string) (bool, error)
 }
 
 // callRecording is one call's recorder with the storage state it finishes.
@@ -45,14 +46,27 @@ type Recording struct {
 
 // startRecording opens the recorder for a call whose media stream is attaching.
 // It returns nil when the call is not recorded. A second stream for a call that
-// already has a recording row creates nothing, so it returns nil as well.
+// already has a recording row creates no new one. A finalized 'complete' row is
+// marked partial, since the reconnected audio is not in it.
+//
+// A failure never aborts the call: the returned error means the call runs
+// without a tap. Any row this function inserted is finalized as failed before
+// the error returns, so no row is left in 'recording' for a call that is not
+// being recorded.
 func startRecording(ctx context.Context, cfg *Recording, st storage.MediaCall, leg audio.Format, start time.Time) (*callRecording, error) {
 	if cfg == nil || cfg.Ring == nil || !st.RecordEffective {
 		return nil, nil
 	}
-	if _, err := cfg.Store.GetRecordingForCall(ctx, st.OwnerUserID, st.ID); err == nil {
+	existing, err := cfg.Store.GetRecordingForCall(ctx, st.OwnerUserID, st.ID)
+	switch {
+	case err == nil:
+		if existing.Status == storage.RecordingStatusComplete {
+			if _, err := cfg.Store.MarkRecordingReconnected(ctx, st.OwnerUserID, st.ID, recording.FlagStreamReconnectedNotRecorded); err != nil {
+				return nil, fmt.Errorf("mark reconnected recording: %w", err)
+			}
+		}
 		return nil, nil
-	} else if !errors.Is(err, storage.ErrRecordingNotFound) {
+	case !errors.Is(err, storage.ErrRecordingNotFound):
 		return nil, fmt.Errorf("recording lookup: %w", err)
 	}
 	id, err := newRecordingID()
@@ -90,11 +104,15 @@ func startRecording(ctx context.Context, cfg *Recording, st storage.MediaCall, l
 	rec, err := recording.New(recording.Config{Leg: leg, Start: now}, w)
 	if err != nil {
 		_ = w.Close()
+		failRecordingRow(ctx, cfg, row, now)
 		return nil, err
 	}
 	if err := cfg.Store.SetRecordingFormat(ctx, id, leg.SampleRate); err != nil {
 		_ = rec.Abort()
-		return nil, err
+		// The row exists and its file is open. Finalize it failed so the row is
+		// not left in 'recording'. Nothing is served from it.
+		failRecordingRow(ctx, cfg, row, now)
+		return nil, fmt.Errorf("set recording format: %w", err)
 	}
 	return &callRecording{rec: rec, store: cfg.Store, row: row, start: now}, nil
 }
@@ -126,6 +144,25 @@ func (c *callRecording) Finish(ctx context.Context, end time.Time, unconfirmed b
 		ExpiresAt: expires,
 	})
 	return err
+}
+
+// failRecordingRow finalizes a row this call created but could not start. Its
+// file is closed and holds no audio the call can use, so it is failed, not
+// served. A finalize error is only logged: the row is then left for the startup
+// sweep, which settles any 'recording' row.
+func failRecordingRow(ctx context.Context, cfg *Recording, row storage.Recording, now time.Time) {
+	days, err := cfg.Store.OwnerRecordingRetentionDays(ctx, row.OwnerUserID)
+	if err != nil {
+		return
+	}
+	expires, err := storage.RecordingExpiry(row.CreatedAt, days)
+	if err != nil {
+		return
+	}
+	_, _ = cfg.Store.FinalizeRecording(ctx, storage.RecordingFinal{
+		ID: row.ID, Status: storage.RecordingStatusFailed,
+		FinalizedAt: now.UTC().Format(storage.TimeLayout), ExpiresAt: expires,
+	})
 }
 
 func newRecordingID() (string, error) {

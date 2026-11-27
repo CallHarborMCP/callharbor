@@ -138,14 +138,6 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	}
 }
 
-// WithPlannedRoutes mounts extra planned GET answers, for tests that exercise
-// the planned mechanism while no documented operation is planned. Production
-// code never calls it. It returns h for chaining.
-func (h *Handler) WithPlannedRoutes(routes ...Route) *Handler {
-	h.extraPlanned = routes
-	return h
-}
-
 // planned answers a documented but unimplemented operation. It applies the same
 // session check as the implemented routes, so an anonymous request gets 401 as
 // everywhere else on /api/v1. A signed-in request gets 404 not_found, the same

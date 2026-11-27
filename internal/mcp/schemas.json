@@ -447,7 +447,9 @@
               "agent_playout_unconfirmed",
               "write_failed",
               "backpressure",
-              "recovered_after_restart"
+              "recovered_after_restart",
+              "agent_overlap_dropped",
+              "stream_reconnected_not_recorded"
             ],
             "type": "string"
           },

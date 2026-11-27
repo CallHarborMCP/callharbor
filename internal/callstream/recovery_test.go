@@ -172,3 +172,61 @@ func TestRecoverInterruptedWithoutKeyLogsOneWarning(t *testing.T) {
 		t.Fatalf("no key: finalized %d rows, want 0", len(store.finalized))
 	}
 }
+
+// A row whose stored path is not the one its id derives is skipped: nothing is
+// recovered from it and nothing is finalized.
+func TestRecoverInterruptedSkipsMismatchedStoragePath(t *testing.T) {
+	dataDir := t.TempDir()
+	ring := testRing(t)
+	plain := bytes.Repeat([]byte{9}, recording.SegmentSize)
+	row := crashedRecording(t, dataDir, ring, "rec-mismatch", plain)
+	row.StoragePath = "recordings/alice/someone-else.chrec"
+	store := &fakeRecoveryStore{rows: []storage.Recording{row}}
+	now := func() time.Time { return time.Date(2026, 11, 28, 1, 0, 0, 0, time.UTC) }
+
+	n, err := RecoverInterrupted(context.Background(), store, ring, dataDir, now, nil)
+	if err != nil || n != 0 {
+		t.Fatalf("settled = %d, err = %v; want 0 and no error", n, err)
+	}
+	if len(store.finalized) != 0 {
+		t.Fatalf("mismatched row was finalized: %+v", store.finalized)
+	}
+}
+
+// A file that does not authenticate under the configured key stays 'recording'
+// and is left untouched, so a later run with the right key can settle it.
+func TestRecoverInterruptedWrongKeyLeavesRowUnsettled(t *testing.T) {
+	dataDir := t.TempDir()
+	ring := testRing(t)
+	plain := bytes.Repeat([]byte{7}, recording.SegmentSize+10)
+	row := crashedRecording(t, dataDir, ring, "rec-wrongkey", plain)
+	other, err := secrets.NewKeyring(1, map[int][]byte{1: bytes.Repeat([]byte{0x44}, 32)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := &fakeRecoveryStore{rows: []storage.Recording{row}}
+	now := func() time.Time { return time.Date(2026, 11, 28, 1, 0, 0, 0, time.UTC) }
+
+	n, _ := RecoverInterrupted(context.Background(), store, other, dataDir, now, nil)
+	if n != 0 || len(store.finalized) != 0 {
+		t.Fatalf("wrong key settled the row: n=%d finalized=%+v", n, store.finalized)
+	}
+}
+
+// A recovered row gets its sample rate from the authenticated header, so a row
+// that never had one set is still playable with the right format.
+func TestRecoverInterruptedTakesSampleRateFromHeader(t *testing.T) {
+	dataDir := t.TempDir()
+	ring := testRing(t)
+	plain := bytes.Repeat([]byte{5}, recording.SegmentSize)
+	row := crashedRecording(t, dataDir, ring, "rec-rate", plain)
+	store := &fakeRecoveryStore{rows: []storage.Recording{row}}
+	now := func() time.Time { return time.Date(2026, 11, 28, 1, 0, 0, 0, time.UTC) }
+
+	if _, err := RecoverInterrupted(context.Background(), store, ring, dataDir, now, nil); err != nil {
+		t.Fatal(err)
+	}
+	if got := store.finalized[0].SampleRate; got != 8000 {
+		t.Fatalf("finalize sample rate = %d, want 8000 from the header", got)
+	}
+}

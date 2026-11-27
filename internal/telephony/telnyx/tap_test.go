@@ -2,6 +2,7 @@ package telnyx_test
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"testing"
 	"time"
@@ -137,3 +138,43 @@ func TestCallerTapReceivesRTPTimestampAndCutTime(t *testing.T) {
 		t.Fatalf("cut time = %v, want %v", tap.cuts, now)
 	}
 }
+
+// Audio the provider never received is not recorded as played: a failed send
+// returns its error and the tap is not called for that chunk.
+func TestAgentTapSkipsChunkWhenSendFails(t *testing.T) {
+	now := time.Date(2026, 11, 27, 12, 0, 0, 0, time.UTC)
+	tap := &recTap{}
+	b, err := voicebridge.New(g711, g711, time.Millisecond, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fail := true
+	s, err := telnyx.NewBridgeSink(b, func(context.Context, []byte) error {
+		if fail {
+			return errSendDown
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.SetClock(func() time.Time { return now })
+	s.Tap = tap
+	ctx := context.Background()
+
+	if err := s.AgentAudio(ctx, audio.SourceRef{ItemID: "a", ContentIndex: 0}, ulawChunk(160)); err == nil {
+		t.Fatal("a failed send returned no error")
+	}
+	if len(tap.agent) != 0 {
+		t.Fatalf("tap saw %d chunks the provider never received", len(tap.agent))
+	}
+	fail = false
+	if err := s.AgentAudio(ctx, audio.SourceRef{ItemID: "a", ContentIndex: 1}, ulawChunk(160)); err != nil {
+		t.Fatal(err)
+	}
+	if len(tap.agent) != 1 {
+		t.Fatalf("tap after a successful send = %d chunks, want 1", len(tap.agent))
+	}
+}
+
+var errSendDown = errors.New("send down")

@@ -60,23 +60,38 @@ func RecoverInterrupted(ctx context.Context, store RecoveryStore, ring *secrets.
 }
 
 func recoverOne(ctx context.Context, store RecoveryStore, ring *secrets.Keyring, dataDir string, now func() time.Time, r storage.Recording) error {
+	// The stored path must be the one the id derives. A row that names any
+	// other file is skipped and left untouched: the sweep never recovers or
+	// finalizes a file it cannot place.
+	if r.StoragePath != recording.RelPath(r.OwnerUserID, r.ID) {
+		return fmt.Errorf("recording %s: storage path does not match its id; skipped", r.ID)
+	}
 	flags := append([]string{recording.FlagRecoveredAfterRestart}, r.QualityFlags...)
 	status := storage.RecordingStatusFailed
 	var bytes, duration int64
+	sampleRate := r.SampleRate
 	res, err := recording.Recover(recording.RecoverInput{
 		DataDir: dataDir, RelPath: r.StoragePath, RecordingID: r.ID,
 		OwnerID: r.OwnerUserID, KeyVersion: r.KeyVersion, Ring: ring,
 	})
 	switch {
-	case errors.Is(err, recording.ErrMissing), errors.Is(err, recording.ErrNoKeyring):
-		// Nothing can be authenticated: the row closes as failed, no audio served.
+	case errors.Is(err, recording.ErrMissing):
+		// The file is gone: nothing can ever be served, so the row closes.
+	case errors.Is(err, recording.ErrCorrupt), errors.Is(err, recording.ErrBadHeader),
+		errors.Is(err, secrets.ErrUnknownKeyVersion):
+		// Wrong or rotated master key, or damage to segment 0. The key may come
+		// back, so the row stays 'recording' and the file is left untouched.
+		return fmt.Errorf("recording %s: file does not authenticate under the configured key; left unsettled", r.ID)
 	case err != nil:
-		// Corrupt or unreadable: failed, not served, file left for inspection.
+		return err
 	default:
 		bytes = res.PlainBytes
-		if bytes > 0 && res.SampleRate > 0 {
+		if res.SampleRate > 0 {
+			sampleRate = res.SampleRate
+		}
+		if bytes > 0 && sampleRate > 0 {
 			status = storage.RecordingStatusPartial
-			duration = bytes / 4 * 1000 / int64(res.SampleRate)
+			duration = bytes / 4 * 1000 / int64(sampleRate)
 		}
 	}
 	days, err := store.OwnerRecordingRetentionDays(ctx, r.OwnerUserID)
@@ -89,6 +104,7 @@ func recoverOne(ctx context.Context, store RecoveryStore, ring *secrets.Keyring,
 	}
 	_, err = store.FinalizeRecording(ctx, storage.RecordingFinal{
 		ID: r.ID, Status: status, ByteCount: bytes, DurationMS: duration,
+		SampleRate:   sampleRate,
 		QualityFlags: dedupe(flags),
 		FinalizedAt:  now().UTC().Format(storage.TimeLayout), ExpiresAt: expires,
 	})

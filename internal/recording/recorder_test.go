@@ -174,25 +174,60 @@ func TestRecorderDropsStaleAndDuplicateFrames(t *testing.T) {
 	}
 }
 
-func TestRecorderReanchorsForwardOnlyWhenWallClockRunsAhead(t *testing.T) {
+// A media clock that stalls for longer than the window re-anchors forward once
+// the lag has persisted for reanchorWindow. Frames arriving during the lag are
+// behind the flushed point and are dropped; frames after the re-anchor land at
+// their wall-clock positions.
+func TestRecorderReanchorsForwardOnSustainedLag(t *testing.T) {
 	sink := &memSink{}
 	r := newRec(t, sink)
 	r.CallerPayload(0, l16(samplesMS(20), 1000), at(0))
-	// The media clock stalls: the next frame's wall time is 2 s on while the
-	// RTP clock only advanced 20 ms. The track re-anchors forward.
-	r.CallerPayload(rtpMS(20), l16(samplesMS(20), 2000), at(2000))
+	r.CallerPayload(rtpMS(20), l16(samplesMS(20), 1100), at(20))
+	// The media clock stalls for 1.5 s: from frame 2 on, every frame arrives
+	// 1.5 s late, and then the stream keeps its 20 ms cadence.
+	const stall = 1500
+	for j := 2; j <= 80; j++ {
+		r.CallerPayload(rtpMS(20*j), l16(samplesMS(20), int16(j)), at(stall+20*(j-2)))
+	}
 	res := finish(t, r, at(4000), false)
 	caller := channel(sink.pcm(), 0)
-	// The re-anchored frame lands near its wall time, not at the RTP offset.
-	if caller[samplesMS(20)] == 2000 {
-		t.Fatal("stalled frame was not re-anchored forward")
-	}
-	// The frame arrived at 2000 ms, so it ends there: it starts 20 ms earlier.
-	if caller[samplesMS(2000)-samplesMS(20)] != 2000 {
-		t.Fatalf("re-anchored frame not ending at wall time: %d", caller[samplesMS(2000)-samplesMS(20)])
+	// Frame 60 arrives at wall 2660 ms and is 20 ms long, so once the track has
+	// re-anchored to wall-clock it occupies 2640..2660 ms.
+	if got := caller[samplesMS(2640)]; got != 60 {
+		t.Fatalf("frame 60 at 2640 ms = %d, want 60 after re-anchor", got)
 	}
 	if !hasFlag(res, FlagCallerGapFilled) {
 		t.Fatal("re-anchor not flagged as a gap")
+	}
+	if !hasFlag(res, FlagCallerFramesDropped) {
+		t.Fatal("frames behind the flushed point during the stall were not flagged")
+	}
+}
+
+// One late frame is not a sustained lag: the frames after it keep their RTP
+// positions, and the track is not shifted.
+func TestRecorderLateFrameDoesNotShiftLaterAudio(t *testing.T) {
+	sink := &memSink{}
+	r := newRec(t, sink)
+	for j := 0; j <= 20; j++ {
+		if j == 5 {
+			continue
+		}
+		r.CallerPayload(rtpMS(20*j), l16(samplesMS(20), int16(j+1)), at(20*j))
+		if j == 6 {
+			// Frame 5 is delivered 700 ms late, after frame 6.
+			r.CallerPayload(rtpMS(100), l16(samplesMS(20), 99), at(700))
+		}
+	}
+	res := finish(t, r, at(3000), false)
+	caller := channel(sink.pcm(), 0)
+	for j := 7; j <= 20; j++ {
+		if got := caller[samplesMS(20*j)]; got != int16(j+1) {
+			t.Fatalf("frame %d at %d ms = %d, want %d: a late frame shifted later audio", j, 20*j, got, j+1)
+		}
+	}
+	if !hasFlag(res, FlagCallerFramesDropped) {
+		t.Fatal("the late frame was not dropped and flagged")
 	}
 }
 
@@ -309,8 +344,10 @@ func TestRecorderWriteFailureMakesPartialAndKeepsCall(t *testing.T) {
 	// Taps keep working after the failure: the call must not error out.
 	r.Cut(at(2500))
 	res, err := r.Finish(at(3000), false)
-	if res.Status != StatusPartial || !hasFlag(res, FlagWriteFailed) {
-		t.Fatalf("result = %+v, err=%v, want partial with write_failed", res, err)
+	// memSink cannot reseal, so nothing is authenticated: the recording is
+	// failed with no bytes, never partial with bytes the file cannot serve.
+	if res.Status != StatusFailed || res.ByteCount != 0 || !hasFlag(res, FlagWriteFailed) {
+		t.Fatalf("result = %+v, err=%v, want failed with no bytes and write_failed", res, err)
 	}
 }
 

@@ -19,8 +19,9 @@ type Writer struct {
 	buf     []byte
 	// bytes counts plaintext bytes accepted, including those still buffered.
 	bytes int64
-	// synced is the plaintext byte count covered by the last successful fsync
-	// of committed segments.
+	// sealed counts plaintext bytes that were sealed and written in full
+	// segments. Buffered bytes are not counted: they are never in the file.
+	sealed int64
 	closed bool
 }
 
@@ -37,7 +38,8 @@ func NewWriter(path string, h Header, key []byte, recordingID, ownerID string) (
 	if err != nil {
 		return nil, err
 	}
-	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600) // #nosec G304 -- path comes from Path, which validates the owner and recording ids
+	// O_RDWR: a failed writer reseals in place, which reads the file back.
+	f, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE|os.O_EXCL, 0o600) // #nosec G304 -- path comes from Path, which validates the owner and recording ids
 	if err != nil {
 		return nil, fmt.Errorf("recording: create file: %w", err)
 	}
@@ -88,9 +90,14 @@ func (w *Writer) emit(final bool) error {
 		return fmt.Errorf("recording: write segment: %w", err)
 	}
 	w.counter++
+	w.sealed += int64(len(w.buf))
 	w.buf = w.buf[:0]
 	return nil
 }
+
+// SealedBytes is the plaintext byte count written in full segments so far.
+// After a write failure it is the upper bound a reseal can authenticate.
+func (w *Writer) SealedBytes() int64 { return w.sealed }
 
 // Sync makes every written byte durable. It does not seal the buffered
 // plaintext: a partial segment is recovered by the crash path as an
@@ -108,6 +115,45 @@ func (w *Writer) Sync() error {
 
 // Bytes is the plaintext byte count accepted so far.
 func (w *Writer) Bytes() int64 { return w.bytes }
+
+// Reseal closes a writer whose writes failed. It runs the same authenticated
+// prefix scan as crash recovery on the file as it stands: the torn tail is
+// truncated, an empty final segment is sealed after the last authenticated
+// segment, and the file is synced. The buffered plaintext is discarded, since
+// it never reached the file. It returns the authenticated PCM length, which the
+// caller records as the byte count. An error means nothing was made readable.
+func (w *Writer) Reseal() (int64, error) {
+	w.closed = true
+	st, err := w.f.Stat()
+	if err != nil {
+		_ = w.f.Close()
+		return 0, fmt.Errorf("recording: stat failed writer: %w", err)
+	}
+	keep, plain, complete, next, err := scanSegments(w.f, st.Size(), w.aead, w.aad)
+	if err != nil {
+		_ = w.f.Close()
+		return 0, err
+	}
+	if complete {
+		// A final segment was written before the failure. Nothing to add.
+		return plain, w.f.Close()
+	}
+	if keep <= int64(HeaderSize) {
+		_ = w.f.Close()
+		return 0, ErrCorrupt
+	}
+	if keep != st.Size() {
+		if err := w.f.Truncate(keep); err != nil {
+			_ = w.f.Close()
+			return 0, fmt.Errorf("recording: truncate failed writer: %w", err)
+		}
+	}
+	if err := sealPrefixFinal(w.f, keep, next, w.aead, w.aad); err != nil {
+		_ = w.f.Close()
+		return 0, err
+	}
+	return plain, w.f.Close()
+}
 
 // Close seals the buffered tail as the final segment, syncs, and closes the
 // file. The final segment may be empty; the final flag is what makes the

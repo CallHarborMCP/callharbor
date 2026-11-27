@@ -382,9 +382,6 @@ func (s *BridgeSink) AgentAudio(ctx context.Context, src audio.SourceRef, provid
 		playStart = now
 	}
 	payload, mark, err := s.bridge.AgentAudio(src, provider, now)
-	if err == nil && s.Tap != nil {
-		s.Tap.AgentPayload(playStart, payload, now)
-	}
 	s.mu.Unlock()
 	if err != nil {
 		return err
@@ -395,6 +392,12 @@ func (s *BridgeSink) AgentAudio(ctx context.Context, src audio.SourceRef, provid
 	}
 	if err := s.send(ctx, media); err != nil {
 		return err
+	}
+	// Tapped only once the media is on the wire. wmu is still held, so a Cut
+	// cannot interleave between the send and the tap, and audio the provider
+	// never received is not recorded as played.
+	if s.Tap != nil {
+		s.Tap.AgentPayload(playStart, payload, now)
 	}
 	markMsg, err := MarkMessage(mark)
 	if err != nil {

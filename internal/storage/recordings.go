@@ -84,12 +84,15 @@ func (s *Store) FinalizeRecording(ctx context.Context, f RecordingFinal) (bool, 
 	default:
 		return false, fmt.Errorf("storage: finalize recording: status %q", f.Status)
 	}
+	// sample_rate is set only when the finalize knows it. COALESCE keeps a rate
+	// that the writer already stored and fills a NULL one from the header.
 	res, err := s.db.ExecContext(ctx, `UPDATE recordings
 		SET status = ?, byte_count = ?, duration_ms = ?, sha256 = ?, quality_flags = ?,
-		    finalized_at = ?, expires_at = ?
+		    finalized_at = ?, expires_at = ?,
+		    sample_rate = COALESCE(sample_rate, ?)
 		WHERE id = ? AND status = 'recording'`,
 		f.Status, f.ByteCount, f.DurationMS, nullIfEmpty(f.SHA256), flags,
-		f.FinalizedAt, f.ExpiresAt, f.ID)
+		f.FinalizedAt, f.ExpiresAt, nullIfZero(f.SampleRate), f.ID)
 	if err != nil {
 		return false, fmt.Errorf("finalize recording: %w", err)
 	}
@@ -102,11 +105,13 @@ func (s *Store) FinalizeRecording(ctx context.Context, f RecordingFinal) (bool, 
 
 // RecordingFinal is the terminal state written by FinalizeRecording.
 type RecordingFinal struct {
-	ID           string
-	Status       string
-	ByteCount    int64
-	DurationMS   int64
-	SHA256       string
+	ID         string
+	Status     string
+	ByteCount  int64
+	DurationMS int64
+	SHA256     string
+	// SampleRate fills sample_rate when it is still NULL. Zero leaves it alone.
+	SampleRate   int
 	QualityFlags []string
 	FinalizedAt  string
 	ExpiresAt    string
@@ -146,6 +151,28 @@ func (s *Store) GetRecordingForCall(ctx context.Context, ownerUserID, callID str
 		r.QualityFlags = []string{}
 	}
 	return r, nil
+}
+
+// MarkRecordingReconnected moves a finalized 'complete' recording of one call to
+// 'partial' and appends flag to its quality flags, once. It changes nothing for
+// any other status and reports whether a row changed. A stream that reconnects
+// after the recording was finalized uses it, so the stored audio is never
+// presented as the whole call.
+func (s *Store) MarkRecordingReconnected(ctx context.Context, ownerUserID, callID, flag string) (bool, error) {
+	res, err := s.db.ExecContext(ctx, `UPDATE recordings
+		SET status = 'partial',
+		    quality_flags = CASE WHEN EXISTS (SELECT 1 FROM json_each(quality_flags) WHERE value = ?)
+		        THEN quality_flags ELSE json_insert(quality_flags, '$[#]', ?) END
+		WHERE call_id = ? AND owner_user_id = ? AND status = 'complete'`,
+		flag, flag, callID, ownerUserID)
+	if err != nil {
+		return false, fmt.Errorf("mark recording reconnected: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("mark recording reconnected: %w", err)
+	}
+	return n == 1, nil
 }
 
 // ListRecordingsByStatus returns every recording row with the given status,
@@ -211,4 +238,11 @@ func nullIfEmpty(s string) any {
 		return nil
 	}
 	return s
+}
+
+func nullIfZero(n int) any {
+	if n == 0 {
+		return nil
+	}
+	return n
 }

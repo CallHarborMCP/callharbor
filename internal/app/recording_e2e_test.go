@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/CallHarborMCP/callharbor/internal/realtime"
+	"github.com/CallHarborMCP/callharbor/internal/storage"
 	"github.com/CallHarborMCP/callharbor/internal/telephony/telnyx/telnyxfake"
 )
 
@@ -24,6 +25,25 @@ const (
 	recLoudRMS   = 1000.0
 	recSilentRMS = 50.0
 )
+
+// recPlayoutWait is how long the queued agent audio plays before the barge-in.
+// The recording keeps only the agent audio that played before the cut, so the
+// expected agent audio is about this many 20 ms blocks.
+const recPlayoutWait = 300 * time.Millisecond
+
+// recAgentQueued is the number of agent chunks the script queues, one 20 ms
+// block each, so the queued agent audio is 600 ms.
+const recAgentQueued = 30
+
+// recAgentTiming holds the times of the agent script. They come from time.Now
+// in this process, the clock the server also reads, so they map onto the
+// recording through its start time.
+type recAgentTiming struct {
+	firstSend time.Time // before the first of the queued agent chunks
+	queued    time.Time // after the server has sent every chunk
+	trigger   time.Time // immediately before the barge-in is sent
+	wire      time.Time // when the cut's clear frame arrived at the stream
+}
 
 // recSetPreference sets the signed-in user's recording preference through the
 // session API, with CSRF, and checks the status.
@@ -58,8 +78,9 @@ func recCreateCall(t *testing.T, env *callTestEnv, tpID, key string, extra map[s
 
 // recStreamDrain reads CallHarbor's outbound frames in the background and
 // counts the media frames, so the agent path never blocks on an unread stream.
-// The reader exits when the stream closes.
-func recStreamDrain(s *telnyxfake.Stream, media *atomic.Int64) {
+// It sends the arrival time of the first clear frame on cleared, the barge-in
+// cut as Telnyx receives it. The reader exits when the stream closes.
+func recStreamDrain(s *telnyxfake.Stream, media *atomic.Int64, cleared chan<- time.Time) {
 	go func() {
 		for {
 			b, err := s.Recv(context.Background())
@@ -69,8 +90,17 @@ func recStreamDrain(s *telnyxfake.Stream, media *atomic.Int64) {
 			var f struct {
 				Event string `json:"event"`
 			}
-			if json.Unmarshal(b, &f) == nil && f.Event == "media" {
+			if json.Unmarshal(b, &f) != nil {
+				continue
+			}
+			switch f.Event {
+			case "media":
 				media.Add(1)
+			case "clear":
+				select {
+				case cleared <- time.Now():
+				default:
+				}
 			}
 		}
 	}()
@@ -93,11 +123,12 @@ func recWaitAgentFrames(t *testing.T, media *atomic.Int64, n int64) {
 // near real time so the recorder's wall clock and the caller's RTP clock agree.
 //
 // The caller track is: 10 loud frames; 25 silent frames; an RTP gap of 20
-// frames (400 ms, no frames sent); then 10 loud frames. The agent sends 30
-// audio chunks before the caller's second speech, and the caller barges in
-// while they play. Realtime cuts on the provider's speech_started event; live
-// cuts on the local detector's onset, which needs audible agent audio.
-func recRunMedia(t *testing.T, env *callTestEnv, tel *fakeTelnyx, ai *fakeAI, protocol realtime.Protocol, callID string) {
+// frames (400 ms, no frames sent); then, after the agent's 30 queued chunks have
+// played for recPlayoutWait, 10 loud frames. The caller keeps sending quiet
+// frames during the wait. Realtime cuts on the provider's speech_started event;
+// live cuts on the local detector's onset, which needs audible agent audio.
+// The result holds the measured agent times for the agent-channel checks.
+func recRunMedia(t *testing.T, env *callTestEnv, tel *fakeTelnyx, ai *fakeAI, protocol realtime.Protocol, callID string) recAgentTiming {
 	t.Helper()
 	tel.waitDials(t, 1)
 	env.signedWebhook(callID, "call.initiated", "evt-init-"+callID, recControlID)
@@ -108,7 +139,8 @@ func recRunMedia(t *testing.T, env *callTestEnv, tel *fakeTelnyx, ai *fakeAI, pr
 	}
 	sendStart(t, stream, recControlID)
 	var media atomic.Int64
-	recStreamDrain(stream, &media)
+	cleared := make(chan time.Time, 1)
+	recStreamDrain(stream, &media, cleared)
 
 	loud, quiet := recLoudPCMU(t), recQuietPCMU(t)
 	seq := 2
@@ -134,20 +166,43 @@ func recRunMedia(t *testing.T, env *callTestEnv, tel *fakeTelnyx, ai *fakeAI, pr
 	ts += 20 * recFrameSamples
 	time.Sleep(400 * time.Millisecond)
 
-	for i := 0; i < 30; i++ {
+	var timing recAgentTiming
+	base := media.Load()
+	timing.firstSend = time.Now()
+	for i := 0; i < recAgentQueued; i++ {
 		ai.sendAgentAudio(t, loud)
 	}
-	recWaitAgentFrames(t, &media, 3)
+	// One outbound media frame reaches the stream per queued chunk, counted from
+	// the baseline taken before the sends. Once all have arrived, the server has
+	// sent every chunk, so the first chunk started playing at or after firstSend.
+	recWaitAgentFrames(t, &media, base+recAgentQueued)
+	timing.queued = time.Now()
+	// The agent plays uninterrupted for recPlayoutWait. The caller stays silent
+	// but keeps sending quiet frames, as a phone does, so its RTP clock moves
+	// with wall time.
+	for deadline := time.Now().Add(recPlayoutWait); time.Now().Before(deadline); {
+		emit(quiet)
+	}
+	timing.trigger = time.Now()
 	if protocol == realtime.ProtocolRealtime {
 		ai.sendRaw(t, map[string]any{"type": "input_audio_buffer.speech_started",
 			"event_id": "ev_barge", "audio_start_ms": 0, "item_id": "msg_caller"})
 	}
+	// Live cuts on the local detector's onset, which the first of these loud
+	// frames triggers. The cut's clear frame reaches the stream after either
+	// trigger, so the wire time is the measured cut.
 	for i := 0; i < 10; i++ {
 		emit(loud)
+	}
+	select {
+	case timing.wire = <-cleared:
+	case <-time.After(5 * time.Second):
+		t.Fatal("no clear frame reached the stream after the barge-in")
 	}
 	if err := stream.Close(); err != nil {
 		t.Logf("close stream: %v", err)
 	}
+	return timing
 }
 
 // recWaitSettled waits until the call's recording row leaves the recording
@@ -168,6 +223,22 @@ func recWaitSettled(t *testing.T, dataDir, callID string) string {
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
+}
+
+// recRecordingStart returns the recording's start time, the wall time the
+// recorder uses as t0. It is read from created_at, which is written from the
+// same clock reading, at the storage precision of milliseconds.
+func recRecordingStart(t *testing.T, dataDir, callID string) time.Time {
+	t.Helper()
+	var created string
+	if err := openAppDB(t, dataDir).QueryRow(`SELECT created_at FROM recordings WHERE call_id = ?`, callID).Scan(&created); err != nil {
+		t.Fatalf("recording created_at: %v", err)
+	}
+	ts, err := time.Parse(storage.TimeLayout, created)
+	if err != nil {
+		t.Fatalf("parse created_at %q: %v", created, err)
+	}
+	return ts
 }
 
 // recRecordingRows counts the recordings rows of one call.
@@ -215,19 +286,20 @@ func TestRecordingEndToEnd(t *testing.T) {
 
 			recSetPreference(t, env, env.admin, true, true)
 			callID := recCreateCall(t, env, tpID, "rec-on-"+string(protocol), map[string]any{"record": true})
-			recRunMedia(t, env, tel, ai, protocol, callID)
+			timing := recRunMedia(t, env, tel, ai, protocol, callID)
 			if st := recWaitSettled(t, env.dataDir, callID); st != "complete" {
 				t.Fatalf("recording status = %q, want complete", st)
 			}
-			recCheckRecording(t, env, callID)
+			recCheckRecording(t, env, callID, timing)
 		})
 	}
 }
 
 // recCheckRecording reads the metadata, the full audio, a Range that spans a
 // segment boundary, and the download disposition, then checks the audio.
-func recCheckRecording(t *testing.T, env *callTestEnv, callID string) {
+func recCheckRecording(t *testing.T, env *callTestEnv, callID string, timing recAgentTiming) {
 	t.Helper()
+	t0 := recRecordingStart(t, env.dataDir, callID)
 	admin := env.admin.headers(false)
 	base := env.base + "/api/v1/calls/" + callID + "/recording"
 
@@ -262,7 +334,7 @@ func recCheckRecording(t *testing.T, env *callTestEnv, callID string) {
 	if w.rate != 8000 {
 		t.Fatalf("WAV rate = %d, want 8000", w.rate)
 	}
-	recCheckAudioShape(t, w)
+	recCheckAudioShape(t, w, timing, t0)
 
 	// 16384 PCM bytes are one segment, so WAV offset 16428 is a boundary.
 	hr := admin.Clone()
@@ -291,7 +363,7 @@ func recCheckRecording(t *testing.T, env *callTestEnv, callID string) {
 // Agent (channel 1): at most 0.4 s of audio, because the barge-in cuts a 0.6 s
 // utterance within milliseconds of its queueing. The 0.4 s limit leaves room for
 // the scheduling delay between queueing and the cut.
-func recCheckAudioShape(t *testing.T, w recWAV) {
+func recCheckAudioShape(t *testing.T, w recWAV, timing recAgentTiming, t0 time.Time) {
 	t.Helper()
 	rms0 := recBlockRMS(w.ch0, recFrameSamples)
 	// The longest silent run is the gap plus the quiet frames. Its position is
@@ -309,8 +381,9 @@ func recCheckAudioShape(t *testing.T, w recWAV) {
 		}
 		i += n
 	}
-	// 45 silent blocks are written (25 quiet frames and 20 gap frames). The
-	// threshold allows 200 ms for the anchor and the flush boundary.
+	// The silent run is 25 quiet frames, the 20-frame RTP gap, and the quiet
+	// frames sent during the agent playout wait (about 15), so about 60 blocks.
+	// The threshold of 35 allows for the anchor and the flush boundary.
 	if bestLen < 35 {
 		t.Fatalf("caller silence = %d blocks, want at least 35", bestLen)
 	}
@@ -332,13 +405,93 @@ func recCheckAudioShape(t *testing.T, w recWAV) {
 		t.Fatalf("caller speech after the gap = %d blocks, want at least 8", loudAfter)
 	}
 
-	agentLoud := 0
-	for _, v := range recBlockRMS(w.ch1, recFrameSamples) {
+	recCheckAgentAudio(t, w, timing, t0)
+}
+
+// recCheckAgentAudio checks the agent channel against the measured script times.
+//
+// The agent queues recAgentQueued chunks of one 20 ms block each, starting at
+// firstSend. Each chunk plays from its wall-clock play start, and the recorder
+// keeps the audio that played before the cut. The cut happened at some moment
+// between the barge-in trigger and the clear frame reaching the stream. So the
+// audible agent audio is at least the trigger minus firstSend, and at most the
+// clear's wire time minus firstSend. Both are measured, so the bounds are too.
+//
+// The ±3 blocks of slack on the count are: one block for the 20 ms quantization
+// of counting whole blocks, one for the cut-signal latency between the trigger
+// and the clear (the wire time already bounds the cut from above, but the
+// sink's clock read and the first audible sample add a block), and one for the
+// RMS window edge (a block that straddles the start or the cut can fall above or
+// below the loud threshold).
+func recCheckAgentAudio(t *testing.T, w recWAV, timing recAgentTiming, t0 time.Time) {
+	t.Helper()
+	const blockDur = 20 * time.Millisecond
+	lower := timing.trigger.Sub(timing.firstSend)
+	upper := timing.wire.Sub(timing.firstSend)
+	if lower <= 0 || upper < lower {
+		t.Fatalf("measured agent times are not ordered: trigger-firstSend=%v wire-firstSend=%v", lower, upper)
+	}
+	lowBlocks := int(lower / blockDur)
+	highBlocks := int((upper + blockDur - 1) / blockDur)
+	if highBlocks >= recAgentQueued {
+		t.Fatalf("the cut came %v after the first agent send, at or past the %d-chunk queue (%v): the cut-tail check would be vacuous. Lower recPlayoutWait or queue more chunks.",
+			upper, recAgentQueued, recAgentQueued*blockDur)
+	}
+	wantMin := lowBlocks - 3
+	wantMax := highBlocks + 3
+
+	agent := recBlockRMS(w.ch1, recFrameSamples)
+	loud, first, last := 0, -1, -1
+	for i, v := range agent {
 		if recIsLoud(v) {
-			agentLoud++
+			loud++
+			if first < 0 {
+				first = i
+			}
+			last = i
 		}
 	}
-	if agentLoud > 20 {
-		t.Fatalf("agent audio = %d loud blocks, want at most 20 (the cut tail of 30 queued is absent)", agentLoud)
+	t.Logf("agent playout: firstSend->trigger=%v firstSend->cut(wire)=%v queued=%d bounds=[%d,%d] agentLoud=%d",
+		lower, upper, recAgentQueued, wantMin, wantMax, loud)
+
+	if loud < wantMin || loud > wantMax {
+		t.Fatalf("agent audio = %d loud blocks, want between %d and %d (from %v before the cut trigger and %v before the cut reached the wire)",
+			loud, wantMin, wantMax, lower, upper)
 	}
+	if loud >= recAgentQueued {
+		t.Fatalf("agent audio = %d loud blocks, want fewer than the %d queued: the cut tail must be absent", loud, recAgentQueued)
+	}
+	if first < 0 {
+		t.Fatal("no agent audio before the barge-in: the agent speech was not recorded")
+	}
+
+	// Positions are sample offsets from the recording start, the clock the
+	// recorder uses for agent chunks. The recorder's t0 is read from created_at
+	// at millisecond precision, so each position is off by at most 8 samples.
+	firstSendPos := recSampleAt(timing.firstSend.Sub(t0), w.rate)
+	cutPos := recSampleAt(timing.wire.Sub(t0), w.rate)
+	startPos := first * recFrameSamples
+	endPos := (last + 1) * recFrameSamples
+	t.Logf("agent positions: firstSend=%d start=%d end=%d cut=%d (samples from t0, block=%d)",
+		firstSendPos, startPos, endPos, cutPos, recFrameSamples)
+	if startPos < firstSendPos-recFrameSamples {
+		t.Fatalf("agent audio starts at sample %d, earlier than the first send at %d by more than one block", startPos, firstSendPos)
+	}
+	if endPos > cutPos+recFrameSamples {
+		t.Fatalf("agent audio ends at sample %d, after the cut at %d by more than one block", endPos, cutPos)
+	}
+	// There is no check that agent audio ends before the caller's post-gap
+	// speech. The caller's loud frames are sent at the barge-in trigger, but the
+	// cut follows the trigger by the detector latency (about 40 ms live), so the
+	// agent legitimately plays into the caller's onset. The cut-position check
+	// above is the ordering that holds.
+}
+
+// recSampleAt converts a duration from t0 to whole samples at rate, with the
+// same truncation the recorder uses.
+func recSampleAt(d time.Duration, rate int) int {
+	if d <= 0 {
+		return 0
+	}
+	return int(int64(d) * int64(rate) / int64(time.Second))
 }

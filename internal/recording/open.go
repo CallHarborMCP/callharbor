@@ -8,7 +8,10 @@ import (
 )
 
 // Writer satisfies Sink: plaintext PCM goes through the STREAM writer.
-var _ Sink = (*Writer)(nil)
+var (
+	_ Sink     = (*Writer)(nil)
+	_ Resealer = (*Writer)(nil)
+)
 
 // Path returns the on-disk location of a recording: recordings/<owner>/<id>.chrec
 // under dataDir. Owner and id are validated so a value cannot escape the tree.

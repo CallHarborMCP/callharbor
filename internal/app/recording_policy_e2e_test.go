@@ -182,3 +182,101 @@ func recCountPreferenceAudits(t *testing.T, dataDir string) int {
 	}
 	return n
 }
+
+// recCreateCallAs places a call through REST as session s, with the given
+// profile, and returns its id. The profile may belong to another user.
+func recCreateCallAs(t *testing.T, env *callTestEnv, s *session, tpID, key string, extra map[string]any) string {
+	t.Helper()
+	body := map[string]any{"profile_id": tpID, "to": "+14155550111", "objective": "Book a table"}
+	for k, v := range extra {
+		body[k] = v
+	}
+	status, _, raw := sendJSON(t, env.client, http.MethodPost, env.base+"/api/v1/calls", body,
+		withIdempotency(s.headers(true), key))
+	if status != http.StatusAccepted {
+		t.Fatalf("create call as grantee = %d %s", status, raw)
+	}
+	id, _ := decodeObject(t, raw)["call_id"].(string)
+	if id == "" {
+		t.Fatalf("no call_id: %s", raw)
+	}
+	return id
+}
+
+// Recording is decided by the call's owner. The admin's opt-in does not extend
+// to a grantee's call: a grantee who has not opted in gets no recording, even
+// when the admin profile owner has opted in and the grantee asks for one.
+func TestRecordingGranteeWithoutOptInIsNotRecorded(t *testing.T) {
+	for _, protocol := range aiFlowProtocols {
+		t.Run(string(protocol), func(t *testing.T) {
+			tel := newFakeTelnyx(t, recControlID)
+			ai := newFakeAI(t, protocol)
+			env := startCallApp(t, tel, nil)
+			h := env.admin.headers(true)
+			tpID := createTelephonyFixture(t, env, h)
+			createAIFixture(t, env, h, protocol, ai.endpoint())
+			recSetPreference(t, env, env.admin, true, true)
+
+			alice := createUser(t, env.admin, "alice")
+			status, _, body := send(t, env.client, http.MethodPut, env.base+"/api/v1/telephony-profiles/"+tpID+"/grants/"+bobID(t, alice), nil, h)
+			if status != http.StatusNoContent {
+				t.Fatalf("grant alice = %d %s", status, body)
+			}
+			createAIFixture(t, env, alice.headers(true), protocol, ai.endpoint())
+
+			callID := recCreateCallAs(t, env, alice, tpID, "grantee-noopt-"+string(protocol), map[string]any{"record": true})
+			req, eff := recCallRecordEffective(t, env, alice, callID)
+			if !req || eff {
+				t.Fatalf("grantee call record_requested=%v record_effective=%v, want true/false", req, eff)
+			}
+			recRunMedia(t, env, tel, ai, protocol, callID)
+			recAssertNoRecording(t, env, alice, callID)
+		})
+	}
+}
+
+// A grantee who has opted in records the grantee's own call. The recording
+// belongs to the grantee, and the profile owner gets not_found for it, the same
+// answer as for a call that does not exist.
+func TestRecordingGranteeRecordsOwnCallAndOwnerSeesNotFound(t *testing.T) {
+	for _, protocol := range aiFlowProtocols {
+		t.Run(string(protocol), func(t *testing.T) {
+			tel := newFakeTelnyx(t, recControlID)
+			ai := newFakeAI(t, protocol)
+			env := startCallApp(t, tel, nil)
+			h := env.admin.headers(true)
+			tpID := createTelephonyFixture(t, env, h)
+			createAIFixture(t, env, h, protocol, ai.endpoint())
+
+			alice := createUser(t, env.admin, "alice")
+			status, _, body := send(t, env.client, http.MethodPut, env.base+"/api/v1/telephony-profiles/"+tpID+"/grants/"+bobID(t, alice), nil, h)
+			if status != http.StatusNoContent {
+				t.Fatalf("grant alice = %d %s", status, body)
+			}
+			createAIFixture(t, env, alice.headers(true), protocol, ai.endpoint())
+			recSetPreference(t, env, alice, true, true)
+
+			callID := recCreateCallAs(t, env, alice, tpID, "grantee-opt-"+string(protocol), map[string]any{"record": true})
+			req, eff := recCallRecordEffective(t, env, alice, callID)
+			if !req || !eff {
+				t.Fatalf("grantee call record_requested=%v record_effective=%v, want true/true", req, eff)
+			}
+			recRunMedia(t, env, tel, ai, protocol, callID)
+			if st := recWaitSettled(t, env.dataDir, callID); st != "complete" {
+				t.Fatalf("grantee recording status = %q, want complete", st)
+			}
+			// The grantee reads the recording of the grantee's own call.
+			if status, _, body := send(t, env.client, http.MethodGet, env.base+"/api/v1/calls/"+callID+"/recording", nil, alice.headers(false)); status != http.StatusOK {
+				t.Fatalf("grantee metadata = %d %s, want 200", status, body)
+			}
+			// The profile owner, who is not the call's owner, gets not_found on
+			// both recording reads.
+			for _, path := range []string{"/recording", "/recording/audio"} {
+				status, _, body := send(t, env.client, http.MethodGet, env.base+"/api/v1/calls/"+callID+path, nil, env.admin.headers(false))
+				if status != http.StatusNotFound {
+					t.Fatalf("profile owner GET %s = %d %s, want 404", path, status, body)
+				}
+			}
+		})
+	}
+}

@@ -307,6 +307,9 @@
           },
           "500": {
             "$ref": "#/components/responses/Error"
+          },
+          "503": {
+            "$ref": "#/components/responses/Error"
           }
         }
       }
@@ -378,6 +381,9 @@
             "description": "Range not satisfiable"
           },
           "500": {
+            "$ref": "#/components/responses/Error"
+          },
+          "503": {
             "$ref": "#/components/responses/Error"
           }
         }
@@ -1823,7 +1829,9 @@
                 "agent_playout_unconfirmed",
                 "write_failed",
                 "backpressure",
-                "recovered_after_restart"
+                "recovered_after_restart",
+                "agent_overlap_dropped",
+                "stream_reconnected_not_recorded"
               ]
             },
             "description": "Why the audio may differ from the live call. Empty when none apply."

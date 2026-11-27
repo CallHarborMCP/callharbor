@@ -100,3 +100,43 @@ func TestInsertCallForgedOverrideLeavesNoRecordingState(t *testing.T) {
 		t.Fatalf("recordings rows = %d, want 0", n)
 	}
 }
+
+// An owner who opts out after accept has the call's effective flag cleared at
+// media start: the stored flag is 0 and the view reports no recording. A second
+// media read changes nothing.
+func TestLoadCallForMediaClearsEffectiveAfterOptOut(t *testing.T) {
+	ctx := context.Background()
+	s := openMigrated(t, filepath.Join(t.TempDir(), "media-opt.db"))
+	seedTenants(t, s)
+	setOptIn(t, s, "alice", true)
+	in := newCallInsert("c-opt", "alice", "alice-tel", "alice-ai", "opt-key")
+	in.RecordRequested = true
+	if err := s.InsertCall(ctx, in); err != nil {
+		t.Fatal(err)
+	}
+	if n := scalarInt(t, s, "SELECT record_effective FROM calls WHERE id = 'c-opt'"); n != 1 {
+		t.Fatalf("stored record_effective = %d before opt-out, want 1", n)
+	}
+	setOptIn(t, s, "alice", false)
+
+	m, err := s.LoadCallForMedia(ctx, "c-opt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if m.RecordEffective {
+		t.Fatal("media view reports recording after the owner opted out")
+	}
+	if n := scalarInt(t, s, "SELECT record_effective FROM calls WHERE id = 'c-opt'"); n != 0 {
+		t.Fatalf("stored record_effective = %d after media start, want 0", n)
+	}
+	if _, err := s.LoadCallForMedia(ctx, "c-opt"); err != nil {
+		t.Fatalf("second media read: %v", err)
+	}
+	c, err := s.GetCall(ctx, "alice", "c-opt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.RecordEffective {
+		t.Fatal("call view still reports record_effective after media start")
+	}
+}

@@ -19,6 +19,14 @@ type Sink interface {
 	Close() error
 }
 
+// Resealer is implemented by a sink that can make a file readable after a
+// write failure. Reseal returns the authenticated PCM length the file now holds
+// and closes the sink. A sink without it is only closed after a failure, and
+// the recording is then failed rather than served.
+type Resealer interface {
+	Reseal() (int64, error)
+}
+
 // Quality flags. The vocabulary is fixed: it is persisted and exposed by the API.
 const (
 	FlagCallerGapFilled         = "caller_gap_filled"
@@ -29,18 +37,27 @@ const (
 	FlagWriteFailed             = "write_failed"
 	FlagBackpressure            = "backpressure"
 	FlagRecoveredAfterRestart   = "recovered_after_restart"
+	// FlagAgentOverlapDropped: agent audio that overlapped audio already
+	// written, or arrived after its channel was flushed, was not recorded.
+	FlagAgentOverlapDropped = "agent_overlap_dropped"
+	// FlagStreamReconnectedNotRecorded: a media stream reconnected for a call
+	// whose recording was already finalized. The reconnected audio is not in it.
+	FlagStreamReconnectedNotRecorded = "stream_reconnected_not_recorded"
 )
 
 // Persisted recording statuses this package produces.
 const (
 	StatusComplete = "complete"
 	StatusPartial  = "partial"
+	StatusFailed   = "failed"
 )
 
 const (
 	// reanchorLag is how far wall-clock may run ahead of the caller's media
-	// position before the caller track is re-anchored forward.
-	reanchorLag = 250 * time.Millisecond
+	// position before the lag counts. The track re-anchors forward only when the
+	// lag lasts for reanchorWindow, so a single late burst never moves it.
+	reanchorLag    = 250 * time.Millisecond
+	reanchorWindow = time.Second
 	// horizonSeconds bounds audio held unflushed in the timeline. It must cover
 	// the longest agent queue plus the flush lag, or a valid write overflows.
 	horizonSeconds = maxPendingSeconds + 5
@@ -92,11 +109,14 @@ type Recorder struct {
 	flushed  int64
 
 	// Caller track: anchor is the absolute sample of the RTP origin, relEnd the
-	// RTP-relative end of the last accepted frame.
-	clock   audio.RTPClock
-	anchor  int64
-	relEnd  int64
-	started bool
+	// RTP-relative end of the last accepted frame. lagging and lagSince track a
+	// sustained wall-clock lead, in absolute samples, for the forward re-anchor.
+	clock    audio.RTPClock
+	anchor   int64
+	relEnd   int64
+	started  bool
+	lagging  bool
+	lagSince int64
 
 	// Agent audio waiting for its play time, in playback order.
 	pending        []pendingChunk
@@ -108,13 +128,19 @@ type Recorder struct {
 	writeFailed atomic.Bool
 	written     atomic.Int64
 	writeErr    error // set by the writer goroutine; read after done
+	// Set by the writer goroutine after a failure, read after done. resealed
+	// means the file was made readable with authPCM authenticated bytes.
+	resealed  bool
+	resealErr error
+	authPCM   int64
 
-	stopped       bool // writing stopped by backpressure
-	gapFilled     bool
-	framesDropped bool
-	interrupted   bool
-	backpressure  bool
-	closed        bool
+	stopped        bool // writing stopped by backpressure
+	gapFilled      bool
+	framesDropped  bool
+	overlapDropped bool
+	interrupted    bool
+	backpressure   bool
+	closed         bool
 }
 
 // New starts a recorder over sink and its writer goroutine. The sink is owned
@@ -198,12 +224,25 @@ func (r *Recorder) CallerPayload(ts uint32, payload []byte, at time.Time) {
 	}
 	n := int64(len(samples))
 	abs := r.anchor + pos
-	if lag := now - (abs + n); lag > r.samplesIn(reanchorLag) {
-		// Wall-clock is ahead of the media position: move the anchor forward
-		// only. Silence fills the skipped span, and the track never goes back.
-		r.anchor += lag
-		abs += lag
-		r.gapFilled = true
+	// Forward: only when the lag persists. Every frame over the window ran
+	// more than reanchorLag behind wall-clock, so the media clock really has
+	// stalled relative to the call. One late burst does not qualify. The anchor
+	// never moves backward: audio already written to the timeline cannot be
+	// rewritten, so an earlier arrival cannot be placed retroactively.
+	lag := now - (abs + n)
+	if lag > r.samplesIn(reanchorLag) {
+		if !r.lagging {
+			r.lagging = true
+			r.lagSince = now
+		}
+		if now-r.lagSince >= r.samplesIn(reanchorWindow) {
+			r.anchor += lag
+			abs += lag
+			r.gapFilled = true
+			r.lagging = false
+		}
+	} else {
+		r.lagging = false
 	}
 	if gap > 0 {
 		r.gapFilled = true
@@ -286,8 +325,10 @@ func (r *Recorder) commitLocked(limit int64) {
 		}
 		r.pendingSamples -= int64(len(p.samples))
 		// A rejected write is an overlap or a late chunk. The agent audio is
-		// simply absent from the recording; the flags describe the playout.
-		_ = r.timeline.Write(1, p.start, p.samples)
+		// absent from the recording and the flag says so.
+		if err := r.timeline.Write(1, p.start, p.samples); err != nil {
+			r.overlapDropped = true
+		}
 	}
 	r.pending = r.pending[i:]
 }
@@ -350,7 +391,23 @@ func (r *Recorder) run(sink Sink) {
 			lastSync = time.Now()
 		}
 	}
-	if err := sink.Close(); err != nil && !r.writeFailed.Load() {
+	if r.writeFailed.Load() {
+		// A failed writer cannot seal normally. Reseal makes the authenticated
+		// prefix readable, or fails and the recording is finalized failed.
+		if rs, ok := sink.(Resealer); ok {
+			n, err := rs.Reseal()
+			if err != nil {
+				r.resealErr = err
+				return
+			}
+			r.authPCM = n
+			r.resealed = true
+			return
+		}
+		_ = sink.Close()
+		return
+	}
+	if err := sink.Close(); err != nil {
 		r.fail(err)
 	}
 }
@@ -405,11 +462,24 @@ func (r *Recorder) Finish(at time.Time, unconfirmed bool) (Result, error) {
 		SampleRate:   r.rate,
 		QualityFlags: r.flags(unconfirmed),
 	}
-	if r.backpressure || r.writeFailed.Load() {
+	if r.backpressure {
 		res.Status = StatusPartial
 	}
+	if r.writeFailed.Load() {
+		// After a write failure the byte count is what the file authenticates,
+		// not what the writer accepted. Nothing authenticated, or no reseal,
+		// means nothing can be served.
+		res.Status = StatusPartial
+		res.ByteCount = 0
+		if r.resealed {
+			res.ByteCount = r.authPCM
+		}
+		if res.ByteCount == 0 {
+			res.Status = StatusFailed
+		}
+	}
 	res.DurationMS = res.ByteCount / 4 * 1000 / int64(r.rate)
-	return res, r.writeErr
+	return res, errors.Join(r.writeErr, r.resealErr)
 }
 
 // flags returns the sorted quality flags for the finished recording.
@@ -422,6 +492,7 @@ func (r *Recorder) flags(unconfirmed bool) []string {
 	}
 	add(r.gapFilled, FlagCallerGapFilled)
 	add(r.framesDropped, FlagCallerFramesDropped)
+	add(r.overlapDropped, FlagAgentOverlapDropped)
 	add(r.interrupted, FlagAgentInterrupted)
 	add(unconfirmed, FlagAgentPlayoutUnconfirmed)
 	add(r.writeFailed.Load(), FlagWriteFailed)

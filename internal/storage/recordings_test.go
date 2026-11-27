@@ -93,3 +93,53 @@ func TestRecordingExpiryUsesRetentionDays(t *testing.T) {
 		t.Fatalf("expiry = %q", got)
 	}
 }
+
+// A reconnect after finalize turns a complete recording partial and appends the
+// flag once. Any other status is left alone, and a second mark changes nothing.
+func TestMarkRecordingReconnected(t *testing.T) {
+	ctx := context.Background()
+	s := openMigrated(t, filepath.Join(t.TempDir(), "rec.db"))
+	seedTenants(t, s)
+	if err := s.InsertRecording(ctx, testRecordingRow("rec-1")); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetRecordingFormat(ctx, "rec-1", 8000); err != nil {
+		t.Fatal(err)
+	}
+	const flag = "stream_reconnected_not_recorded"
+
+	// Still recording: nothing to mark, the sweep settles it.
+	if ok, err := s.MarkRecordingReconnected(ctx, "alice", "alice-call", flag); err != nil || ok {
+		t.Fatalf("mark while recording: changed=%v err=%v, want no change", ok, err)
+	}
+	if _, err := s.FinalizeRecording(ctx, RecordingFinal{
+		ID: "rec-1", Status: RecordingStatusComplete, ByteCount: 64, DurationMS: 4,
+		QualityFlags: []string{"backpressure"}, FinalizedAt: testTime, ExpiresAt: testTime,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if ok, err := s.MarkRecordingReconnected(ctx, "bob", "alice-call", flag); err != nil || ok {
+		t.Fatalf("mark for a foreign owner: changed=%v err=%v, want no change", ok, err)
+	}
+	if ok, err := s.MarkRecordingReconnected(ctx, "alice", "alice-call", flag); err != nil || !ok {
+		t.Fatalf("mark complete: changed=%v err=%v, want change", ok, err)
+	}
+	r, err := s.GetRecordingForCall(ctx, "alice", "alice-call")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.Status != RecordingStatusPartial {
+		t.Fatalf("status = %s, want partial", r.Status)
+	}
+	if !slices.Equal(r.QualityFlags, []string{"backpressure", flag}) {
+		t.Fatalf("flags = %v, want backpressure and %s", r.QualityFlags, flag)
+	}
+	// Partial now: a second mark is a no-op, and the flag is not repeated.
+	if ok, err := s.MarkRecordingReconnected(ctx, "alice", "alice-call", flag); err != nil || ok {
+		t.Fatalf("second mark: changed=%v err=%v, want no change", ok, err)
+	}
+	r, _ = s.GetRecordingForCall(ctx, "alice", "alice-call")
+	if !slices.Equal(r.QualityFlags, []string{"backpressure", flag}) {
+		t.Fatalf("flags after second mark = %v", r.QualityFlags)
+	}
+}

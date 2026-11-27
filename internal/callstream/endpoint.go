@@ -264,14 +264,20 @@ func (m *Media) attach(sess realtime.Session, st storage.MediaCall, leg, provide
 		release()
 		return nil, err
 	}
+	// One clock for the call: the recorder stamps frames with m.Now, so the sink
+	// must read the same clock for its own timing and taps to agree.
+	bridgeSink.SetClock(m.Now)
 	// The recorder is started before the run, so the first media frame is never
 	// before its t0. One recorder per call: a second stream for a call that
 	// already has a recording row creates nothing.
+	// A recording setup failure never refuses the call: it runs untapped. The
+	// failure is logged without any call content.
 	recCall, err := startRecording(context.Background(), m.Recording, st, leg, m.Now())
 	if err != nil {
-		_ = sess.Close()
-		release()
-		return nil, err
+		recCall = nil
+		if m.Logger != nil {
+			m.Logger.Error("recording setup failed; call continues unrecorded", "call_id", st.ID, "error", err.Error())
+		}
 	}
 	if recCall != nil {
 		bridgeSink.Tap = recCall.rec
