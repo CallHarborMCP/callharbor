@@ -1214,12 +1214,16 @@
           "max_duration_seconds",
           "record_requested",
           "record_effective",
-          "cost"
+          "cost",
+          "task_assessment"
         ],
         "additionalProperties": false,
         "properties": {
           "outcome_reason_code": {
             "type": "string"
+          },
+          "task_assessment": {
+            "$ref": "#/components/schemas/TaskAssessment"
           },
           "max_duration_seconds": {
             "type": "integer",
@@ -1277,6 +1281,94 @@
                 ]
               }
             }
+          }
+        }
+      },
+      "TaskAssessment": {
+        "description": "The reasoning behind a recorded task_outcome. Present only once an outcome is recorded, and null before. source technical means no voice-session self-report was used; voice_session means the outcome rests on one. A normal hangup is never success.",
+        "type": [
+          "object",
+          "null"
+        ],
+        "required": [
+          "reason_codes",
+          "evidence",
+          "source",
+          "assessed_at"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "reason_codes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "evidence": {
+            "type": "array",
+            "maxItems": 32,
+            "items": {
+              "$ref": "#/components/schemas/TaskEvidence"
+            }
+          },
+          "source": {
+            "type": "string",
+            "enum": [
+              "technical",
+              "voice_session"
+            ]
+          },
+          "assessed_at": {
+            "type": "string",
+            "format": "date-time"
+          }
+        }
+      },
+      "TaskEvidence": {
+        "description": "One reference supporting a task outcome: a final transcript turn (transcript_turn) or a technical call event (call_event). It carries no transcript text. Read the callee's words at seq through the audited transcript endpoint.",
+        "type": "object",
+        "required": [
+          "kind",
+          "seq"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "kind": {
+            "type": "string",
+            "enum": [
+              "transcript_turn",
+              "call_event"
+            ]
+          },
+          "seq": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "criterion": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 20
+          },
+          "met": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "Whether the session reported the criterion met. Null or omitted for call_event evidence and outcome-level quotes, which name no criterion. Only met evidence counts toward success or partial. A quote for an unmet criterion is evidence of a refusal or failure."
+          },
+          "speaker": {
+            "type": "string",
+            "enum": [
+              "assistant",
+              "callee",
+              "system"
+            ]
+          },
+          "fidelity": {
+            "type": "string"
+          },
+          "code": {
+            "type": "string"
           }
         }
       },
@@ -1599,6 +1691,7 @@
           },
           "constraints": {
             "type": "array",
+            "maxItems": 20,
             "items": {
               "type": "string"
             }
@@ -1611,6 +1704,7 @@
           },
           "success_criteria": {
             "type": "array",
+            "maxItems": 20,
             "items": {
               "type": "string"
             }

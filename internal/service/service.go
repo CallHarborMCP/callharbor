@@ -134,6 +134,8 @@ type CallDetails struct {
 	RecordRequested    bool     `json:"record_requested"`
 	RecordEffective    bool     `json:"record_effective"`
 	Cost               CostView `json:"cost"`
+	// TaskAssessment is null until a task outcome is recorded.
+	TaskAssessment *TaskAssessment `json:"task_assessment"`
 }
 
 // CallView is one call as the API exposes it. The same shape is used for
@@ -299,6 +301,11 @@ func toCallView(c storage.Call) (CallView, error) {
 		o := c.Outcome
 		view.TaskOutcome = &o
 	}
+	ta, err := taskAssessmentOf(c)
+	if err != nil {
+		return CallView{}, err
+	}
+	view.Details.TaskAssessment = ta
 	if c.EndedAt != "" {
 		ended, err := formatTimestamp(c.EndedAt)
 		if err != nil {

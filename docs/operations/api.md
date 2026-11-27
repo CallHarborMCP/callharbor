@@ -92,6 +92,241 @@ Every telephony route needs a valid session. Each write also needs the session's
 
 Cursors are opaque and should not be parsed or constructed by clients.
 
+## Task outcome
+
+Every call has two separate facts. Neither implies the other.
+
+- `technical_status` says what the telephony and media path did: `queued`,
+  `initiating`, `ringing`, `active`, `ending`, `ended` or `failed`. A successful
+  dial or a normal hangup reaches `ended` without any claim about the task.
+- `task_outcome` says whether the task was achieved: `success`, `partial`,
+  `failed` or `unknown`. It is `null` until the outcome is evaluated.
+
+A normal hangup is never `success`. A call that ends `ended` with no evidence of
+the task being done is `unknown`, not `success`.
+
+`details.task_assessment` gives the reasoning behind `task_outcome`. It is `null`
+until an outcome is recorded, and then it is an object:
+
+- `reason_codes`: ordered, de-duplicated codes (below).
+- `evidence`: up to 32 references. Each has `kind` (`transcript_turn` or
+  `call_event`), `seq`, and where relevant `criterion` (1-based into the brief's
+  success criteria), `met`, `speaker`, `fidelity` or `code`. Evidence is a
+  reference, not content: it never carries the callee's words. To read the words
+  at a `transcript_turn` `seq`, use the audited
+  [transcript endpoint](#call-transcripts), which records a `transcript.read`
+  event. The raw `assessment.reported` call event keeps the voice model's evidence quote for the outcome worker only, so no REST or MCP response returns it, `PurgeCall` removes it with the call's other transcript data, and any future transcript-only retention must scrub it as well. For `call_event` evidence `seq` is the call event's own sequence number
+  (`call_events.seq`). It is separate from the transcript turn `seq`, and it is
+  not exposed as a public read today. `met` is set only on transcript evidence
+  that names a criterion. It is omitted for `call_event` evidence and for
+  outcome-level quotes.
+- `source`: `technical` when no voice-session self-report was used, or
+  `voice_session` when the outcome rests on one.
+- `assessed_at`: the RFC 3339 UTC time the outcome was recorded. Recording the
+  outcome does not change the call's `updated_at`; watch `task_outcome` or
+  `task_assessment.assessed_at` to see that it has been recorded.
+
+The same object appears on `GET /api/v1/calls/{call_id}`, on list items, and on
+the MCP tools `get_call` and `list_calls`.
+
+### Reason codes
+
+`reason_codes` mixes two vocabularies. The call's technical reason is unchanged
+and stays in `details.outcome_reason_code`.
+
+Technical codes name what happened on the call:
+`no_answer`, `busy`, `rejected`, `call_failed`, `media_failed`,
+`transcript_unavailable`, `transcript_incomplete`, `no_conversation`.
+
+Task codes name why the outcome is what it is:
+
+| Code | Meaning |
+|---|---|
+| `confirmed` | The callee confirmed the requested outcome. |
+| `alternative_accepted` | The callee accepted an alternative. Whether it was within the brief's constraints is the voice model's report (`respected: true`), not verified against the transcript evidence. |
+| `partially_fulfilled` | Some criteria were met, not all. |
+| `callee_refused` | The callee refused. |
+| `callee_unable` | The callee could not help. |
+| `voicemail` | The call reached voicemail. |
+| `wrong_party` | The callee was not the intended party. |
+| `other` | None of the above. |
+| `assessment_missing` | No voice-session report was made. |
+| `assessment_unsupported` | The protocol has no model report channel (`live_ws`; see FEASIBILITY R20). |
+| `assessment_invalid` | A stored report failed validation and was skipped. |
+| `assessment_contradictory` | The report's outcome and reason disagree. For example, a failed or partial outcome with a success reason (`confirmed`, `alternative_accepted`). The result is `unknown`. |
+| `assessment_conflicting` | Valid reports for the same call name different outcomes. The result is `unknown`. The latest report does not win. |
+| `evidence_unverified` | A quote did not match a final callee turn, was too weak (fewer than 3 words and 12 letters), or was preceded by a negation in the callee's turn. |
+| `evidence_missing` | A required criterion has no verified evidence. |
+| `evidence_truncated` | Evidence was cut to the 32-item bound. |
+| `criteria_unmet` | A success claim has some criteria met but not all. |
+| `constraint_violated` | A brief constraint was reported as not respected. |
+| `constraint_unreported` | A success omitted a brief constraint. An omitted constraint is not treated as respected. |
+| `evaluation_bound_exceeded` | The call's transcript is larger than the evaluation bound. The result is `unknown`, so the call is not retried forever. |
+| `evaluation_input_invalid` | The call's stored brief or facts cannot be read. The result is `unknown`, so the call is not retried forever. |
+
+### Evidence semantics
+
+- A quote matches a transcript turn by whole words, after lowercasing, removing
+  apostrophes, and turning every other non-letter, non-digit character into a
+  space. A match must start
+  and end on a word boundary, so `no` never matches inside `not`. This is not a
+  substring match. Quotes longer than 500 characters are unverified.
+- A quote needs at least 3 words or 12 letters after normalization. A shorter
+  quote such as `yes` is unverified, so it can never make an outcome a success.
+- Negation applies only to a met quote. A met quote is unverified when:
+  - a negating word is among the two words immediately before it, whatever
+    punctuation sits between them. So `I'm afraid not, table for two is booked`
+    and `Not tonight; table for two is booked` do not verify;
+  - or a negating word appears earlier in the same clause, in the same callee
+    turn. The negating words are `not`, `never`, `cannot`, `can't`, `won't`,
+    `don't`, `isn't`, `unable`, `nobody`, `nothing`, `neither`, `nor`,
+    `without`, `unsure`, `not sure` and `whether`. A clause ends at a comma,
+    semicolon, colon, sentence punctuation or a dash (`-`, `–`, `—`), but not at
+    a full stop after an abbreviation or an initial such as `Dr.` or `p.m.`, and
+    not at a hyphen inside a word such as `re-book`. So `we cannot book a table
+    for two` does not verify `book a table for two`, and neither does `I don't
+    think your table for two is booked yet`, `I am not sure your table for two is
+    booked`, `we can't confirm whether your table for two is booked` or `it's
+    not true that your table for two is booked`. By contrast `Don't worry, your
+    table for two is booked` verifies, because the comma ends the clause;
+  - an n't contraction (see below), such as `didn't`, `couldn't`, `wasn't`,
+    `wouldn't` or `haven't`, is among the two words immediately before the quote
+    or earlier in its clause;
+  - the quote itself is negative: it contains a negation word or contraction, or
+    `no` followed by a word with no comma or sentence punctuation between them.
+    So `could not book a table for two` and `no table for two at eight` never
+    verify a met criterion.
+- An apostrophe joins the letters on either side into one word, so `can't` is
+  `cant`. The apostrophe characters are `'`, `’` (U+2019), `‘` (U+2018), `ʼ`
+  (U+02BC), `＇` (U+FF07), the prime `′` (U+2032) and the backtick. A word is
+  joined only when a letter follows the apostrophe, so a quoted word such as
+  `'agent'` is not negated. A joined word is an n't contraction only when the
+  letters after its last apostrophe are exactly `t` and the word ends in `nt`:
+  `didn't`, `couldn't` and `haven't` negate, but `l'instant` and `O'Grant` do
+  not.
+- `no` negates only when it is the word immediately before the quote, with no
+  comma or sentence punctuation between them. So `No problem, booked a table for
+  two` verifies, and `No table for two` does not.
+- A matched span must not cross a sentence end. `!` and `?` always end a
+  sentence. A `.` ends one only when it is followed by whitespace and then an
+  uppercase letter, or by the end of the text, and the word before it is not a
+  single letter, all digits, or one of `mr`, `mrs`, `ms`, `dr`, `st`, `jr`, `sr`,
+  `vs`. A `.` between two digits is part of a number. So `8 p.m. tonight`, `8.30`,
+  `$12.50` and `Dr. Smith` do not end a sentence, but `We cannot. Book a table`
+  and `Lunch is free. Book a table` do.
+- The negation scope is a heuristic, not a parser. It fails safe in one
+  direction: a negating word in the two-word window or earlier in the clause
+  counts, even when it does not negate the quote. A real confirmation can be
+  marked unverified this way, but it is never a false success. For example,
+  `never mind, book a table for two` does not verify a met criterion. `never` is
+  two words before the quote, so the window applies even though a comma sits
+  between them. This is the fail-safe over-block, and a reader could take the
+  sentence as a confirmation. `Don't worry, your table for two is booked`
+  verifies: `Don't` is outside the two-word window, and the comma ends its
+  clause. The list of negating words, including `unsure`, `not sure` and
+  `whether`, is a judgment call. An uncertain statement is not a confirmation, so
+  those words fail safe.
+- A quote for an unmet criterion, such as a refusal, is never checked for
+  negation. Outcome-level quotes are not checked for negation under a failed
+  outcome, because any verified quote supports failure.
+- A quote resolves to the earliest final callee turn that fully supports it, by
+  the same rule used to verify it. Only final callee turns can support evidence.
+  Caller turns and partial turns never do. An unmatched quote stays unverified.
+- A final callee turn makes a call answered only when the call's effective reason
+  is not `no_answer` or `busy`, or an answered event exists. Carrier early media
+  can produce a callee turn for a call that never connected.
+- Callee turns are the words the other party spoke. On `realtime_ws` the
+  transcript of those words is model-derived and approximate. Verification
+  proves provenance only: the quoted words appear in the stored transcript of
+  the callee. It does not prove the meaning or the truth of what was said. A
+  callee can also say words that instruct the model (prompt injection). Such
+  words are still only text. They can be quoted only if they appear in the
+  transcript, and they cannot make an outcome a success without the rules above
+  holding.
+- Verified evidence is kept on `unknown` results too, so a reader can see which
+  references were checked. This is a documented design choice. The result stays
+  `unknown`, and the evidence does not make it a success.
+- A quote for a criterion the session reported not met (`met: false`) is kept as
+  evidence, for example a refusal. It never counts toward success or partial.
+- Evidence is bounded to 32 items. Excess items add `evidence_truncated`.
+
+### Deciding the outcome
+
+- `success` needs a success reason, every brief constraint reported and
+  respected, and every criterion reported met and verified. A brief with no
+  criteria needs at least one verified met quote. Quotes may be given at the
+  outcome level (`evidence_quotes`) for this.
+- `partial` needs at least one verified, met criterion. A partial claim with a
+  success reason is `assessment_contradictory`.
+- `failed` needs at least one verified quote, on any criterion or at the outcome
+  level, such as a refusal or a voicemail greeting. A failed claim with a
+  success reason is `assessment_contradictory`.
+- Whether each brief constraint was respected is the voice model's report
+  (`respected: true`). It is not verified against the transcript evidence. Only
+  the criteria are checked against the callee's words.
+- An omitted brief constraint in a success is `constraint_unreported`.
+- Valid reports that disagree on the outcome are `assessment_conflicting`.
+
+### Voice-session assessment
+
+The outcome is assessed only from the voice session that handled the call. No
+other model is used.
+
+- On `realtime_ws` calls the model is offered one tool, `report_task_outcome`.
+  It reports `success`, `partial` or `failed`, a closed-set reason, a met or not
+  met flag per criterion with the callee's exact words, and a respected or not
+  respected flag per constraint. CallHarbor acknowledges each valid report and
+  never asks the model to speak in reply.
+- On `live_ws` calls no assessment is collected, so the result carries
+  `assessment_unsupported` and is `unknown` unless the call was never answered.
+- A report that fails validation is stored only as an invalid marker, never its
+  raw arguments. It adds `assessment_invalid`. CallHarbor acknowledges an invalid
+  report that has a usable call id with the function output
+  `{"status":"invalid"}`, so the model's call does not wait. A report with no
+  usable call id has nothing to answer and gets no acknowledgement. A usable
+  report is acknowledged with `{"status":"recorded"}`.
+- The report's criteria and constraints are bounded to 20 items each, the same
+  limit as the brief's success criteria and constraints.
+- Evidence cites the callee's words only. The stored caller transcript on
+  `realtime_ws` calls is model-derived and approximate, so it is never quoted as
+  evidence.
+- Whether the real Realtime endpoint accepts this tool and calls it reliably is
+  **unverified** (`docs/protocol/FEASIBILITY.md`, R19). Until that is checked, a
+  missing report yields `unknown` with `assessment_missing`, and a failed or
+  invalid report yields `unknown` with `assessment_invalid`.
+
+### Timing
+
+A terminal call waits 2 minutes after it ended before its outcome is evaluated,
+whether or not it was answered. A call that hung up before its answered signal
+arrived can still be completed by a late answered signal within that time. A
+transcript that is still unfinished at that point is reported as
+`transcript_incomplete`. The outcome is recorded once and is not changed later.
+
+### Upgrade
+
+Migration 0010 adds the task-outcome columns with no value, so every call that
+already exists is unassessed. The migration does not backfill outcomes. After
+the upgrade, the worker assesses existing terminal calls itself:
+
+- It evaluates them in batches of `BatchSize` calls per tick (16 by default), in
+  the same order as new calls, oldest ended first. A large history therefore
+  takes several ticks to finish, and each batch runs after dialing.
+- A call that never connected (no answer, busy, rejected or another failure) is
+  recorded `failed` with a technical reason code, on its call events.
+- A call that connected but has no voice-session report is `unknown` with
+  `assessment_missing`. This includes a call whose media failed. It is never
+  `success` from the upgrade alone.
+- Each upgraded call's `assessed_at` is the time the worker recorded it, which is
+  the upgrade time, not the time the call ended. The outcome is written once, so
+  a rerun changes nothing.
+- A call whose transcript is too large or whose stored brief cannot be read is
+  recorded `unknown` with `evaluation_bound_exceeded` or
+  `evaluation_input_invalid`, so it is not retried forever.
+
+Existing calls therefore show `task_outcome` only after their batch runs. Until
+then `task_outcome` and `task_assessment` are `null`.
+
 ## Errors
 
 Every error uses one envelope:

@@ -121,7 +121,7 @@ func (s *Store) RequestHangup(ctx context.Context, callID string, audit AuditEve
 			return HangupDecision{}, err
 		}
 		if err := appendCallEvent(ctx, tx, CallEvent{
-			CallID: callID, OwnerUserID: owner, Kind: "call.failed", State: "failed",
+			CallID: callID, OwnerUserID: owner, Kind: CallEventFailed, State: "failed",
 			ReasonCode: HangupReasonCode, Provider: "internal", OccurredAt: ts,
 		}); err != nil {
 			return HangupDecision{}, err

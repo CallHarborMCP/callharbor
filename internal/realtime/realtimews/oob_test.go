@@ -1180,3 +1180,53 @@ func TestOutOfBandQueuedFailureDeliveredBeforeFollowingItemEvent(t *testing.T) {
 		t.Fatalf("the item event must follow the queued failure: %+v", got)
 	}
 }
+
+// The out-of-band request must not inherit the session's tools: it carries an
+// empty tool list and tool_choice none, so the transcription can never call
+// the report tool.
+func TestOutOfBandRequestDisablesSessionTools(t *testing.T) {
+	st := newOOBState(time.Now)
+	b, err := st.request("item_tools")
+	if err != nil || b == nil {
+		t.Fatalf("request = %s %v", b, err)
+	}
+	var m map[string]any
+	if err := json.Unmarshal(b, &m); err != nil {
+		t.Fatal(err)
+	}
+	r := m["response"].(map[string]any)
+	tools, ok := r["tools"].([]any)
+	if !ok || len(tools) != 0 || r["tool_choice"] != "none" {
+		t.Fatalf("out-of-band request tools = %v tool_choice = %v, want [] and none", r["tools"], r["tool_choice"])
+	}
+}
+
+// A function call inside a correlated out-of-band response is never a task
+// report and never acknowledged. Its arguments events are consumed, and the
+// response fails as missing text, not as an empty transcription.
+func TestOutOfBandFunctionCallIsNotTaskReport(t *testing.T) {
+	st := newOOBState(time.Now)
+	req := &oobRequest{itemID: "item_fc", eventID: "ch_oob_1", responseID: "resp_fc", started: time.Now()}
+	st.pending["ch_oob_1"], st.byResponse["resp_fc"] = req, req
+
+	args := []byte(`{"type":"response.function_call_arguments.done","event_id":"efc","response_id":"resp_fc","item_id":"fc_1","output_index":0,"call_id":"call_oob","name":"report_task_outcome","arguments":"{}"}`)
+	if sends, consumed, err := st.handleOOB("response.function_call_arguments.done", args); err != nil || !consumed || len(sends) != 0 {
+		t.Fatalf("function call arguments in an out-of-band response: consumed=%v sends=%d err=%v", consumed, len(sends), err)
+	}
+	added := []byte(`{"type":"response.output_item.added","event_id":"eoa","response_id":"resp_fc","output_index":0,"item":{"id":"fc_1","type":"function_call","name":"report_task_outcome","call_id":"call_oob"}}`)
+	if _, consumed, _ := st.handleOOB("response.output_item.added", added); !consumed {
+		t.Fatal("output item of an out-of-band response must be consumed")
+	}
+	done := []byte(`{"type":"response.done","event_id":"rd","response":{"id":"resp_fc","status":"completed","metadata":{},"output":[{"type":"function_call","name":"report_task_outcome","call_id":"call_oob","arguments":"{}"}]}}`)
+	if _, consumed, _ := st.handleOOB("response.done", done); !consumed {
+		t.Fatal("completed out-of-band response with a function call must be consumed")
+	}
+	for _, ev := range st.fifo {
+		if ev.Kind == realtime.EventTaskReport {
+			t.Fatalf("function call in an out-of-band response surfaced as a task report: %+v", ev)
+		}
+	}
+	if len(st.fifo) != 1 || st.fifo[0].Kind != realtime.EventCallerTranscriptFailed || st.fifo[0].ErrCode != "missing_text" {
+		t.Fatalf("fifo = %+v, want one missing_text failure and no empty final", st.fifo)
+	}
+}

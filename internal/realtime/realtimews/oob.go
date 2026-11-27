@@ -152,6 +152,10 @@ func (o *oobState) request(itemID string) ([]byte, error) {
 		"response": map[string]any{
 			"conversation":      "none",
 			"output_modalities": []string{"text"},
+			// A response uses the session's tools unless overridden. The
+			// transcription must never call the report tool, so it gets none.
+			"tools":             []any{},
+			"tool_choice":       "none",
 			"instructions":      oobPrompt,
 			"max_output_tokens": oobMaxOutputTokens,
 			"metadata":          map[string]string{oobPurposeKey: oobPurpose, oobItemKey: itemID},
@@ -257,6 +261,21 @@ func (o *oobState) handleOOB(typ string, raw []byte) (sends [][]byte, consumed b
 	case "response.done":
 		consumed := o.complete(raw)
 		return o.takeCancels(), consumed, nil
+	case "response.function_call_arguments.delta", "response.function_call_arguments.done", "response.output_item.added", "response.output_item.done":
+		// A function call inside an out-of-band response is never a task
+		// report. Its events are consumed here, so they cannot reach the
+		// engine as EventTaskReport, and the response is failed as non-text
+		// when it completes.
+		var m struct {
+			ResponseID string `json:"response_id"`
+		}
+		if json.Unmarshal(raw, &m) != nil {
+			return nil, false, nil
+		}
+		if o.retired[m.ResponseID] || o.byResponse[m.ResponseID] != nil {
+			return nil, true, nil
+		}
+		return nil, false, nil
 	case "response.output_text.delta", "response.output_text.done",
 		"response.output_audio.delta", "response.output_audio_transcript.delta", "response.output_audio_transcript.done":
 		var m struct {
@@ -451,6 +470,7 @@ func (o *oobState) complete(raw []byte) bool {
 			ID     string `json:"id"`
 			Status string `json:"status"`
 			Output []struct {
+				Type    string `json:"type"`
 				Content []struct {
 					Type string `json:"type"`
 					Text string `json:"text"`
@@ -488,6 +508,9 @@ func (o *oobState) complete(raw []byte) bool {
 			case ok:
 				base.Kind, base.Text = realtime.EventCallerTranscriptFinal, text
 			case outputHasNonText(m.Response.Output):
+				// A function call or any other non-message output item
+				// is not text, so the request fails rather than reading
+				// as an empty transcription.
 				base.Kind, base.ErrCode = realtime.EventCallerTranscriptFailed, "missing_text"
 			default:
 				// Completed, no text and no other output: nothing was said.
@@ -506,15 +529,19 @@ func (o *oobState) complete(raw []byte) bool {
 	return true
 }
 
-// outputHasNonText reports whether the response output carries any content
-// part other than a text part.
+// outputHasNonText reports whether the response output carries any item that is
+// not a message, such as a function call, or any content part other than text.
 func outputHasNonText(out []struct {
+	Type    string `json:"type"`
 	Content []struct {
 		Type string `json:"type"`
 		Text string `json:"text"`
 	} `json:"content"`
 }) bool {
 	for _, item := range out {
+		if item.Type != "message" {
+			return true
+		}
 		for _, p := range item.Content {
 			if p.Type != "text" && p.Type != "output_text" {
 				return true
@@ -527,6 +554,7 @@ func outputHasNonText(out []struct {
 // outputText returns the text of the first text part of the response output.
 // Only "text" and "output_text" parts count, never audio transcripts.
 func outputText(out []struct {
+	Type    string `json:"type"`
 	Content []struct {
 		Type string `json:"type"`
 		Text string `json:"text"`

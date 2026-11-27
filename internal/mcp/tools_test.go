@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"github.com/CallHarborMCP/callharbor/internal/outcome"
 	"log/slog"
 	"net"
 	"net/http"
@@ -60,7 +61,9 @@ func fixtureStore() *fakeStore {
 			{ID: "ai-a", OwnerUserID: "alice", Name: "Alice voice", Protocol: storage.AIProtocolRealtime, EndpointURL: "wss://alice.example/secret", Model: "m1", Voice: "v1", Instructions: "alice secret instructions", Headers: map[string]string{"X-Hidden": "h"}, APISecretID: "sec-a", CreatedAt: tsOlder, UpdatedAt: tsOlder},
 		},
 		calls: []storage.Call{
-			{ID: "c-a1", OwnerUserID: "alice", TelephonyProfileID: "tel-a", AIProfileID: "ai-a", ToNumber: "+14155550111", Status: "ended", Outcome: "success", CreatedAt: tsNewer, UpdatedAt: tsNewer, EndedAt: tsNewer},
+			{ID: "c-a1", OwnerUserID: "alice", TelephonyProfileID: "tel-a", AIProfileID: "ai-a", ToNumber: "+14155550111", Status: "ended", Outcome: "success",
+				OutcomeReasonCodes: []string{"confirmed"}, OutcomeEvidence: []outcome.Evidence{}, OutcomeSource: "voice_session", OutcomeAssessedAt: tsNewer,
+				CreatedAt: tsNewer, UpdatedAt: tsNewer, EndedAt: tsNewer},
 			{ID: "c-a2", OwnerUserID: "alice", TelephonyProfileID: "tel-a", AIProfileID: "ai-a", ToNumber: "+14155550112", Status: "failed", CreatedAt: tsOlder, UpdatedAt: tsOlder},
 			{ID: "c-b1", OwnerUserID: "bob", TelephonyProfileID: "tel-b", AIProfileID: "ai-a", ToNumber: "+14155550222", Status: "ended", CreatedAt: tsNewer, UpdatedAt: tsNewer, EndedAt: tsNewer},
 		},

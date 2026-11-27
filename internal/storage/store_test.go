@@ -70,6 +70,15 @@ func scalarInt(t *testing.T, s *Store, query string, args ...any) int {
 	return n
 }
 
+func scalarString(t *testing.T, s *Store, query string, args ...any) string {
+	t.Helper()
+	var v string
+	if err := s.db.QueryRowContext(context.Background(), query, args...).Scan(&v); err != nil {
+		t.Fatalf("query %q: %v", query, err)
+	}
+	return v
+}
+
 func TestOpenEnablesWALAndForeignKeys(t *testing.T) {
 	s := openMigrated(t, filepath.Join(t.TempDir(), "callharbor.db"))
 	var mode string
