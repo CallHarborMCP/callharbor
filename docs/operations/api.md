@@ -37,7 +37,7 @@ Planned operations are listed in `api/openapi.json` with `x-callharbor-availabil
 - A planned `GET` path, if one is declared, is answered by the API itself. A request needs a valid session, as every `/api/v1` path does. Anonymous requests get `401 unauthenticated`. A signed-in request gets `404` with the `not_found` envelope, `{"error":{"code":"not_found",...}}`. It never reaches the web UI, so the answer is the same whether or not the UI is built. No planned REST route is declared at present.
 - A planned `POST` path returns `405 Method Not Allowed` from the router, plain text and not the JSON envelope. Because the web UI's `GET /` pattern matches every path, the router reports a wrong method as 405 rather than 404. For example, `POST /api/v1/calls/{call_id}/transcript` returns `405`, because that path is mounted for `GET` only.
 
-The planned `GET` list is derived from `PlannedRoutes` in `internal/api/v1.go`, and the app tests probe every planned route with a session.
+The planned `GET` list is derived from `PlannedRoutes` in `internal/api/v1.go`. `PlannedRoutes` is empty today, so no planned REST route is probed. `internal/api/planned_test.go` checks the mechanism with synthetic planned routes, and `internal/api/openapi_test.go` checks that `PlannedRoutes` matches the operations the OpenAPI document marks planned.
 
 ## Call recordings
 
@@ -55,6 +55,7 @@ Both need a session and are owner-scoped. A call owned by another user, and a ca
 - `416`: the range is not satisfiable. The response carries `Content-Range: bytes */<size>`.
 - `409` `conflict`: the recording is still in progress (`status` is `recording`). Metadata still returns `200` with `status: recording`.
 - `401`, `404` as above.
+- `503` `unavailable`: recordings are not available. The recording service is not configured on this server, so the audio cannot be decrypted or served.
 - `500` `internal`: the audit write failed, or the file could not be read.
 
 **Headers on the audio response.** `Content-Type: audio/wav`, `Cache-Control: private, no-store`, `X-Content-Type-Options: nosniff`, `Accept-Ranges: bytes`. `Content-Length` is set by the standard library from the audio size. By default `Content-Disposition` is `inline`. With `?download=1` it is `attachment; filename="call-<id>.wav"`, where the call id is sanitized to letters, digits, `-` and `_`.

@@ -25,9 +25,12 @@ import (
 //	  the final one.
 //
 // Nonce (12 bytes): big-endian segment counter in bytes 0..10, then one flag
-// byte at 11. The flag is 1 only on the final segment, so a truncation at a
-// segment boundary cannot pass as a complete recording, and segments cannot be
-// reordered. AAD: magic || header || 0x00 || recording id || 0x00 || owner id,
+// byte at 11. Flag 0 is a non-final segment. Flag 1 is the authentic final
+// segment written by the writer. Flag 2 is an empty final segment sealed by
+// recovery or reseal after an authenticated prefix. Flags 1 and 2 are valid
+// only on the last segment, and flag 2 is never valid elsewhere. So a
+// truncation at a segment boundary cannot pass as complete, segments cannot be
+// reordered, and no (counter, flag) pair is sealed twice. AAD: magic || header || 0x00 || recording id || 0x00 || owner id,
 // so a file moved to another recording or owner fails authentication.
 const (
 	magic       = "CHRECv01"
@@ -101,13 +104,24 @@ func segmentAAD(headerBytes []byte, recordingID, ownerID string) []byte {
 	return aad
 }
 
-// segmentNonce builds the STREAM nonce for segment counter and final flag.
-func segmentNonce(counter uint64, final bool) []byte {
+// Segment flag bytes, the last nonce byte. They are distinct so that a segment
+// sealed by recovery or reseal never shares a nonce with an authentic final
+// segment written by the writer.
+const (
+	flagNonFinal byte = 0
+	// flagFinal is written by the writer on the authentic final segment.
+	flagFinal byte = 1
+	// flagResealed is written by recovery and reseal when they seal an empty
+	// final segment after an authenticated prefix. It is valid only on the last
+	// segment of a file.
+	flagResealed byte = 2
+)
+
+// segmentNonce builds the STREAM nonce for segment counter and flag byte.
+func segmentNonce(counter uint64, flag byte) []byte {
 	n := make([]byte, nonceSize)
 	binary.BigEndian.PutUint64(n[3:11], counter)
-	if final {
-		n[11] = 1
-	}
+	n[11] = flag
 	return n
 }
 
@@ -123,15 +137,28 @@ func streamAEAD(key []byte) (cipher.AEAD, error) {
 	return cipher.NewGCMWithNonceSize(block, nonceSize)
 }
 
-// sealSegment encrypts one segment in place of a file append.
-func sealSegment(aead cipher.AEAD, aad []byte, counter uint64, final bool, plain []byte) []byte {
-	return aead.Seal(nil, segmentNonce(counter, final), plain, aad)
+// sealSegment encrypts one segment with the given flag byte.
+func sealSegment(aead cipher.AEAD, aad []byte, counter uint64, flag byte, plain []byte) []byte {
+	return aead.Seal(nil, segmentNonce(counter, flag), plain, aad)
 }
 
-// openSegment authenticates and decrypts one segment. It returns ErrCorrupt on
-// any mismatch, including a wrong final flag.
-func openSegment(aead cipher.AEAD, aad []byte, counter uint64, final bool, sealed []byte) ([]byte, error) {
-	pt, err := aead.Open(nil, segmentNonce(counter, final), sealed, aad)
+// openFinalOrNon authenticates segment counter. A non-final segment opens only
+// with flag 0. The last segment opens with flag 1 (writer) or flag 2 (resealed).
+// Any other position is ErrCorrupt for flags 1 and 2.
+func openFinalOrNon(aead cipher.AEAD, aad []byte, counter uint64, final bool, sealed []byte) ([]byte, error) {
+	if !final {
+		return openSegment(aead, aad, counter, flagNonFinal, sealed)
+	}
+	if pt, err := openSegment(aead, aad, counter, flagFinal, sealed); err == nil {
+		return pt, nil
+	}
+	return openSegment(aead, aad, counter, flagResealed, sealed)
+}
+
+// openSegment authenticates and decrypts one segment with the given flag byte.
+// It returns ErrCorrupt on any mismatch, including a wrong flag.
+func openSegment(aead cipher.AEAD, aad []byte, counter uint64, flag byte, sealed []byte) ([]byte, error) {
+	pt, err := aead.Open(nil, segmentNonce(counter, flag), sealed, aad)
 	if err != nil {
 		return nil, ErrCorrupt
 	}

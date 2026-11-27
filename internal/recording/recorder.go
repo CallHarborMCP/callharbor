@@ -65,9 +65,11 @@ const (
 	maxPendingSeconds = 120
 	// writerQueue bounds plaintext chunks waiting for the writer goroutine.
 	writerQueue = 256
-	// syncInterval is the fsync cadence while writing.
-	syncInterval = time.Second
 )
+
+// syncInterval is the fsync cadence while writing. It is a variable only so a
+// test can shorten it; production never changes it.
+var syncInterval = time.Second
 
 // ErrRecorderClosed reports a Finish after the recorder already finished.
 var ErrRecorderClosed = errors.New("recording: recorder finished")
@@ -138,9 +140,12 @@ type Recorder struct {
 	gapFilled      bool
 	framesDropped  bool
 	overlapDropped bool
-	interrupted    bool
-	backpressure   bool
-	closed         bool
+	// syncFailed is set when fsync fails. The recording is then finalized
+	// failed and never resealed from the page cache.
+	syncFailed   bool
+	interrupted  bool
+	backpressure bool
+	closed       bool
 }
 
 // New starts a recorder over sink and its writer goroutine. The sink is owned
@@ -385,11 +390,20 @@ func (r *Recorder) run(sink Sink) {
 		r.written.Add(int64(len(buf)))
 		if time.Since(lastSync) >= syncInterval {
 			if err := sink.Sync(); err != nil {
+				// A failed fsync means the written bytes may not be durable.
+				// Resealing would read them back from the page cache and could
+				// present audio the disk never kept, so the recording is failed
+				// and the sink is closed without a reseal.
 				r.fail(err)
+				r.syncFailed = true
 				continue
 			}
 			lastSync = time.Now()
 		}
+	}
+	if r.syncFailed {
+		_ = sink.Close()
+		return
 	}
 	if r.writeFailed.Load() {
 		// A failed writer cannot seal normally. Reseal makes the authenticated
@@ -465,7 +479,12 @@ func (r *Recorder) Finish(at time.Time, unconfirmed bool) (Result, error) {
 	if r.backpressure {
 		res.Status = StatusPartial
 	}
-	if r.writeFailed.Load() {
+	if r.syncFailed {
+		// Durability is unknown after a failed fsync. Nothing is served, and
+		// the byte count is not reported as recorded audio.
+		res.Status = StatusFailed
+		res.ByteCount = 0
+	} else if r.writeFailed.Load() {
 		// After a write failure the byte count is what the file authenticates,
 		// not what the writer accepted. Nothing authenticated, or no reseal,
 		// means nothing can be served.

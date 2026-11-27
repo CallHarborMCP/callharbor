@@ -24,6 +24,7 @@ type Store interface {
 	LoadCallForMedia(ctx context.Context, callID string) (storage.MediaCall, error)
 	BeginLocalHangup(ctx context.Context, callID, reasonCode string, now time.Time) (storage.LiveCallLeg, bool, error)
 	BindStreamControlID(ctx context.Context, callID, controlID string, now time.Time) (bool, error)
+	ClearRecordEffective(ctx context.Context, callID string) (bool, error)
 }
 
 // LegHangup ends one live Telnyx leg with the owner's key. app.go builds it
@@ -160,6 +161,13 @@ func (m *Media) sinkFactory(upgrade storage.MediaCall) telnyx.SinkFactory {
 				return nil, fmt.Errorf("record stream control id: %w", err)
 			}
 		}
+		// The owner may have opted out since the call was accepted. The stored
+		// effective flag is cleared here, after the stream is authenticated and
+		// bound, so the read paths before it stay read-only. A failure to clear
+		// refuses the stream rather than recording a call the owner opted out of.
+		if _, err := m.Store.ClearRecordEffective(ctx, st.ID); err != nil {
+			return nil, fmt.Errorf("clear record effective: %w", err)
+		}
 		release, err := m.sessions.claim(st.ID)
 		if err != nil {
 			return nil, err
@@ -267,21 +275,6 @@ func (m *Media) attach(sess realtime.Session, st storage.MediaCall, leg, provide
 	// One clock for the call: the recorder stamps frames with m.Now, so the sink
 	// must read the same clock for its own timing and taps to agree.
 	bridgeSink.SetClock(m.Now)
-	// The recorder is started before the run, so the first media frame is never
-	// before its t0. One recorder per call: a second stream for a call that
-	// already has a recording row creates nothing.
-	// A recording setup failure never refuses the call: it runs untapped. The
-	// failure is logged without any call content.
-	recCall, err := startRecording(context.Background(), m.Recording, st, leg, m.Now())
-	if err != nil {
-		recCall = nil
-		if m.Logger != nil {
-			m.Logger.Error("recording setup failed; call continues unrecorded", "call_id", st.ID, "error", err.Error())
-		}
-	}
-	if recCall != nil {
-		bridgeSink.Tap = recCall.rec
-	}
 	ab, err := voicecall.NewAudioBridge(bridgeSink)
 	if err != nil {
 		_ = sess.Close()
@@ -305,6 +298,24 @@ func (m *Media) attach(sess realtime.Session, st storage.MediaCall, leg, provide
 		// each event's playout source.
 		sink = ab.EventSink(rec.Observe)
 		rec.Start()
+	}
+	// The recording starts only after every fallible setup step above, so a
+	// later error can never leave a live writer goroutine or a row stuck in
+	// 'recording'. It starts before the run, so the first media frame is never
+	// before its t0. One recorder per call: a second stream for a call that
+	// already has a recording row creates nothing. A recording setup failure
+	// never refuses the call: it runs untapped, and the failure is logged
+	// without any call content. No media reaches the Tap before this returns,
+	// because media is delivered only after the sink is returned.
+	recCall, err := startRecording(context.Background(), m.Recording, st, leg, m.Now())
+	if err != nil {
+		recCall = nil
+		if m.Logger != nil {
+			m.Logger.Error("recording setup failed; call continues unrecorded", "call_id", st.ID, "error", err.Error())
+		}
+	}
+	if recCall != nil {
+		bridgeSink.Tap = recCall.rec
 	}
 	// The run is bound to the stream. Closing the stream cancels it, and
 	// voice.Run always closes the session, so the provider connection ends

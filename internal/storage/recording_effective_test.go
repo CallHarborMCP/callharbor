@@ -101,10 +101,11 @@ func TestInsertCallForgedOverrideLeavesNoRecordingState(t *testing.T) {
 	}
 }
 
-// An owner who opts out after accept has the call's effective flag cleared at
-// media start: the stored flag is 0 and the view reports no recording. A second
-// media read changes nothing.
-func TestLoadCallForMediaClearsEffectiveAfterOptOut(t *testing.T) {
+// LoadCallForMedia is read-only. Before authentication it runs on the webhook
+// key lookup, so it must not change the stored flag. An owner who opted out
+// after accept reads as not recording, but the stored flag stays 1 until the
+// stream is bound and ClearRecordEffective runs.
+func TestLoadCallForMediaIsReadOnlyAfterOptOut(t *testing.T) {
 	ctx := context.Background()
 	s := openMigrated(t, filepath.Join(t.TempDir(), "media-opt.db"))
 	seedTenants(t, s)
@@ -113,9 +114,6 @@ func TestLoadCallForMediaClearsEffectiveAfterOptOut(t *testing.T) {
 	in.RecordRequested = true
 	if err := s.InsertCall(ctx, in); err != nil {
 		t.Fatal(err)
-	}
-	if n := scalarInt(t, s, "SELECT record_effective FROM calls WHERE id = 'c-opt'"); n != 1 {
-		t.Fatalf("stored record_effective = %d before opt-out, want 1", n)
 	}
 	setOptIn(t, s, "alice", false)
 
@@ -126,17 +124,49 @@ func TestLoadCallForMediaClearsEffectiveAfterOptOut(t *testing.T) {
 	if m.RecordEffective {
 		t.Fatal("media view reports recording after the owner opted out")
 	}
-	if n := scalarInt(t, s, "SELECT record_effective FROM calls WHERE id = 'c-opt'"); n != 0 {
-		t.Fatalf("stored record_effective = %d after media start, want 0", n)
+	if n := scalarInt(t, s, "SELECT record_effective FROM calls WHERE id = 'c-opt'"); n != 1 {
+		t.Fatalf("LoadCallForMedia changed the stored flag: record_effective = %d, want 1", n)
 	}
 	if _, err := s.LoadCallForMedia(ctx, "c-opt"); err != nil {
 		t.Fatalf("second media read: %v", err)
 	}
-	c, err := s.GetCall(ctx, "alice", "c-opt")
+}
+
+// ClearRecordEffective clears the stored flag of a call whose owner opted out,
+// once, after media is authenticated. It changes nothing for an owner still
+// opted in.
+func TestClearRecordEffectiveAfterOptOut(t *testing.T) {
+	ctx := context.Background()
+	s := openMigrated(t, filepath.Join(t.TempDir(), "media-clear.db"))
+	seedTenants(t, s)
+	setOptIn(t, s, "alice", true)
+	in := newCallInsert("c-clr", "alice", "alice-tel", "alice-ai", "clr-key")
+	in.RecordRequested = true
+	if err := s.InsertCall(ctx, in); err != nil {
+		t.Fatal(err)
+	}
+	// Still opted in: the clear changes nothing.
+	if ok, err := s.ClearRecordEffective(ctx, "c-clr"); err != nil || ok {
+		t.Fatalf("clear while opted in = %v, %v; want no change", ok, err)
+	}
+	if n := scalarInt(t, s, "SELECT record_effective FROM calls WHERE id = 'c-clr'"); n != 1 {
+		t.Fatalf("opted-in call flag = %d, want 1", n)
+	}
+	setOptIn(t, s, "alice", false)
+	if ok, err := s.ClearRecordEffective(ctx, "c-clr"); err != nil || !ok {
+		t.Fatalf("clear after opt-out = %v, %v; want one row changed", ok, err)
+	}
+	if n := scalarInt(t, s, "SELECT record_effective FROM calls WHERE id = 'c-clr'"); n != 0 {
+		t.Fatalf("stored record_effective = %d after clear, want 0", n)
+	}
+	if ok, err := s.ClearRecordEffective(ctx, "c-clr"); err != nil || ok {
+		t.Fatalf("second clear = %v, %v; want no change", ok, err)
+	}
+	c, err := s.GetCall(ctx, "alice", "c-clr")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if c.RecordEffective {
-		t.Fatal("call view still reports record_effective after media start")
+		t.Fatal("call view still reports record_effective after the clear")
 	}
 }

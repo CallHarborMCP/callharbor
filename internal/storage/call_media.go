@@ -57,16 +57,26 @@ func (s *Store) LoadCallForMedia(ctx context.Context, callID string) (MediaCall,
 	m.ControlID = control.String
 	m.WebhookKeySecretID = key.String
 	m.RecordEffective = recordEffective == 1 && optIn == 1
-	if recordEffective == 1 && optIn == 0 {
-		// The owner opted out before media start. The stored effective flag is
-		// cleared, so the call view stops reporting recording for this call.
-		// The clear is conditional, so a repeated read changes nothing.
-		if _, err := s.db.ExecContext(ctx, `UPDATE calls SET record_effective = 0
-			WHERE id = ? AND record_effective = 1`, callID); err != nil {
-			return MediaCall{}, fmt.Errorf("clear record effective: %w", err)
-		}
-	}
 	return m, nil
+}
+
+// ClearRecordEffective clears the stored record_effective flag of one call
+// whose owner has opted out since the call was accepted. It is a write, so it
+// is called only after the media stream is authenticated and bound, never on
+// the read path that runs before authentication. The clear is conditional, so
+// a repeated call changes nothing, and it reports whether a row changed.
+func (s *Store) ClearRecordEffective(ctx context.Context, callID string) (bool, error) {
+	res, err := s.db.ExecContext(ctx, `UPDATE calls SET record_effective = 0
+		WHERE id = ? AND record_effective = 1
+		AND EXISTS (SELECT 1 FROM users u WHERE u.id = calls.owner_user_id AND u.recording_opt_in = 0)`, callID)
+	if err != nil {
+		return false, fmt.Errorf("clear record effective: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("clear record effective: %w", err)
+	}
+	return n == 1, nil
 }
 
 // BindStreamControlID records the control id a media start frame proved, when

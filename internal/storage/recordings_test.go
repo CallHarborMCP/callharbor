@@ -143,3 +143,45 @@ func TestMarkRecordingReconnected(t *testing.T) {
 		t.Fatalf("flags after second mark = %v", r.QualityFlags)
 	}
 }
+
+// A 'partial' recording is marked too: the flag is added when absent and the
+// status stays 'partial'. A partial row that already carries the flag changes
+// nothing.
+func TestMarkRecordingReconnectedFlagsPartialRow(t *testing.T) {
+	ctx := context.Background()
+	s := openMigrated(t, filepath.Join(t.TempDir(), "rec-partial.db"))
+	seedTenants(t, s)
+	if err := s.InsertRecording(ctx, testRecordingRow("rec-p")); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetRecordingFormat(ctx, "rec-p", 8000); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.FinalizeRecording(ctx, RecordingFinal{
+		ID: "rec-p", Status: RecordingStatusPartial, ByteCount: 64, DurationMS: 4,
+		QualityFlags: []string{"write_failed"}, FinalizedAt: testTime, ExpiresAt: testTime,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	const flag = "stream_reconnected_not_recorded"
+	if ok, err := s.MarkRecordingReconnected(ctx, "alice", "alice-call", flag); err != nil || !ok {
+		t.Fatalf("mark partial: changed=%v err=%v, want change", ok, err)
+	}
+	r, err := s.GetRecordingForCall(ctx, "alice", "alice-call")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.Status != RecordingStatusPartial {
+		t.Fatalf("status = %s, want partial", r.Status)
+	}
+	if !slices.Equal(r.QualityFlags, []string{"write_failed", flag}) {
+		t.Fatalf("flags = %v, want write_failed and %s", r.QualityFlags, flag)
+	}
+	if ok, err := s.MarkRecordingReconnected(ctx, "alice", "alice-call", flag); err != nil || ok {
+		t.Fatalf("second mark on partial: changed=%v err=%v, want no change", ok, err)
+	}
+	r, _ = s.GetRecordingForCall(ctx, "alice", "alice-call")
+	if !slices.Equal(r.QualityFlags, []string{"write_failed", flag}) {
+		t.Fatalf("flags after second mark = %v", r.QualityFlags)
+	}
+}

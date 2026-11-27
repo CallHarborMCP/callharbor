@@ -153,18 +153,21 @@ func (s *Store) GetRecordingForCall(ctx context.Context, ownerUserID, callID str
 	return r, nil
 }
 
-// MarkRecordingReconnected moves a finalized 'complete' recording of one call to
-// 'partial' and appends flag to its quality flags, once. It changes nothing for
-// any other status and reports whether a row changed. A stream that reconnects
-// after the recording was finalized uses it, so the stored audio is never
-// presented as the whole call.
+// MarkRecordingReconnected marks a finalized recording of one call, 'complete'
+// or already 'partial', so the stored audio is never presented as the whole
+// call. A 'complete' row becomes 'partial'; a 'partial' row keeps its status.
+// Either way flag is appended to the quality flags once. It changes nothing for
+// any other status, and it reports whether a row changed. A reconnect that
+// arrives while the row is still 'recording' changes nothing: the sweep settles
+// that row. A stream that reconnects after the recording was finalized uses it.
 func (s *Store) MarkRecordingReconnected(ctx context.Context, ownerUserID, callID, flag string) (bool, error) {
 	res, err := s.db.ExecContext(ctx, `UPDATE recordings
 		SET status = 'partial',
 		    quality_flags = CASE WHEN EXISTS (SELECT 1 FROM json_each(quality_flags) WHERE value = ?)
 		        THEN quality_flags ELSE json_insert(quality_flags, '$[#]', ?) END
-		WHERE call_id = ? AND owner_user_id = ? AND status = 'complete'`,
-		flag, flag, callID, ownerUserID)
+		WHERE call_id = ? AND owner_user_id = ? AND status IN ('complete', 'partial')
+		AND (status = 'complete' OR NOT EXISTS (SELECT 1 FROM json_each(quality_flags) WHERE value = ?))`,
+		flag, flag, callID, ownerUserID, flag)
 	if err != nil {
 		return false, fmt.Errorf("mark recording reconnected: %w", err)
 	}

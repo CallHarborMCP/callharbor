@@ -231,6 +231,41 @@ func TestRecorderLateFrameDoesNotShiftLaterAudio(t *testing.T) {
 	}
 }
 
+// A burst of late frames is not a sustained lag. Frames 5 to 34 all arrive at
+// 700 ms with continuous RTP, so each is late but the burst lasts under the
+// window only because its frames all arrive together. The later on-time frames
+// must keep their RTP positions. Under a forward-on-first-lag rule, frame 5's
+// lag would shift the anchor by about 580 ms at once and frame 40 would land
+// late, so this test fails on that rule and passes on the windowed one.
+func TestRecorderLateBurstDoesNotShiftLaterAudio(t *testing.T) {
+	sink := &memSink{}
+	r := newRec(t, sink)
+	// Frames 0 to 4 arrive on time.
+	for j := 0; j < 5; j++ {
+		r.CallerPayload(rtpMS(20*j), l16(samplesMS(20), int16(j+1)), at(20*j))
+	}
+	// Frames 5 to 34 all arrive at 700 ms, in order, with continuous RTP.
+	for j := 5; j <= 34; j++ {
+		r.CallerPayload(rtpMS(20*j), l16(samplesMS(20), int16(j+1)), at(700))
+	}
+	// Frames 35 onward arrive on time.
+	for j := 35; j <= 100; j++ {
+		r.CallerPayload(rtpMS(20*j), l16(samplesMS(20), int16(j+1)), at(20*j))
+	}
+	res := finish(t, r, at(4000), false)
+	caller := channel(sink.pcm(), 0)
+	for _, j := range []int{40, 80, 100} {
+		if got := caller[samplesMS(20*j)]; got != int16(j+1) {
+			t.Fatalf("frame %d at RTP %d ms = %d, want %d: the late burst shifted later audio", j, 20*j, got, j+1)
+		}
+	}
+	// The burst is ahead of the flush point, so nothing is dropped: the frames
+	// are placed at their RTP positions and no drop is flagged.
+	if hasFlag(res, FlagCallerFramesDropped) {
+		t.Fatalf("burst frames ahead of the flush point were dropped: %v", res.QualityFlags)
+	}
+}
+
 func TestRecorderQueuedAgentAudioPlaysAtPlayStart(t *testing.T) {
 	sink := &memSink{}
 	r := newRec(t, sink)
@@ -305,6 +340,28 @@ func TestRecorderOverlappingAgentAudioDoesNotDoubleWrite(t *testing.T) {
 	// placed by the queue at the queue end, so the first sample stays intact.
 	r.AgentPayload(at(100), l16(samplesMS(200), 2000), at(0))
 	finish(t, r, at(2000), false)
+	agent := channel(sink.pcm(), 1)
+	if agent[samplesMS(199)] != 1000 {
+		t.Fatalf("overlap overwrote played audio: %d", agent[samplesMS(199)])
+	}
+}
+
+// Agent audio that overlaps audio already written to the agent channel is
+// rejected by the timeline and must set agent_overlap_dropped. The first chunk
+// is committed before the second is written: its end is due at the second
+// chunk's commit time, so the timeline has it when the overlap is tested.
+func TestRecorderOverlapSetsOverlapDroppedFlag(t *testing.T) {
+	sink := &memSink{}
+	r := newRec(t, sink)
+	r.AgentPayload(at(0), l16(samplesMS(200), 1000), at(0))
+	// Wall time advances past the first chunk's end, so it is committed.
+	r.CallerPayload(rtpMS(0), l16(samplesMS(20), 1), at(300))
+	// Second chunk starts inside the first chunk's written span.
+	r.AgentPayload(at(100), l16(samplesMS(200), 2000), at(300))
+	res := finish(t, r, at(2000), false)
+	if !hasFlag(res, FlagAgentOverlapDropped) {
+		t.Fatalf("overlapping agent audio did not set %s: flags = %v", FlagAgentOverlapDropped, res.QualityFlags)
+	}
 	agent := channel(sink.pcm(), 1)
 	if agent[samplesMS(199)] != 1000 {
 		t.Fatalf("overlap overwrote played audio: %d", agent[samplesMS(199)])

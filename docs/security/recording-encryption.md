@@ -21,7 +21,7 @@ The file has a plaintext header, then encrypted segments.
 
 - **Header** (`recording.HeaderSize` bytes): an 8-byte magic `CHRECv01`, the 4-byte big-endian `key_version`, the 32-byte salt, the 4-byte big-endian sample rate, one channel-count byte (always 2), and the 4-byte segment size (always 16 KiB).
 - **Segments**: AES-256-GCM in STREAM form. Every non-final segment holds exactly 16 KiB of plaintext. The final segment may be shorter, including empty.
-- **Nonce** (12 bytes): a big-endian segment counter, then one flag byte. The flag is `1` only on the final segment. A file truncated at a segment boundary therefore cannot pass as complete, and segments cannot be reordered.
+- **Nonce** (12 bytes): a big-endian segment counter, then one flag byte. The flag is `0` for a non-final segment, `1` for the final segment the writer seals, and `2` for an empty final segment that recovery or reseal seals after an authenticated prefix. Flags `1` and `2` are valid only on the last segment, and `2` is never valid elsewhere. A file truncated at a segment boundary therefore cannot pass as complete, segments cannot be reordered, and no counter and flag pair is sealed twice.
 - **Associated data**: the magic, the header, the recording id and the owner id, each separated by a zero byte. A file moved to another recording or owner fails authentication.
 
 Because each segment is authenticated on its own, a read can decrypt any segment without reading the whole file. Range reads of the audio use this.
@@ -39,12 +39,15 @@ A recording row is written as `recording` when the call starts. If the process s
 
 At startup, `callstream.RecoverInterrupted` settles those rows. It:
 
-1. Opens each file and checks its header. It then walks the segments and authenticates each one.
-2. Truncates a torn tail: a short final segment that does not authenticate is cut off, and the file keeps the authenticated prefix. A full-size segment that fails authentication is not treated as a torn write, and the file is not truncated.
-3. Seals the authenticated prefix. The file is resealed with an empty final segment at the next counter and fsynced, so the reader accepts it. The audio stays readable, and the row is `partial`.
-4. Closes the row. A recovered row with audio is `partial`. A row with no recoverable audio, or a file that is missing, is `failed`. Every recovered row gets the `recovered_after_restart` quality flag. A `failed` row is never served.
+1. Opens each file and checks its header. It then walks the segments and authenticates each one in order.
+2. Checks for a complete file first. If the last authenticated segment is a final one (the writer's flag, or a previous reseal's), the file is complete. Only bytes after it are trimmed, and the audio is not resealed.
+3. Otherwise a torn tail (a short segment that is not a final) is truncated. A full-size segment after the first that fails authentication is damage. The file keeps the authenticated prefix before it and the rest is dropped, because a crash can only leave a shorter tail, so a full-size failure is real damage.
+4. Seals the authenticated prefix with an empty resealed final segment (flag 2) at the next counter and fsyncs. The reader accepts it, and the audio stays readable.
+5. Closes the row. A recovered row with audio is `partial`, including after damage. A row with no recoverable audio, or a file that is missing, is `failed`. Every recovered row gets the `recovered_after_restart` quality flag. A `failed` row is never served.
 
-A file that does not authenticate under the configured key (a wrong or rotated master key, or damage to segment 0) is left as it is. Its row stays `recording` and is logged, so a later start with the right key can settle it. A row whose stored path does not match its id is skipped and not finalized.
+A file whose first segment does not authenticate under the configured key (a wrong or rotated master key, an unknown key version, a bad header, or damage to segment 0) is left as it is. Its row stays `recording` and is logged, so a later start with the right key can settle it. A row whose stored path does not match its id is skipped and not finalized.
+
+Damage after segment 0 has no flag of its own. The row is `partial` and carries `recovered_after_restart`, and the recovered audio ends where the damage starts. A new flag was not added to the persisted vocabulary in this change.
 
 A recording whose writer failed during a live call is resealed the same way when the call finishes. Its byte count is the authenticated PCM, and it is `partial` with `write_failed`. If nothing authenticates, it is `failed`.
 

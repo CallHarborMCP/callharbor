@@ -23,12 +23,13 @@ type RecoveryStore interface {
 // process. It runs once at startup, after migrations and before the server
 // accepts traffic, so no live recorder can be racing it.
 //
-// For each row the file is authenticated as far as it is intact and its torn
-// tail is truncated. The row becomes 'partial' with the authenticated audio, or
-// 'failed' when no audio authenticated, and it always carries the
-// recovered_after_restart flag. A missing file becomes 'failed'. A file that
-// does not authenticate at all (damage or a wrong key) is also 'failed' and is
-// left on disk for inspection; it is never served.
+// For each row the file is authenticated as far as it is intact. A torn tail is
+// truncated, and damage after the first segment keeps the authenticated prefix
+// before it. Either way the prefix is resealed, and the row becomes 'partial'
+// with the authenticated audio and the recovered_after_restart flag. A missing
+// file becomes 'failed'. When segment 0 does not authenticate, the key version
+// is unknown, or the header is bad, nothing is proven: the row stays
+// 'recording' and the file is left untouched for a run with the right key.
 //
 // It returns the number of rows settled. An error on one row is logged and the
 // sweep continues, so one bad row cannot block startup.
@@ -79,8 +80,10 @@ func recoverOne(ctx context.Context, store RecoveryStore, ring *secrets.Keyring,
 		// The file is gone: nothing can ever be served, so the row closes.
 	case errors.Is(err, recording.ErrCorrupt), errors.Is(err, recording.ErrBadHeader),
 		errors.Is(err, secrets.ErrUnknownKeyVersion):
-		// Wrong or rotated master key, or damage to segment 0. The key may come
-		// back, so the row stays 'recording' and the file is left untouched.
+		// Segment 0 does not authenticate, or the header or key version is
+		// unknown. Nothing is proven about the key, so the row stays 'recording'
+		// and the file is left untouched. Damage after segment 0 is not here: it
+		// settles below.
 		return fmt.Errorf("recording %s: file does not authenticate under the configured key; left unsettled", r.ID)
 	case err != nil:
 		return err

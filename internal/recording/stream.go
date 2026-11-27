@@ -74,7 +74,7 @@ func (w *Writer) Write(p []byte) error {
 			// A full segment is never final until the stream ends, so it is
 			// written non-final. Sealing a full segment as final would let a
 			// boundary truncation pass as complete.
-			if err := w.emit(false); err != nil {
+			if err := w.emit(); err != nil {
 				return err
 			}
 		}
@@ -83,8 +83,8 @@ func (w *Writer) Write(p []byte) error {
 }
 
 // emit seals the buffered plaintext as the next segment and writes it.
-func (w *Writer) emit(final bool) error {
-	sealed := sealSegment(w.aead, w.aad, w.counter, final, w.buf)
+func (w *Writer) emit() error {
+	sealed := sealSegment(w.aead, w.aad, w.counter, flagNonFinal, w.buf)
 	if _, err := w.f.Write(sealed); err != nil {
 		w.closed = true
 		return fmt.Errorf("recording: write segment: %w", err)
@@ -129,30 +129,37 @@ func (w *Writer) Reseal() (int64, error) {
 		_ = w.f.Close()
 		return 0, fmt.Errorf("recording: stat failed writer: %w", err)
 	}
-	keep, plain, complete, next, err := scanSegments(w.f, st.Size(), w.aead, w.aad)
+	sc, err := scanSegments(w.f, st.Size(), w.aead, w.aad)
 	if err != nil {
 		_ = w.f.Close()
 		return 0, err
 	}
-	if complete {
-		// A final segment was written before the failure. Nothing to add.
-		return plain, w.f.Close()
+	if sc.complete {
+		// A final segment was written before the failure. Trim any bytes after it
+		// and leave the authentic final in place.
+		if sc.keep != st.Size() {
+			if err := w.f.Truncate(sc.keep); err != nil {
+				_ = w.f.Close()
+				return 0, fmt.Errorf("recording: truncate failed writer: %w", err)
+			}
+		}
+		return sc.plain, w.f.Close()
 	}
-	if keep <= int64(HeaderSize) {
+	if sc.keep <= int64(HeaderSize) {
 		_ = w.f.Close()
 		return 0, ErrCorrupt
 	}
-	if keep != st.Size() {
-		if err := w.f.Truncate(keep); err != nil {
+	if sc.keep != st.Size() {
+		if err := w.f.Truncate(sc.keep); err != nil {
 			_ = w.f.Close()
 			return 0, fmt.Errorf("recording: truncate failed writer: %w", err)
 		}
 	}
-	if err := sealPrefixFinal(w.f, keep, next, w.aead, w.aad); err != nil {
+	if err := sealPrefixFinal(w.f, sc.keep, sc.next, w.aead, w.aad); err != nil {
 		_ = w.f.Close()
 		return 0, err
 	}
-	return plain, w.f.Close()
+	return sc.plain, w.f.Close()
 }
 
 // Close seals the buffered tail as the final segment, syncs, and closes the
@@ -175,7 +182,7 @@ func (w *Writer) Close() error {
 }
 
 func (w *Writer) sealFinal() error {
-	sealed := sealSegment(w.aead, w.aad, w.counter, true, w.buf)
+	sealed := sealSegment(w.aead, w.aad, w.counter, flagFinal, w.buf)
 	if _, err := w.f.Write(sealed); err != nil {
 		return fmt.Errorf("recording: write final segment: %w", err)
 	}
@@ -236,7 +243,8 @@ func NewReader(ra io.ReaderAt, size int64, headerBytes []byte, h Header, key []b
 func finalIndex(plainLen int64) int64 { return plainLen / SegmentSize }
 
 // segmentBounds returns the file offset, sealed length, plaintext length, and
-// final flag of segment i.
+// whether segment i is the final one. Only the final segment can carry flag 1
+// or flag 2; loadSegment tries those two on it and nothing else.
 func (r *Reader) segmentBounds(i int64) (off, sealedLen, plainLen int64, final bool) {
 	off = int64(HeaderSize) + i*r.segStride
 	final = i == finalIndex(r.plainLen)
@@ -262,7 +270,7 @@ func (r *Reader) loadSegment(i int64) error {
 		}
 		return fmt.Errorf("recording: read segment: %w", err)
 	}
-	pt, err := openSegment(r.aead, r.aad, uint64(i), final, sealed) // #nosec G115 -- segment index i is non-negative by construction
+	pt, err := openFinalOrNon(r.aead, r.aad, uint64(i), final, sealed) // #nosec G115 -- segment index i is non-negative by construction
 	if err != nil {
 		r.cacheIdx = -1
 		return err

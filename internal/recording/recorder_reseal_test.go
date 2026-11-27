@@ -3,6 +3,7 @@ package recording
 import (
 	"bytes"
 	"crypto/rand"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -10,11 +11,12 @@ import (
 	"github.com/CallHarborMCP/callharbor/internal/secrets"
 )
 
-// TestRecorderWriteFailureResealsAuthenticatedPrefix drives a real file writer
-// into a write failure through the recorder. Two full segments are sealed before
-// the failure, and the tail is buffered. Finish must report the authenticated
-// PCM, status partial with write_failed, and the file must read back.
-func TestRecorderWriteFailureResealsAuthenticatedPrefix(t *testing.T) {
+// TestWriterResealKeepsAuthenticatedPrefix drives a real file Writer, not the
+// recorder, into a failed write. Two full segments are sealed before the failure
+// and the tail is buffered. Reseal must report the authenticated PCM and the file
+// must read back. The recorder-level path is covered by
+// TestRecorderFinishReportsResealedBytesAfterSinkFailure.
+func TestWriterResealKeepsAuthenticatedPrefix(t *testing.T) {
 	dataDir := t.TempDir()
 	ring, err := secrets.NewKeyring(1, map[int][]byte{1: bytes.Repeat([]byte{0x55}, 32)})
 	if err != nil {
@@ -131,9 +133,54 @@ func (s *failingResealSink) Write(p []byte) error {
 	return s.Writer.Write(p)
 }
 
+// syncFailSink is a sink whose Sync fails. Its Reseal counts calls, so the test
+// can prove a failed fsync never reseals from the page cache.
+type syncFailSink struct {
+	*memSink
+	reseals int
+}
+
+func (s *syncFailSink) Sync() error { return errors.New("fsync: input/output error") }
+
+func (s *syncFailSink) Reseal() (int64, error) {
+	s.reseals++
+	return 0, errors.New("reseal must not run after a failed fsync")
+}
+
+// TestRecorderSyncFailureFinalizesFailedWithoutReseal: an fsync failure means
+// the written bytes may not be durable. The recording finishes failed with no
+// byte count and is never resealed.
+func TestRecorderSyncFailureFinalizesFailedWithoutReseal(t *testing.T) {
+	prev := syncInterval
+	syncInterval = 0
+	t.Cleanup(func() { syncInterval = prev })
+
+	sink := &syncFailSink{memSink: &memSink{}}
+	r := newRec(t, sink)
+	for i := 0; i < 3; i++ {
+		r.CallerPayload(rtpMS(20*i), l16(samplesMS(20), int16(i+1)), at(20*i))
+	}
+	res, err := r.Finish(at(200), false)
+	if err == nil {
+		t.Fatal("Finish returned no error after a failed fsync")
+	}
+	if res.Status != StatusFailed {
+		t.Fatalf("status = %q, want failed", res.Status)
+	}
+	if res.ByteCount != 0 {
+		t.Fatalf("byte count = %d, want 0 after a failed fsync", res.ByteCount)
+	}
+	if sink.reseals != 0 {
+		t.Fatalf("reseal ran %d times after a failed fsync", sink.reseals)
+	}
+}
+
 // TestRecorderFinishReportsResealedBytesAfterSinkFailure: the recorder's writer
-// goroutine hits a write error and reseals through Finish. The reported byte
-// count is the authenticated PCM, and the status is partial with write_failed.
+// goroutine hits a write error and reseals through Finish. The first write is a
+// single chunk large enough to seal full segments, and the second write fails.
+// The writer goroutine is the only caller of Write, so the failure point is
+// deterministic. Finish must report partial with write_failed, the byte count
+// must equal the authenticated PCM, and the file must read back.
 func TestRecorderFinishReportsResealedBytesAfterSinkFailure(t *testing.T) {
 	dataDir := t.TempDir()
 	ring, err := secrets.NewKeyring(1, map[int][]byte{1: bytes.Repeat([]byte{0x66}, 32)})
@@ -160,17 +207,21 @@ func TestRecorderFinishReportsResealedBytesAfterSinkFailure(t *testing.T) {
 	for i := 0; i < 8; i++ {
 		r.CallerPayload(uint32(i*samplesMS(1000)), l16(samplesMS(1000), int16(i+1)), at(i*1000))
 	}
-	res, _ := r.Finish(at(8000), false)
-	if res.Status != StatusPartial && res.Status != StatusFailed {
-		t.Fatalf("status = %q, want partial or failed", res.Status)
+	res, err := r.Finish(at(8000), false)
+	if err == nil {
+		t.Fatal("Finish returned no error after a sink write failure")
+	}
+	if res.Status != StatusPartial {
+		t.Fatalf("status = %q, want partial", res.Status)
 	}
 	if !hasFlag(res, FlagWriteFailed) {
 		t.Fatalf("flags = %v, want write_failed", res.QualityFlags)
 	}
-	if res.Status == StatusPartial {
-		rd := openRecordingFile(t, dataDir, "alice", "rec-run", ring, res.ByteCount)
-		if int64(len(rd)) != res.ByteCount {
-			t.Fatalf("read %d bytes, byte count %d", len(rd), res.ByteCount)
-		}
+	if res.ByteCount <= 0 {
+		t.Fatalf("byte count = %d, want the authenticated prefix", res.ByteCount)
+	}
+	rd := openRecordingFile(t, dataDir, "alice", "rec-run", ring, res.ByteCount)
+	if int64(len(rd)) != res.ByteCount {
+		t.Fatalf("read %d bytes, byte count %d", len(rd), res.ByteCount)
 	}
 }

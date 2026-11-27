@@ -217,14 +217,17 @@ func TestStreamFinalFlagBindsSegmentToPosition(t *testing.T) {
 		t.Fatal(err)
 	}
 	aad := segmentAAD([]byte("hdr"), testRecID, testOwner)
-	sealed := sealSegment(aead, aad, 0, false, samplePlain(SegmentSize))
-	if _, err := openSegment(aead, aad, 0, true, sealed); !errors.Is(err, ErrCorrupt) {
+	sealed := sealSegment(aead, aad, 0, flagNonFinal, samplePlain(SegmentSize))
+	if _, err := openSegment(aead, aad, 0, flagFinal, sealed); !errors.Is(err, ErrCorrupt) {
 		t.Fatalf("non-final segment opened as final: err = %v", err)
 	}
-	if _, err := openSegment(aead, aad, 0, false, sealed); err != nil {
+	if _, err := openSegment(aead, aad, 0, flagResealed, sealed); !errors.Is(err, ErrCorrupt) {
+		t.Fatalf("non-final segment opened as resealed final: err = %v", err)
+	}
+	if _, err := openSegment(aead, aad, 0, flagNonFinal, sealed); err != nil {
 		t.Fatalf("non-final segment must open as non-final: %v", err)
 	}
-	if _, err := openSegment(aead, aad, 1, false, sealed); !errors.Is(err, ErrCorrupt) {
+	if _, err := openSegment(aead, aad, 1, flagNonFinal, sealed); !errors.Is(err, ErrCorrupt) {
 		t.Fatalf("segment opened at wrong counter: err = %v", err)
 	}
 }
