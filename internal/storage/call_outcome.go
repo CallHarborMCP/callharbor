@@ -242,10 +242,13 @@ func (s *Store) LoadOutcomeFacts(ctx context.Context, callID string) (OutcomeFac
 	}
 	f.Criteria, f.Constraints = len(b.SuccessCriteria), len(b.Constraints)
 
-	// A call is answered when the answered signal was recorded, or when media
-	// evidence proves the callee was reached: a recorded transcript start, or a
-	// final callee turn. A late answered signal is therefore not needed for a
-	// connected call to be judged on what was said.
+	// A call is answered when an answered event was recorded, or when a final
+	// callee turn shows the callee was reached (N1). A recorded transcript start
+	// does not make a call answered: media can start while the call is still
+	// ringing, before the callee picks up. A late answered event is therefore not
+	// needed for a connected call to be judged on what was said. A final callee
+	// turn does not count when the effective reason is no_answer or busy and no
+	// answered event exists (N10, see below).
 	var answered, mediaFailed, started, finalized, calleeFinal int
 	if err := s.db.QueryRowContext(ctx, `SELECT
 		EXISTS (SELECT 1 FROM call_events WHERE call_id = ? AND kind = ?),

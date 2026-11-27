@@ -182,16 +182,29 @@ Task codes name why the outcome is what it is:
     `no` followed by a word with no comma or sentence punctuation between them.
     So `could not book a table for two` and `no table for two at eight` never
     verify a met criterion;
-  - the matched span crosses a sentence end (`.`, `!` or `?`), so `We cannot.
-    Book a table` does not verify `cannot book a table`.
-  - An apostrophe joins the letters on either side into one word, so `can't` is
-    `cant`. The apostrophe characters are `'`, `’` (U+2019), `‘` (U+2018), `ʼ`
-    (U+02BC), `＇` (U+FF07) and the backtick. A word is joined only when a letter
-    follows the apostrophe, so a quoted word such as `'agent'` is not negated. A
-    joined word ending in `nt` (`didn't`, `couldn't`, `haven't`) is a negation.
-    `no` negates only when it is the word immediately before the quote, with no
-    comma or sentence punctuation between them. So `No problem, booked a table
-    for two` verifies, and `No table for two` does not.
+- An apostrophe joins the letters on either side into one word, so `can't` is
+  `cant`. The apostrophe characters are `'`, `’` (U+2019), `‘` (U+2018), `ʼ`
+  (U+02BC), `＇` (U+FF07), the prime `′` (U+2032) and the backtick. A word is
+  joined only when a letter follows the apostrophe, so a quoted word such as
+  `'agent'` is not negated. A joined word is an n't contraction only when the
+  letters after its last apostrophe are exactly `t` and the word ends in `nt`:
+  `didn't`, `couldn't` and `haven't` negate, but `l'instant` and `O'Grant` do
+  not.
+- `no` negates only when it is the word immediately before the quote, with no
+  comma or sentence punctuation between them. So `No problem, booked a table for
+  two` verifies, and `No table for two` does not.
+- A matched span must not cross a sentence end. `!` and `?` always end a
+  sentence. A `.` ends one only when it is followed by whitespace and then an
+  uppercase letter, or by the end of the text, and the word before it is not a
+  single letter, all digits, or one of `mr`, `mrs`, `ms`, `dr`, `st`, `jr`, `sr`,
+  `vs`. A `.` between two digits is part of a number. So `8 p.m. tonight`, `8.30`,
+  `$12.50` and `Dr. Smith` do not end a sentence, but `We cannot. Book a table`
+  and `Lunch is free. Book a table` do.
+- The two-word window is a known over-block that fails safe. A negation word
+  within two words before the quote is treated as negating it, even when the
+  word is not part of a negation. So `don't worry, book a table for two` and
+  `never mind, book a table for two` do not verify a met criterion. A real
+  confirmation can be marked unverified this way. It is not a false success.
 - A quote for an unmet criterion, such as a refusal, is never checked for
   negation. Outcome-level quotes are not checked for negation under a failed
   outcome, because any verified quote supports failure.

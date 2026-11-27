@@ -707,3 +707,72 @@ func TestQuotedWordEndingInNtIsNotNegation(t *testing.T) {
 		}
 	}
 }
+
+// N12: a full stop inside a time, a decimal, a currency amount or an
+// abbreviation does not end a sentence, so a met quote may span it.
+func TestAbbreviationsAndNumbersAreNotSentenceEnds(t *testing.T) {
+	for _, c := range []struct{ turn, quote string }{
+		{"Your table for two is booked for 8 p.m. tonight.", "booked for 8 p.m. tonight"},
+		{"Your table for two is booked for 8 p.m.", "booked for 8 p.m"},
+		{"Your table is booked at 8.30 for two", "booked at 8.30 for two"},
+		{"A deposit of $12.50 is paid, thank you.", "a deposit of $12.50 is paid"},
+		{"Dr. Smith will see you at nine.", "dr smith will see you at nine"},
+	} {
+		if got := metSuccess(c.turn, c.quote); got.Outcome != Success {
+			t.Fatalf("%q with quote %q = %s %v, want success", c.turn, c.quote, got.Outcome, got.ReasonCodes)
+		}
+	}
+}
+
+// N12: a real sentence end still blocks a span, even next to a number.
+func TestRealSentenceEndStillBlocksSpan(t *testing.T) {
+	if got := metSuccess("Lunch is free. Book a table for two elsewhere.", "free book a table for two"); got.Outcome == Success {
+		t.Fatalf("span across a real sentence end produced success: %+v", got)
+	}
+}
+
+// N13: a word with an apostrophe is a contraction only when it is an n't
+// contraction, so French elisions and names are not negations.
+func TestNonNtApostropheWordsAreNotNegations(t *testing.T) {
+	for _, c := range []struct{ turn, quote string }{
+		{"Pour l'instant, la table pour deux est réservée.", "la table pour deux est réservée"},
+		{"J'ai réservé une table pour l'événement", "une table pour l'événement"},
+		{"Mr O'Grant confirmed the table for two.", "confirmed the table for two"},
+	} {
+		if got := metSuccess(c.turn, c.quote); got.Outcome != Success {
+			t.Fatalf("%q with quote %q = %s %v, want success", c.turn, c.quote, got.Outcome, got.ReasonCodes)
+		}
+	}
+}
+
+// N13: a real n't contraction still negates, with the ASCII and typographic
+// apostrophe. The control shows the quote matches without the negation.
+func TestNtContractionsStillNegate(t *testing.T) {
+	const quote = "book a table for two"
+	for _, c := range []struct{ negated, control string }{
+		{"We didn't book a table for two.", "We did book a table for two."},
+		{"We can\u2019t book a table for two.", "We can book a table for two."},
+	} {
+		negatedVsControl(t, c.negated, c.control, quote)
+	}
+}
+
+// N9 addition: U+2032 (prime) joins a contraction like the other apostrophes.
+func TestPrimeApostropheJoinsContraction(t *testing.T) {
+	negatedVsControl(t, "We can\u2032t book a table for two.", "We can book a table for two.", "book a table for two")
+}
+
+// N12: a decimal is one word, so "8.30" does not match "8 30" and "8 30" does not
+// match "8.30". Without the digit rule the full stop splits the number and the
+// two forms would match each other.
+func TestDecimalIsOneWord(t *testing.T) {
+	if got := metSuccess("Your table is booked at 8 30 for two", "booked at 8.30 for two"); got.Outcome == Success {
+		t.Fatalf("quote 8.30 matched turn '8 30': %+v", got)
+	}
+	if got := metSuccess("Your table is booked at 8.30 for two", "booked at 8 30 for two"); got.Outcome == Success {
+		t.Fatalf("quote '8 30' matched turn 8.30: %+v", got)
+	}
+	if got := metSuccess("Your table is booked at 8.30 for two", "booked at 8.30 for two"); got.Outcome != Success {
+		t.Fatalf("positive decimal control = %s %v, want success", got.Outcome, got.ReasonCodes)
+	}
+}

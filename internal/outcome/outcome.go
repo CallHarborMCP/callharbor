@@ -434,14 +434,17 @@ var negations = map[string]bool{
 // that follow it when no clause punctuation sits between them.
 const clausePunct = ",;:.!?"
 
-// sentenceEnd are the runes that end a sentence. A matched quote must not span
-// one: "We cannot. Book a table" is two statements, not one.
-const sentenceEnd = ".!?"
+// abbreviations are words whose following full stop does not end a sentence,
+// such as "Dr. Smith". Only a full stop is affected, never "!" or "?".
+var abbreviations = map[string]bool{
+	"mr": true, "mrs": true, "ms": true, "dr": true, "st": true,
+	"jr": true, "sr": true, "vs": true,
+}
 
 // apostrophes are the runes that join a contraction, such as can't. The ASCII
 // apostrophe, the typographic quotes, the modifier letter apostrophe, the
-// fullwidth apostrophe and the backtick all join words the same way.
-const apostrophes = "'\u2019\u2018\u02bc\uff07`"
+// fullwidth apostrophe, the prime and the backtick all join words the same way.
+const apostrophes = "'\u2019\u2018\u02bc\uff07\u2032`"
 
 // token is one word of a turn or a quote: lowercased, letters and digits only.
 //   - brk reports whether clause punctuation sits between this word and the one
@@ -471,6 +474,13 @@ func tokenize(s string) []token {
 	var out []token
 	var cur strings.Builder
 	brk, sent, joined, pending := false, false, false, false
+	// afterApos holds the letters that follow the last apostrophe in the word.
+	// It decides the n't rule: only the suffix "t" after an apostrophe, on a
+	// word ending in "nt", is a contraction.
+	var afterApos strings.Builder
+	// lastWord is the word most recently flushed, so a full stop can be judged
+	// by the word before it (for abbreviations).
+	lastWord := ""
 	flush := func() {
 		if cur.Len() == 0 {
 			return
@@ -478,36 +488,94 @@ func tokenize(s string) []token {
 		w := cur.String()
 		out = append(out, token{
 			word: w, brk: brk, sent: sent,
-			contraction: joined && strings.HasSuffix(w, "nt"),
+			contraction: joined && isNtContraction(w, afterApos.String()),
 		})
+		lastWord = w
 		cur.Reset()
+		afterApos.Reset()
 		brk, sent, joined, pending = false, false, false, false
 	}
-	for _, r := range strings.ToLower(s) {
+	rs := []rune(s)
+	for i, r := range rs {
+		r = unicode.ToLower(r)
 		switch {
 		case strings.ContainsRune(apostrophes, r):
 			// Dropped, so the letters on either side join into one word. Whether
 			// the word is joined is decided by the letter that follows: a closing
 			// quote such as 'agent' is followed by a space, so it does not join.
 			pending = cur.Len() > 0
+			afterApos.Reset()
 		case unicode.IsLetter(r) || unicode.IsDigit(r):
 			if pending {
 				joined = true
 				pending = false
 			}
 			cur.WriteRune(r)
+			afterApos.WriteRune(r)
 		default:
+			// A full stop between two digits ("8.30", "$12.50") is part of a
+			// number, not a break at all.
+			if r == '.' && i > 0 && i+1 < len(rs) && unicode.IsDigit(rs[i-1]) && unicode.IsDigit(rs[i+1]) {
+				cur.WriteRune(r)
+				continue
+			}
 			flush()
 			if strings.ContainsRune(clausePunct, r) {
 				brk = true
 			}
-			if strings.ContainsRune(sentenceEnd, r) {
+			if isSentenceEnd(rs, i, lastWord) {
 				sent = true
 			}
 		}
 	}
 	flush()
 	return out
+}
+
+// isSentenceEnd reports whether the rune at i ends a sentence. "!" and "?" always
+// do. A full stop ends one only when it is followed by whitespace and then an
+// uppercase letter, or by the end of the text, and the word before it is not a
+// single letter, all digits, or an abbreviation such as "Dr". So "8 p.m. tonight"
+// and "Dr. Smith" do not end a sentence, and "Lunch is free. Book" does.
+func isSentenceEnd(rs []rune, i int, prevWord string) bool {
+	switch rs[i] {
+	case '!', '?':
+		return true
+	case '.':
+	default:
+		return false
+	}
+	// Judge the full stop by the word before it. A word that is one letter,
+	// all digits, or an abbreviation does not end a sentence.
+	if prevWord == "" || abbreviations[prevWord] || allDigits(prevWord) || len([]rune(prevWord)) == 1 {
+		return false
+	}
+	j := i + 1
+	for j < len(rs) && unicode.IsSpace(rs[j]) {
+		j++
+	}
+	if j == len(rs) {
+		return true
+	}
+	return j > i+1 && unicode.IsUpper(rs[j])
+}
+
+// allDigits reports whether w is made only of digits.
+func allDigits(w string) bool {
+	for _, r := range w {
+		if !unicode.IsDigit(r) {
+			return false
+		}
+	}
+	return w != ""
+}
+
+// isNtContraction reports whether a word joined across an apostrophe is an
+// n't contraction. The letters after the last apostrophe must be exactly "t",
+// and the word must end in "nt". So "didn't" and "can't" qualify. "l'instant"
+// and "o'grant" do not: their last apostrophe is followed by more than "t".
+func isNtContraction(w, afterApos string) bool {
+	return afterApos == "t" && strings.HasSuffix(w, "nt")
 }
 
 // verifyClaim checks one claim against the turn it cites. The evidence is
