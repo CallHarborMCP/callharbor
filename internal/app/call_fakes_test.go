@@ -48,6 +48,39 @@ type fakeTelnyx struct {
 	// Telnyx routes. Such a request means the app reached for a Telnyx feature
 	// CallHarbor does not implement (#114 telephony-only boundary).
 	unexpected []string
+	// statusReads holds "control_id|key" for each GET /v2/calls/{id}, in order.
+	statusReads []string
+	// alive scripts is_alive per control id. An unscripted id reports alive.
+	alive map[string]bool
+	// gone marks control ids whose status read answers 404.
+	gone map[string]bool
+}
+
+// setCallAlive scripts the is_alive answer for one control id.
+func (f *fakeTelnyx) setCallAlive(controlID string, alive bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.alive == nil {
+		f.alive = map[string]bool{}
+	}
+	f.alive[controlID] = alive
+}
+
+// setCallGone makes the status read for one control id answer 404.
+func (f *fakeTelnyx) setCallGone(controlID string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.gone == nil {
+		f.gone = map[string]bool{}
+	}
+	f.gone[controlID] = true
+}
+
+// statusReadsSeen returns a copy of every status read as "control_id|key".
+func (f *fakeTelnyx) statusReadsSeen() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]string(nil), f.statusReads...)
 }
 
 // unexpectedRequests returns a copy of every unexpected "METHOD path" request.
@@ -126,6 +159,25 @@ func newFakeTelnyx(t *testing.T, controlID string) *fakeTelnyx {
 		writeFakeJSON(w, map[string]any{"data": map[string]any{
 			"call_control_id": f.controlID, "call_leg_id": "leg-1", "call_session_id": "sess-1",
 		}})
+	})
+	// GET /v2/calls/{id} is the status read reconciliation uses. Its answer is
+	// scripted per control id: alive by default, or 404 when marked gone. Each
+	// read records "control_id|key", so a test can check the owner's key.
+	mux.HandleFunc("GET /v2/calls/{id}", func(w http.ResponseWriter, r *http.Request) {
+		id := r.PathValue("id")
+		f.mu.Lock()
+		f.statusReads = append(f.statusReads, id+"|"+strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer "))
+		gone := f.gone[id]
+		alive, scripted := f.alive[id]
+		f.mu.Unlock()
+		if gone {
+			http.Error(w, `{"errors":[{"code":"10005","title":"Resource not found"}]}`, http.StatusNotFound)
+			return
+		}
+		if !scripted {
+			alive = true
+		}
+		writeFakeJSON(w, map[string]any{"data": map[string]any{"call_control_id": id, "is_alive": alive}})
 	})
 	mux.HandleFunc("POST /v2/calls/{id}/actions/hangup", func(w http.ResponseWriter, r *http.Request) {
 		var body map[string]any

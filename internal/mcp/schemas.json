@@ -30,6 +30,51 @@
         "details": {
           "additionalProperties": false,
           "properties": {
+            "cost": {
+              "additionalProperties": false,
+              "properties": {
+                "amount": {
+                  "pattern": "^[0-9]{1,12}(\\.[0-9]{1,6})?$",
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "currency": {
+                  "pattern": "^[A-Z]{3}$",
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "source": {
+                  "enum": [
+                    "provider",
+                    "estimate",
+                    null
+                  ],
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "status": {
+                  "enum": [
+                    "known",
+                    "estimated",
+                    "unavailable"
+                  ],
+                  "type": "string"
+                }
+              },
+              "required": [
+                "status",
+                "amount",
+                "currency",
+                "source"
+              ],
+              "type": "object"
+            },
             "max_duration_seconds": {
               "type": "integer"
             },
@@ -46,7 +91,8 @@
           "required": [
             "max_duration_seconds",
             "record_requested",
-            "record_effective"
+            "record_effective",
+            "cost"
           ],
           "type": "object"
         },
@@ -412,6 +458,61 @@
       "type": "object"
     }
   },
+  "hangup_call": {
+    "inputSchema": {
+      "type": "object",
+      "required": [
+        "call_id"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "call_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        }
+      }
+    },
+    "outputSchema": {
+      "type": "object",
+      "required": [
+        "call_id",
+        "technical_status",
+        "task_outcome"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "call_id": {
+          "type": "string"
+        },
+        "technical_status": {
+          "type": "string",
+          "enum": [
+            "queued",
+            "initiating",
+            "ringing",
+            "active",
+            "ending",
+            "ended",
+            "failed"
+          ]
+        },
+        "task_outcome": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "enum": [
+            "success",
+            "partial",
+            "failed",
+            "unknown",
+            null
+          ]
+        }
+      }
+    }
+  },
   "list_calls": {
     "inputSchema": {
       "additionalProperties": false,
@@ -532,6 +633,51 @@
         "callDetails": {
           "additionalProperties": false,
           "properties": {
+            "cost": {
+              "additionalProperties": false,
+              "properties": {
+                "amount": {
+                  "pattern": "^[0-9]{1,12}(\\.[0-9]{1,6})?$",
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "currency": {
+                  "pattern": "^[A-Z]{3}$",
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "source": {
+                  "enum": [
+                    "provider",
+                    "estimate",
+                    null
+                  ],
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "status": {
+                  "enum": [
+                    "known",
+                    "estimated",
+                    "unavailable"
+                  ],
+                  "type": "string"
+                }
+              },
+              "required": [
+                "status",
+                "amount",
+                "currency",
+                "source"
+              ],
+              "type": "object"
+            },
             "max_duration_seconds": {
               "type": "integer"
             },
@@ -548,7 +694,8 @@
           "required": [
             "max_duration_seconds",
             "record_requested",
-            "record_effective"
+            "record_effective",
+            "cost"
           ],
           "type": "object"
         }

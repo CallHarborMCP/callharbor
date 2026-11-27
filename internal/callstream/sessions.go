@@ -33,6 +33,10 @@ type sessions struct {
 	nextID uint64
 	wg     sync.WaitGroup
 	closed bool
+	// stopped marks calls whose session must end on bind: an explicit hangup
+	// arrived before the session bound its cancel. An entry is removed when
+	// the claim is released.
+	stopped map[string]struct{}
 }
 
 // track registers one media connection for its whole life. The returned
@@ -91,6 +95,9 @@ func (s *sessions) claim(callID string) (func(), error) {
 	if s.active == nil {
 		s.active = map[string]context.CancelFunc{}
 	}
+	if s.stopped == nil {
+		s.stopped = map[string]struct{}{}
+	}
 	s.active[callID] = func() {}
 	s.wg.Add(1)
 	var once sync.Once
@@ -98,6 +105,7 @@ func (s *sessions) claim(callID string) (func(), error) {
 		once.Do(func() {
 			s.mu.Lock()
 			delete(s.active, callID)
+			delete(s.stopped, callID)
 			s.mu.Unlock()
 			s.wg.Done()
 		})
@@ -112,9 +120,10 @@ func (s *sessions) bindCancel(callID string, cancel context.CancelFunc) {
 	if _, ok := s.active[callID]; ok {
 		s.active[callID] = cancel
 	}
+	_, stopped := s.stopped[callID]
 	closed := s.closed
 	s.mu.Unlock()
-	if closed {
+	if closed || stopped {
 		cancel()
 	}
 }
@@ -125,6 +134,22 @@ func (s *sessions) stopping() bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.closed
+}
+
+// cancelCall cancels the running session for callID. A session whose cancel is
+// not yet bound is marked, so bindCancel cancels it as soon as it is bound.
+func (s *sessions) cancelCall(callID string) {
+	s.mu.Lock()
+	c, ok := s.active[callID]
+	if ok {
+		s.stopped[callID] = struct{}{}
+	}
+	s.mu.Unlock()
+	if ok {
+		c()
+	}
+	// c is the placeholder no-op until bindCancel runs. The stopped mark makes
+	// bindCancel cancel the real session when it binds.
 }
 
 // cancelAll refuses new work and cancels every running session. It returns at
@@ -168,6 +193,13 @@ func (s *sessions) wait(timeout time.Duration) bool {
 // returns at once. Shutdown calls it first, so runs end before HTTP drains.
 func (m *Media) StopMedia() {
 	m.sessions.cancelAll()
+}
+
+// StopCall cancels the media session for one call, if one is running, so its AI
+// session closes after an explicit hangup. It does not refuse other calls and
+// does not end the leg: the caller ends the leg with the owner's key.
+func (m *Media) StopCall(callID string) {
+	m.sessions.cancelCall(callID)
 }
 
 // RefuseOrphanHangups stops the webhook set from starting new orphan hangups.

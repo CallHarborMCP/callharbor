@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/CallHarborMCP/callharbor/internal/audio"
+	"github.com/CallHarborMCP/callharbor/internal/callpolicy"
 	"github.com/CallHarborMCP/callharbor/internal/storage"
 	"github.com/CallHarborMCP/callharbor/internal/telephony/telnyx"
 	"github.com/CallHarborMCP/callharbor/internal/telephonyprofile"
@@ -15,6 +16,17 @@ import (
 type fixedProfiles struct {
 	p   telephonyprofile.Resolved
 	err error
+}
+
+// fixedPolicy returns one effective policy for every owner. A nil error and a
+// zero Effective allow every destination.
+type fixedPolicy struct {
+	e   callpolicy.Effective
+	err error
+}
+
+func (f fixedPolicy) CallPolicy(context.Context, string) (callpolicy.Effective, error) {
+	return f.e, f.err
 }
 
 func (f fixedProfiles) Resolve(context.Context, telephonyprofile.Actor, string) (telephonyprofile.Resolved, error) {
@@ -44,6 +56,7 @@ func planner(t *testing.T, res telephonyprofile.Resolved, routes PublicRoutes) P
 	var key string
 	return ProductionPlanner{
 		Profiles: fixedProfiles{p: res}, Dialers: fakeDialerFactory(t, &key), Routes: routes,
+		Policy: fixedPolicy{},
 	}
 }
 

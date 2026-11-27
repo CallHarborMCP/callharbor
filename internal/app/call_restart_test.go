@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/CallHarborMCP/callharbor/internal/config"
 	"github.com/CallHarborMCP/callharbor/internal/observability"
 	"github.com/CallHarborMCP/callharbor/internal/realtime"
 	"github.com/CallHarborMCP/callharbor/internal/secrets"
@@ -88,7 +89,9 @@ func seedRestartRowsFor(t *testing.T, dataDir, tpID string, rows []restartRow) {
 	if err := db.QueryRow(`SELECT id FROM ai_profiles WHERE owner_user_id = ? LIMIT 1`, owner).Scan(&ai); err != nil {
 		t.Fatalf("ai profile: %v", err)
 	}
-	now := time.Now().UTC().Format(time.RFC3339Nano)
+	// The store writes timestamps as fixed-width milliseconds. The seed uses the
+	// same format, or the reconciliation sweep cannot parse created_at.
+	now := time.Now().UTC().Format("2006-01-02T15:04:05.000Z")
 	for _, row := range rows {
 		if _, err := db.Exec(`INSERT INTO calls (id, owner_user_id, telephony_profile_id, ai_profile_id, idempotency_key, to_number, status, max_duration_seconds, created_at, updated_at) VALUES (?, ?, ?, ?, ?, '+14155550111', ?, 300, ?, ?)`,
 			row.id, owner, tpID, ai, row.key, row.status, now, now); err != nil {
@@ -107,14 +110,33 @@ func seedRestartRowsFor(t *testing.T, dataDir, tpID string, rows []restartRow) {
 // since the admin already exists, and logs in with the same password.
 func restartCallApp(t *testing.T, tel *fakeTelnyx, dataDir string, pub ed25519.PublicKey, priv ed25519.PrivateKey) *callTestEnv {
 	t.Helper()
+	return restartCallAppWith(t, tel, dataDir, pub, priv, nil)
+}
+
+// restartCallAppWith is restartCallApp with a config hook, for a test that
+// needs a policy on the restarted run.
+func restartCallAppWith(t *testing.T, tel *fakeTelnyx, dataDir string, pub ed25519.PublicKey, priv ed25519.PrivateKey, adjust func(*config.Config)) *callTestEnv {
+	t.Helper()
+	return restartCallAppAt(t, tel, dataDir, pub, priv, adjust, nil)
+}
+
+// restartCallAppAt is restartCallAppWith with a clock. The app's worker,
+// webhooks and hangup paths read now, so a test can move the reconciliation
+// deadlines forward without a real wait. A nil now means the real clock.
+func restartCallAppAt(t *testing.T, tel *fakeTelnyx, dataDir string, pub ed25519.PublicKey, priv ed25519.PrivateKey, adjust func(*config.Config), now func() time.Time) *callTestEnv {
+	t.Helper()
 	t.Setenv(secrets.EnvKey, validKeyB64())
 	ln, roots := newTLSListener(t)
 	cfg := testConfig(t)
 	cfg.DataDir = dataDir
 	cfg.PublicURL = "https://" + ln.Addr().String()
+	if adjust != nil {
+		adjust(&cfg)
+	}
 	opts := runOptions{
 		TelnyxBaseURL:  tel.baseURL(),
 		EndpointPolicy: realtime.EndpointPolicy{AllowPrivate: true},
+		Now:            now,
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)

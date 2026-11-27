@@ -33,6 +33,7 @@ var Routes = []Route{
 	{Method: http.MethodPost, Path: "/api/v1/calls"},
 	{Method: http.MethodGet, Path: "/api/v1/calls/{call_id}"},
 	{Method: http.MethodGet, Path: "/api/v1/calls/{call_id}/transcript"},
+	{Method: http.MethodPost, Path: "/api/v1/calls/{call_id}/hangup"},
 	{Method: http.MethodGet, Path: "/api/v1/telephony-profiles"},
 	{Method: http.MethodPost, Path: "/api/v1/telephony-profiles"},
 	{Method: http.MethodGet, Path: "/api/v1/telephony-profiles/{profile_id}"},
@@ -42,6 +43,9 @@ var Routes = []Route{
 	{Method: http.MethodGet, Path: "/api/v1/telephony-profiles/{profile_id}/grants"},
 	{Method: http.MethodPut, Path: "/api/v1/telephony-profiles/{profile_id}/grants/{user_id}"},
 	{Method: http.MethodDelete, Path: "/api/v1/telephony-profiles/{profile_id}/grants/{user_id}"},
+	{Method: http.MethodGet, Path: "/api/v1/call-policy"},
+	{Method: http.MethodGet, Path: "/api/v1/users/{user_id}/call-policy"},
+	{Method: http.MethodPut, Path: "/api/v1/users/{user_id}/call-policy"},
 }
 
 // PlannedRoutes lists REST operations documented in api/openapi.json with
@@ -51,7 +55,6 @@ var Routes = []Route{
 var PlannedRoutes = []Route{
 	{Method: http.MethodGet, Path: "/api/v1/calls/{call_id}/recording"},
 	{Method: http.MethodGet, Path: "/api/v1/calls/{call_id}/recording/audio"},
-	{Method: http.MethodPost, Path: "/api/v1/calls/{call_id}/hangup"},
 }
 
 // Handler serves the /api/v1 routes.
@@ -85,6 +88,7 @@ func (h *Handler) Register(mux *http.ServeMux) {
 		"POST /api/v1/calls":                     h.createCall,
 		"GET /api/v1/calls/{call_id}":            h.getCall,
 		"GET /api/v1/calls/{call_id}/transcript": h.getCallTranscript,
+		"POST /api/v1/calls/{call_id}/hangup":    h.hangupCall,
 
 		"GET /api/v1/telephony-profiles":                                  h.listTelephonyProfiles,
 		"POST /api/v1/telephony-profiles":                                 h.createTelephonyProfile,
@@ -95,6 +99,10 @@ func (h *Handler) Register(mux *http.ServeMux) {
 		"GET /api/v1/telephony-profiles/{profile_id}/grants":              h.listTelephonyGrants,
 		"PUT /api/v1/telephony-profiles/{profile_id}/grants/{user_id}":    h.grantTelephonyProfile,
 		"DELETE /api/v1/telephony-profiles/{profile_id}/grants/{user_id}": h.revokeTelephonyProfile,
+
+		"GET /api/v1/call-policy":                 h.getOwnCallPolicy,
+		"GET /api/v1/users/{user_id}/call-policy": h.getUserCallPolicy,
+		"PUT /api/v1/users/{user_id}/call-policy": h.putUserCallPolicy,
 	}
 	for _, r := range Routes {
 		pattern := r.Method + " " + r.Path

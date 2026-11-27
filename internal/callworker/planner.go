@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/CallHarborMCP/callharbor/internal/audio"
+	"github.com/CallHarborMCP/callharbor/internal/callpolicy"
 	"github.com/CallHarborMCP/callharbor/internal/storage"
 	"github.com/CallHarborMCP/callharbor/internal/telephony/telnyx"
 	"github.com/CallHarborMCP/callharbor/internal/telephonyprofile"
@@ -36,14 +37,27 @@ type PublicRoutes struct {
 	StreamToken func(callID string) (string, error)
 }
 
+// PolicySource reads the owner's per-user call policy and the installation
+// policy. It is read at dial time, so a policy tightened after queueing applies
+// to a call that has not yet dialed.
+type PolicySource interface {
+	CallPolicy(ctx context.Context, ownerUserID string) (callpolicy.Effective, error)
+}
+
 // ProductionPlanner builds dial plans from the owner's profiles.
 type ProductionPlanner struct {
 	Profiles ProfileResolver
 	Dialers  DialerFactory
 	Routes   PublicRoutes
+	// Policy re-checks the destination before a dial. A nil Policy refuses
+	// every dial, so a misconfigured worker fails closed, never open.
+	Policy PolicySource
 	// Codec is the bidirectional stream format every dial requests. It must be
 	// a format the media path serves, so the planner sets it, never the dialer.
 	Codec audio.Format
+	// RingTimeoutSeconds is sent to Telnyx as timeout_secs, so a call that is
+	// never answered ends at Telnyx after this long. Zero omits the field.
+	RingTimeoutSeconds int
 }
 
 // Plan resolves the telephony profile for the caller and returns the dial plan.
@@ -59,6 +73,18 @@ func (p ProductionPlanner) Plan(ctx context.Context, c storage.QueuedCallRef) (P
 	}
 	if res.ConnectivityStatus != storage.ConnectivityVerified || res.ConnectionID == "" || res.WebhookPublicKey == "" {
 		return Plan{}, ReasonProfileUnusable, nil
+	}
+	if p.Policy == nil {
+		return Plan{}, ReasonPolicyUnavailable, nil
+	}
+	effective, err := p.Policy.CallPolicy(ctx, c.OwnerUserID)
+	if err != nil {
+		return Plan{}, "", fmt.Errorf("read call policy: %w", err)
+	}
+	if reason := callpolicy.CheckDestination(effective, c.ToNumber); reason != "" {
+		// The destination is no longer permitted, so the call is failed with
+		// its reason and nothing is sent to Telnyx.
+		return Plan{}, reason, nil
 	}
 	if p.Routes.PublicURL == "" || p.Routes.StreamToken == nil {
 		return Plan{}, ReasonURLsUnavailable, nil
@@ -78,13 +104,14 @@ func (p ProductionPlanner) Plan(ctx context.Context, c storage.QueuedCallRef) (P
 		return Plan{}, "", fmt.Errorf("telnyx client: %w", err)
 	}
 	return Plan{
-		Dialer:       dialer,
-		From:         res.CallerNumber,
-		ConnectionID: res.ConnectionID,
-		WebhookURL:   webhook,
-		StreamURL:    stream,
-		Codec:        p.Codec,
-		MaxSeconds:   telnyxTimeLimit(c.MaxDurationSeconds),
+		Dialer:             dialer,
+		From:               res.CallerNumber,
+		ConnectionID:       res.ConnectionID,
+		WebhookURL:         webhook,
+		StreamURL:          stream,
+		Codec:              p.Codec,
+		MaxSeconds:         telnyxTimeLimit(c.MaxDurationSeconds),
+		RingTimeoutSeconds: p.RingTimeoutSeconds,
 	}, "", nil
 }
 

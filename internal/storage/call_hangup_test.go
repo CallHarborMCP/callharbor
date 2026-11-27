@@ -21,7 +21,7 @@ func seedLiveCall(t *testing.T, s *Store, id, status, control string) {
 		if err := s.ClaimQueuedCall(ctx, id, mustParse(testTime)); err != nil {
 			t.Fatal(err)
 		}
-		if err := s.RecordProviderCallControlID(ctx, id, "alice", control, mustParse(testTime)); err != nil {
+		if _, _, err := s.RecordProviderCallControlID(ctx, id, "alice", control, mustParse(testTime)); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -143,7 +143,7 @@ func TestLiveLegCarriesProfileOwnerForGranteeCall(t *testing.T) {
 	if err := s.ClaimQueuedCall(ctx, "bob-on-alice", mustParse(testTime)); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.RecordProviderCallControlID(ctx, "bob-on-alice", "bob", "v3:grantee", mustParse(testTime)); err != nil {
+	if _, _, err := s.RecordProviderCallControlID(ctx, "bob-on-alice", "bob", "v3:grantee", mustParse(testTime)); err != nil {
 		t.Fatal(err)
 	}
 

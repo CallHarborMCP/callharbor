@@ -28,6 +28,9 @@ const (
 	ReasonDialRejected    = "dial_rejected"
 	ReasonProfileUnusable = "profile_unusable"
 	ReasonURLsUnavailable = "urls_unavailable"
+	// ReasonPolicyUnavailable means the worker has no call policy source, so
+	// it refuses to dial. It fails closed rather than dialing unchecked.
+	ReasonPolicyUnavailable = "policy_unavailable"
 	// ReasonPlanFailed means the dial plan could not be built, for example a
 	// key could not be read. Nothing was sent to Telnyx.
 	ReasonPlanFailed = "plan_failed"
@@ -37,11 +40,19 @@ const (
 // owner's calls.
 type Store interface {
 	ListQueuedCalls(ctx context.Context, limit int) ([]storage.QueuedCallRef, error)
-	ListUnconfirmedInitiating(ctx context.Context) ([]string, error)
+	ListUnconfirmedDials(ctx context.Context) ([]string, error)
 	ListLiveCallLegs(ctx context.Context) ([]storage.LiveCallLeg, error)
 	ClaimQueuedCall(ctx context.Context, callID string, now time.Time) error
 	MarkCallFailed(ctx context.Context, callID, reasonCode string, now time.Time) error
-	RecordProviderCallControlID(ctx context.Context, callID, ownerUserID, controlID string, now time.Time) error
+	RecordProviderCallControlID(ctx context.Context, callID, ownerUserID, controlID string, now time.Time) (storage.LiveCallLeg, string, error)
+	// Reconciliation. BeginLocalHangup ends a call CallHarbor ends; the rest
+	// read and write the persistent hangup marker.
+	BeginLocalHangup(ctx context.Context, callID, reasonCode string, now time.Time) (storage.LiveCallLeg, bool, error)
+	RecordHangupSent(ctx context.Context, callID string, now time.Time) error
+	ListEndingForReconcile(ctx context.Context, lastHangupBefore time.Time, limit int) ([]storage.ReconcileCall, error)
+	ListOverdueCalls(ctx context.Context, now time.Time, slackSeconds, limit int) ([]storage.ReconcileCall, error)
+	ListOrphanedTerminal(ctx context.Context, b storage.OrphanBounds, limit int) ([]storage.ReconcileCall, error)
+	MarkReconcileEnded(ctx context.Context, callID, reasonCode string, now time.Time) (bool, error)
 }
 
 // Dialer places one outbound call. *telnyx.Client satisfies it.
@@ -72,6 +83,8 @@ type Plan struct {
 	// an unset or unsupported format, so the planner must always set it.
 	Codec      audio.Format
 	MaxSeconds int
+	// RingTimeoutSeconds is the Telnyx ring timeout for the dial. Zero omits it.
+	RingTimeoutSeconds int
 }
 
 // Planner returns the dial plan for a queued call, or a reason code naming why
@@ -88,6 +101,12 @@ type Options struct {
 	BatchSize int
 	Now       func() time.Time
 	Logger    *slog.Logger
+	// Legs resolves the owner's key for a hangup sent after a dial returns
+	// while the call is ending. Without it that hangup is logged and skipped.
+	Legs LegResolver
+	// RingTimeoutSeconds is the Telnyx ring timeout the dial sends. The
+	// reconciliation deadlines use it. Zero means DefaultRingTimeoutSeconds.
+	RingTimeoutSeconds int
 }
 
 // Worker dials queued calls. It is safe to call Tick from one goroutine.
@@ -123,11 +142,16 @@ func New(store Store, planner Planner, opts Options) (*Worker, error) {
 		wake: make(chan struct{}, 1), stopped: make(chan struct{})}, nil
 }
 
-// Recover fails every call left in initiating without a provider id. Those
-// calls may have reached Telnyx, so they are never redialed. It runs once,
-// before the first Tick.
+// Recover settles the calls a previous process left open. It runs once, before
+// the first Tick, and never redials anything.
+//
+// A call left in initiating, or in ending after a hangup during the dial, without
+// a provider id is failed: its dial may have reached Telnyx, but the id was never
+// recorded. Failing it releases its concurrency slot. A call with a provider id that
+// was live (initiating, ringing, active or ending) has no media session in this
+// process, so it is ended and one hangup is sent for its leg.
 func (w *Worker) Recover(ctx context.Context) error {
-	ids, err := w.store.ListUnconfirmedInitiating(ctx)
+	ids, err := w.store.ListUnconfirmedDials(ctx)
 	if err != nil {
 		return fmt.Errorf("recover: %w", err)
 	}
@@ -136,6 +160,56 @@ func (w *Worker) Recover(ctx context.Context) error {
 			return fmt.Errorf("recover call %s: %w", id, err)
 		}
 		w.opts.Logger.Warn("call failed after restart: dial not confirmed", "call_id", id)
+	}
+	return w.recoverLiveLegs(ctx)
+}
+
+// recoverLiveLegs ends every call that was live before the restart. A call that
+// is still live is moved to ending with restart_reconciled. A call already
+// ending keeps its reason, because BeginLocalHangup does not move it. Either
+// way the recorded leg gets one hangup. Without a leg resolver nothing is
+// changed: the calls stay as they are and are logged, rather than ended without
+// a hangup.
+func (w *Worker) recoverLiveLegs(ctx context.Context) error {
+	// This is a single startup pass, not batched over ticks. It is bounded by
+	// the global concurrency limit, which caps live legs, so one pass is enough.
+	legs, err := w.store.ListLiveCallLegs(ctx)
+	if err != nil {
+		return fmt.Errorf("recover live legs: %w", err)
+	}
+	if len(legs) == 0 {
+		return nil
+	}
+	if w.opts.Legs == nil {
+		w.opts.Logger.Error("restart recovery skipped: no leg resolver", "calls", len(legs))
+		return nil
+	}
+	now := w.opts.Now()
+	// The network hangups share one budget. Each send also has the Telnyx client
+	// timeout. A leg past the budget is still ended in the database, and its
+	// hangup is left to the reconciliation sweep, so startup cannot hang on a
+	// dead provider.
+	budget, cancel := context.WithTimeout(ctx, RecoverBudget)
+	defer cancel()
+	for _, leg := range legs {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		ended, ok, err := w.store.BeginLocalHangup(ctx, leg.ID, ReasonRestartReconciled, now)
+		if err != nil {
+			return fmt.Errorf("end call %s after restart: %w", leg.ID, err)
+		}
+		if ok {
+			leg = ended
+		}
+		w.opts.Logger.Warn("live call ended after restart: media session lost", "call_id", leg.ID, "newly_ended", ok)
+		if budget.Err() != nil {
+			w.opts.Logger.Warn("restart hangup deferred to reconciliation: recovery budget spent", "call_id", leg.ID)
+			continue
+		}
+		if err := HangupLegRecorded(budget, w.opts.Legs, w.store, leg, now); err != nil {
+			w.opts.Logger.Warn("restart hangup failed", "call_id", leg.ID, "status", apiStatus(err))
+		}
 	}
 	return nil
 }
@@ -178,8 +252,8 @@ func (w *Worker) HangupLive(ctx context.Context, res LegResolver) error {
 			w.opts.Logger.Warn("hangup skipped: no client for call", "call_id", leg.ID, "error", err.Error())
 			continue
 		}
-		if err := h.Hangup(ctx, leg.ControlID, LegCommandID(leg.ID)); err != nil {
-			w.opts.Logger.Warn("hangup failed", "call_id", leg.ID, "error", err.Error())
+		if err := sendRecorded(ctx, w.store, h, leg, w.opts.Now()); err != nil {
+			w.opts.Logger.Warn("hangup failed", "call_id", leg.ID, "status", apiStatus(err))
 			continue
 		}
 		w.opts.Logger.Info("hangup sent at shutdown", "call_id", leg.ID)
@@ -259,11 +333,18 @@ func (w *Worker) Tick(ctx context.Context) error {
 	if !w.opts.Enabled {
 		return nil
 	}
+	// Reconciliation runs first, so a leg that has to be ended is settled before
+	// new dials. Its errors do not stop dialing.
+	var first error
+	if w.opts.Legs != nil {
+		if err := w.Reconcile(ctx); err != nil {
+			first = err
+		}
+	}
 	queued, err := w.store.ListQueuedCalls(ctx, w.opts.BatchSize)
 	if err != nil {
-		return fmt.Errorf("list queued: %w", err)
+		return errors.Join(first, fmt.Errorf("list queued: %w", err))
 	}
-	var first error
 	for _, c := range queued {
 		if err := ctx.Err(); err != nil {
 			return err
@@ -312,6 +393,7 @@ func (w *Worker) dialOne(ctx context.Context, c storage.QueuedCallRef) error {
 		WebhookURL:   plan.WebhookURL,
 		StreamURL:    plan.StreamURL,
 		Codec:        plan.Codec,
+		TimeoutSecs:  plan.RingTimeoutSeconds,
 		// CommandID is sent so a retried request carries the same id. Telnyx's
 		// handling of a repeated POST /calls is not verified, and this worker
 		// never retries a dial, so this is not relied on for dedupe.
@@ -335,9 +417,32 @@ func (w *Worker) dialOne(ctx context.Context, c storage.QueuedCallRef) error {
 		w.opts.Logger.Warn("dial unconfirmed", "call_id", c.ID, "error", err.Error())
 		return w.fail(durable, c, ReasonDialUnconfirmed)
 	}
-	if err := w.store.RecordProviderCallControlID(durable, c.ID, c.OwnerUserID, res.CallControlID, w.opts.Now()); err != nil {
+	leg, status, err := w.store.RecordProviderCallControlID(durable, c.ID, c.OwnerUserID, res.CallControlID, w.opts.Now())
+	if err != nil {
 		return fmt.Errorf("record control id %s: %w", c.ID, err)
 	}
+	if status != "ending" {
+		return nil
+	}
+	// A hangup was requested while the dial was in flight. The leg now has a
+	// control id, so this is the one hangup that ends it. It uses the same
+	// command id as every other hangup on the leg.
+	return w.hangupAfterDial(durable, leg)
+}
+
+// hangupAfterDial sends the single hangup for a leg whose dial returned while
+// the call was ending. A failure is logged: the call stays ending, and the
+// webhook or shutdown pass can still end the leg.
+func (w *Worker) hangupAfterDial(ctx context.Context, leg storage.LiveCallLeg) error {
+	if w.opts.Legs == nil {
+		w.opts.Logger.Error("hangup after dial skipped: no leg resolver", "call_id", leg.ID)
+		return nil
+	}
+	if err := HangupLegRecorded(ctx, w.opts.Legs, w.store, leg, w.opts.Now()); err != nil {
+		w.opts.Logger.Warn("hangup after dial failed", "call_id", leg.ID, "status", apiStatus(err))
+		return nil
+	}
+	w.opts.Logger.Info("hangup sent after dial", "call_id", leg.ID)
 	return nil
 }
 

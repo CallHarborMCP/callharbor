@@ -218,7 +218,7 @@ func TestMCPSDKClientListsOnlyImplementedTools(t *testing.T) {
 		names = append(names, tool.Name)
 	}
 	sort.Strings(names)
-	want := []string{"get_call", "get_profiles", "get_transcript", "list_calls", "make_call"}
+	want := []string{"get_call", "get_profiles", "get_transcript", "hangup_call", "list_calls", "make_call"}
 	if strings.Join(names, ",") != strings.Join(want, ",") {
 		t.Fatalf("tools = %v, want %v", names, want)
 	}
@@ -358,12 +358,13 @@ func TestMCPSDKGetProfilesOwnNonSecretOnly(t *testing.T) {
 // must answer with its unknown-tool JSON-RPC error (code -32602, invalid
 // params, message "unknown tool"). That is the only acceptable outcome: a
 // transport or auth failure would hide a registration bug, and a result would
-// mean the tool exists.
+// mean the tool exists. hangup_call is implemented now and is covered by the
+// hangup tests, so only the still-planned tools are listed here.
 func TestMCPSDKPlannedToolsAreNotRegistered(t *testing.T) {
 	e, token := setupMCPData(t)
 	sess := e.sdkClient(t, token)
 
-	for _, name := range []string{"get_recording", "hangup_call"} {
+	for _, name := range []string{"get_recording"} {
 		res, err := sess.CallTool(context.Background(), &mcp.CallToolParams{Name: name, Arguments: map[string]any{"call_id": "alice-c1"}})
 		if res != nil {
 			t.Fatalf("planned %s returned a result: %+v", name, res)

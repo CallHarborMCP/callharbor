@@ -12,6 +12,9 @@ const (
 type Actor struct {
 	UserID string
 	Scopes []string
+	// Admin is true when the authenticated user holds the administrator role.
+	// Only a transport adapter sets it, from the session or principal.
+	Admin bool
 }
 
 // Require returns an error unless the actor is authenticated and holds scope.

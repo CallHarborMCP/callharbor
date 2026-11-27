@@ -113,7 +113,7 @@ func TestOpenAPIErrorCodesMatchServiceTaxonomy(t *testing.T) {
 		string(service.CodeUnauthenticated), string(service.CodeForbidden),
 		string(service.CodeInsufficientScope), string(service.CodeNotFound),
 		string(service.CodeInvalidInput), string(service.CodeConflict),
-		string(service.CodeUnavailable), string(service.CodeInternal),
+		string(service.CodeUnavailable), string(service.CodeRateLimited), string(service.CodeInternal),
 	}
 	sort.Strings(got)
 	sort.Strings(want)

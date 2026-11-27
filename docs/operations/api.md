@@ -16,6 +16,10 @@ MCP and OAuth tokens are not accepted on `/api/v1`. The MCP endpoint has its own
 | `GET` | `/api/v1/calls` | The caller's calls, newest first, one page at a time |
 | `POST` | `/api/v1/calls` | Queue one outbound call; returns `202` (requires `Idempotency-Key`). See [Placing calls](#placing-calls) |
 | `GET` | `/api/v1/calls/{call_id}` | One call owned by the caller |
+| `POST` | `/api/v1/calls/{call_id}/hangup` | End a call the caller owns, or any call for an administrator; returns `200` with the current state (see [Ending calls](#ending-calls)) |
+| `GET` | `/api/v1/call-policy` | The caller's effective call policy (see [Call policy](#call-policy)) |
+| `GET` | `/api/v1/users/{user_id}/call-policy` | A user's stored overrides and effective policy (admin) |
+| `PUT` | `/api/v1/users/{user_id}/call-policy` | Set a user's overrides, which can only tighten the installation policy (admin) |
 | `GET` | `/api/v1/telephony-profiles` | Telephony profiles the caller owns or was granted |
 | `POST` | `/api/v1/telephony-profiles` | Create a telephony profile (owner) |
 | `GET` | `/api/v1/telephony-profiles/{profile_id}` | One usable telephony profile |
@@ -26,7 +30,7 @@ MCP and OAuth tokens are not accepted on `/api/v1`. The MCP endpoint has its own
 | `PUT` | `/api/v1/telephony-profiles/{profile_id}/grants/{user_id}` | Grant a user use of a profile (admin owner) |
 | `DELETE` | `/api/v1/telephony-profiles/{profile_id}/grants/{user_id}` | Revoke a grant (admin owner) |
 
-Only these operations are implemented. Other methods on these paths are not routed. Planned operations (recordings and hangup, tracked in later issues) are not exposed by this API.
+Only these operations are implemented. Other methods on these paths are not routed. Planned operations (recordings, tracked in later issues) are not exposed by this API.
 
 Planned operations are listed in `api/openapi.json` with `x-callharbor-availability: planned`. They are never mounted as operations. Their responses are never a success and never start anything:
 
@@ -139,12 +143,53 @@ Refusals and their codes:
 | `not_found` (404) | Unknown or ungranted telephony profile. The response is the same in both cases. |
 | `telephony_not_verified`, `telephony_connection_missing`, `telephony_webhook_key_missing` (400) | The telephony profile is not ready. Validate it first. |
 | `unavailable` (503), reason `calls_unavailable` | The call worker is not running (see below). No row is written. |
+| `forbidden` (403), reason `destination_denied`, `destination_not_allowed` or `cost_limit_exceeded` | The destination is denied or not in the allow list, or the estimate is over the per-call cost limit. No row is written. |
+| `invalid_input` (400), reason `max_duration_exceeds_policy` | An explicit `max_duration_seconds` is above the effective policy maximum. No row is written. |
+| `conflict` (409), reason `cost_unavailable`, `concurrency_limit` or `global_concurrency_limit` | A cost limit has no estimate rate, or a capacity limit is reached. No row is written. |
+| `rate_limited` (429), reason `rate_limited` | The user has placed the maximum calls for the hour. No row is written. |
+
+Each refusal message starts with its reason code, then a colon and a short
+explanation. The full list, and the setting behind each, is in the
+[calls and Telnyx setup guide](calls-telnyx.md#refusals).
 
 `calls_unavailable` means the server is missing `CALLHARBOR_PUBLIC_URL` or the master key. The worker runs only when both are set, so the server refuses calls instead of queuing them. At startup the log says `calls are disabled until CALLHARBOR_PUBLIC_URL is set` (info) or `calls are disabled: they need the secrets master key` (warning). See the [calls and Telnyx setup guide](calls-telnyx.md).
+
+## Ending calls
+
+`POST /api/v1/calls/{call_id}/hangup` ends a call. It takes no body and needs the
+session cookie and the CSRF token. The owner may end their own call, and an
+administrator may end any call through this REST route. Any other caller gets
+`404 not_found`, and that refusal is audited with outcome `denied` and no owner in
+it. A missing CSRF token gets `403 forbidden` and changes nothing.
+
+The response is `200` with `{"call_id", "technical_status", "task_outcome"}`. It
+is the state the request leaves the call in. A live call reports `ending` until
+Telnyx confirms the hangup. A call that has not been dialed is ended without a
+dial. A repeat request returns the current state. For a call still `ending`, it
+may send the hangup again, but every send carries the same command id, so Telnyx
+receives one distinct command. The MCP tool `hangup_call` does the same for the caller's own calls and
+needs the `mcp:call` scope. MCP actors are never administrators.
+
+Only a successful hangup and a cross-owner refusal write a `call.hangup` audit row.
+A `404` for a missing call, an invalid `call_id`, a missing scope, and a CSRF
+refusal write none. See the [calls guide](calls-telnyx.md#emergency-hangup).
+
+## Call policy
+
+Each user's effective call policy combines the installation settings with an
+administrator's per-user overrides. Overrides can only tighten a limit: the
+effective value is the stricter one. `GET /api/v1/call-policy` returns the caller's
+own effective policy. The admin routes return both the stored overrides and the
+effective result for one user. A write is refused with `invalid_input` when a value
+is out of range, and with `forbidden` for a non-admin. Money is a decimal string,
+never a float. The installation settings are read at startup, so a change to them
+takes effect after a restart. See the [calls guide](calls-telnyx.md#per-user-policy)
+for the setting names.
 
 ## Response conventions
 
 - Timestamps are UTC RFC 3339 with a `Z` suffix, for example `2026-11-25T10:00:00.000Z`.
+- A call's `details.cost` is `{"status", "amount", "currency", "source"}`. `status` is `known` (the provider's reported charge), `estimated` (the operator's rate times the duration) or `unavailable`. `amount` is a decimal string, never a float, and `currency` is an ISO 4217 code. `source` is `provider` or `estimate`. For `unavailable`, all three value fields are `null`. A known cost wins over an estimate. See the [calls guide](calls-telnyx.md#cost).
 - `get_profiles` (REST `GET /api/v1/profiles` and the MCP tool of the same name) lists telephony profiles the caller owns **or was granted**. A granted profile appears with `access: "granted"`, and it is listed only while its owner is an active admin and the caller is active. Demoting or deactivating the owner hides it from the grantee until the owner is restored.
 - `connectivity_status` on telephony profiles is the last read-only validation result: `"unknown"` until a validation runs (and again after any change to the profile), then `"verified"` or `"failed"`. `connectivity_reason` gives the fixed reason code for a failure. `access` is `"owner"` or `"granted"`. Validation checks the key, application and number with GET requests only; it never places a call.
 - A call's `transcript_available` is true only when a final transcript turn exists. `recording_available` is true only when the recording is complete. `transcript_available` means only that a final transcript turn exists. It does not mean the transcript is finalized or complete. Before treating a transcript as ready, check the transcript page: `finalized` must be `true`, and `quality_flags` must not include `transcript_in_progress` or `two_party_incomplete`. The transcript endpoint returns a page for any owned call, including one with no turns yet.

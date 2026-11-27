@@ -22,7 +22,13 @@ const (
 	ToolGetCall       = "get_call"
 	ToolGetTranscript = "get_transcript"
 	ToolMakeCall      = "make_call"
+	ToolHangupCall    = "hangup_call"
 )
+
+// HangupCallInput names the call to end. The caller is never an argument.
+type HangupCallInput struct {
+	CallID string `json:"call_id"`
+}
 
 // GetProfilesInput takes no arguments.
 type GetProfilesInput struct{}
@@ -176,6 +182,23 @@ func registerTools(srv *mcp.Server, svc *service.Service, logger *slog.Logger) {
 		res, err := svc.GetCall(ctx, actor, in.CallID)
 		if err != nil {
 			return nil, service.CallView{}, toolFailure(logger, err)
+		}
+		return nil, res, nil
+	})
+
+	addTool(srv, &mcp.Tool{
+		Name:         ToolHangupCall,
+		Description:  "End one call owned by the caller on request. A queued call is failed without a dial; a dial in flight is ended when it returns; a live call's leg is hung up and its AI session closed. Repeating the request is safe and returns the current state. Foreign or missing calls return not_found.",
+		InputSchema:  inputOf(ToolHangupCall),
+		OutputSchema: outputOf(ToolHangupCall),
+	}, func(ctx context.Context, req *mcp.CallToolRequest, in HangupCallInput) (*mcp.CallToolResult, service.HangupResult, error) {
+		actor, err := actorFromRequest(req)
+		if err != nil {
+			return nil, service.HangupResult{}, toolFailure(logger, err)
+		}
+		res, err := svc.HangupCall(ctx, actor, in.CallID)
+		if err != nil {
+			return nil, service.HangupResult{}, toolFailure(logger, err)
 		}
 		return nil, res, nil
 	})

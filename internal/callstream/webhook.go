@@ -165,6 +165,9 @@ func (w *Webhooks) Handler(lookup KeyLookup) http.Handler {
 			http.Error(rw, "unavailable", http.StatusServiceUnavailable)
 			return
 		}
+		// call.cost is a cost write, not a state transition. It gets its own
+		// dispatch, with the same binding and receipt dedup.
+		ingress.WithCost(w.CostDispatch(callID))
 		sr := &statusRecorder{ResponseWriter: rw, status: http.StatusOK}
 		ingress.ServeHTTP(sr, r)
 		// A 200 means the receipt committed. A 500 means it rolled back, and

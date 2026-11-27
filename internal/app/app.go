@@ -147,7 +147,7 @@ func newCallIngress(store *storage.Store, sec *secrets.Service, tokens *callstre
 	}
 	// The same leg hangup the media path and shutdown use, so a retry is one leg.
 	legHangup := func(ctx context.Context, leg storage.LiveCallLeg) error {
-		return callworker.HangupLeg(ctx, legs, leg)
+		return callworker.HangupLegRecorded(ctx, legs, store, leg, opts.Now())
 	}
 	webhooks, err := callstream.NewWebhooks(store, opts.Now, legHangup, logger)
 	if err != nil {
@@ -203,7 +203,7 @@ func newCallIngress(store *storage.Store, sec *secrets.Service, tokens *callstre
 		},
 		// The same resolver and command id as shutdown, so a retry is one leg.
 		Hangup: func(ctx context.Context, leg storage.LiveCallLeg) error {
-			return callworker.HangupLeg(ctx, legs, leg)
+			return callworker.HangupLegRecorded(ctx, legs, store, leg, opts.Now())
 		},
 	}
 	return []func(*http.ServeMux){func(mux *http.ServeMux) {
@@ -223,12 +223,18 @@ func newCallWorker(store *storage.Store, resolver callworker.ProfileResolver, cf
 			PublicURL:   cfg.PublicURL,
 			StreamToken: tokens.Token,
 		},
-		Codec: mediaFormat,
+		Policy:             storedCallPolicy{store: store, install: cfg.CallPolicy},
+		Codec:              mediaFormat,
+		RingTimeoutSeconds: cfg.CallPolicy.RingTimeoutSeconds,
 	}
 	w, err := callworker.New(store, planner, callworker.Options{
 		Enabled: true,
 		Now:     opts.Now,
 		Logger:  logger,
+		// A hangup requested during a dial is sent through the same resolver.
+		Legs: planner,
+		// The reconciliation deadlines use the same ring timeout the dial sends.
+		RingTimeoutSeconds: cfg.CallPolicy.RingTimeoutSeconds,
 	})
 	if err != nil {
 		return nil, callworker.ProductionPlanner{}, fmt.Errorf("call worker: %w", err)
@@ -326,7 +332,7 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger, ln net.Lis
 	// Calls need a public origin for the provider's webhook and media URLs.
 	// Without one, MakeCall fails closed instead of queuing a call that can
 	// never be dialed.
-	svc := service.New(store).WithTranscripts(store)
+	svc := service.New(store).WithTranscripts(store).WithCallPolicy(store, cfg.CallPolicy)
 	var worker *callworker.Worker
 	var legResolver callworker.LegResolver
 	var callRoutes []func(*http.ServeMux)
@@ -347,9 +353,25 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger, ln net.Lis
 		callOp, err := service.NewCallOperator(store, service.CallDeps{
 			Resolver:      telSvc,
 			MaxBriefBytes: cfg.MaxCallBriefBytes,
+			Policy:        cfg.CallPolicy,
 			Now:           time.Now,
 			NewCallID:     service.NewCallID,
 			Notify:        worker.Wake,
+			Logger:        logger,
+			// The same leg resolver and command id as the worker and media
+			// paths, so a hangup is one leg. The resolver is set above and read
+			// only when a hangup is requested.
+			Hangup: func(ctx context.Context, leg storage.LiveCallLeg) error {
+				if legResolver == nil {
+					return errors.New("no telephony leg resolver")
+				}
+				return callworker.HangupLegRecorded(ctx, legResolver, store, leg, time.Now())
+			},
+			StopMedia: func(callID string) {
+				if mediaSvc != nil {
+					mediaSvc.StopCall(callID)
+				}
+			},
 		})
 		if err != nil {
 			return fmt.Errorf("call service: %w", err)
