@@ -688,7 +688,7 @@ func TestNewNegationWordsNegateMetQuote(t *testing.T) {
 		{"Neither can book a table for two tonight.", "Either can book a table for two tonight."},
 		{"We can do it without book a table for two tonight.", "We can do it, book a table for two tonight."},
 		{"We can do it nor book a table for two tonight.", "We can do it and book a table for two tonight."},
-		{"We can do nothing book a table for two tonight.", "We can do something book a table for two tonight."},
+		{"Nothing, book a table for two tonight.", "Something, book a table for two tonight."},
 	} {
 		negatedVsControl(t, c.negated, c.control, quote)
 	}
@@ -787,6 +787,12 @@ func TestNegationAcrossClauseIsNotSuccess(t *testing.T) {
 		"I am not sure your table for two is booked.",
 		"We can't confirm whether your table for two is booked.",
 		"It's not true that your table for two is booked.",
+		// The two-word window: a negating word right before the quote, with
+		// punctuation between them, still negates it.
+		"I'm afraid not, table for two is booked out tonight.",
+		"We cannot, table for two is booked by another party.",
+		"Sorry we can't - table for two is booked solid.",
+		"Not tonight; table for two is booked already by others.",
 	} {
 		// Control: the quote occurs in the turn, so the negated check is what
 		// stops success.

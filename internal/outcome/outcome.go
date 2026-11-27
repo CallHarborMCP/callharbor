@@ -784,19 +784,30 @@ func sameWords(a, b []token) bool {
 }
 
 // negatedAt reports whether the occurrence that starts at token i is negated.
-// Two rules apply:
-//   - A negating token (not, cannot, can't, unsure, whether, ...) anywhere
-//     after the last clause break and before the quote negates it. A clause
-//     break is a comma, sentence or clause punctuation, or a dash. So "I don't
-//     think your table for two is booked" is negated, but "Don't worry, your
-//     table for two is booked" is not, because the comma ends the clause.
+// Three rules apply:
+//   - A negating token (not, cannot, can't, unsure, whether, ...) among the two
+//     words immediately before the quote negates it, whatever punctuation sits
+//     between them. So "I'm afraid not, table for two is booked" is negated.
+//   - A negating token earlier in the same clause, before the quote, negates it
+//     too. A clause break is a comma, sentence or clause punctuation, or a dash.
+//     So "I don't think your table for two is booked" is negated.
 //   - "no" negates only when it is the word immediately before the quote, with
 //     no clause break between them. "No problem, booked a table for two" is
 //     therefore a confirmation, and "No, booked..." is not negated either.
 //
-// This is a documented heuristic, not a parser. Within a clause, any negation
-// word counts, even one that does not negate the quote, so the rule fails safe.
+// "Don't worry, your table for two is booked" is not negated: the negation is
+// two clauses before the quote, and the comma ends that clause.
+//
+// This is a documented heuristic, not a parser. It fails safe in one direction:
+// a negating word in the window or the clause counts even when it does not
+// negate the quote. "never mind, book a table for two" is therefore unverified,
+// although a reader could take it as a confirmation.
 func negatedAt(tt []token, i int) bool {
+	for j := i - 1; j >= 0 && j >= i-2; j-- {
+		if tt[j].negating() {
+			return true
+		}
+	}
 	for j := i - 1; j >= 0; j-- {
 		if tt[j+1].clause {
 			// A clause break sits between tt[j] and tt[j+1], so tt[j] is outside

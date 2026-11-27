@@ -115,7 +115,7 @@ until an outcome is recorded, and then it is an object:
   reference, not content: it never carries the callee's words. To read the words
   at a `transcript_turn` `seq`, use the audited
   [transcript endpoint](#call-transcripts), which records a `transcript.read`
-  event. For `call_event` evidence `seq` is the call event's own sequence number
+  event. The raw `assessment.reported` call event keeps the voice model's evidence quote for the outcome worker only, so no REST or MCP response returns it, `PurgeCall` removes it with the call's other transcript data, and any future transcript-only retention must scrub it as well. For `call_event` evidence `seq` is the call event's own sequence number
   (`call_events.seq`). It is separate from the transcript turn `seq`, and it is
   not exposed as a public read today. `met` is set only on transcript evidence
   that names a criterion. It is omitted for `call_event` evidence and for
@@ -174,7 +174,10 @@ Task codes name why the outcome is what it is:
 - A quote needs at least 3 words or 12 letters after normalization. A shorter
   quote such as `yes` is unverified, so it can never make an outcome a success.
 - Negation applies only to a met quote. A met quote is unverified when:
-  - a negating word appears in the same clause before it, in the same callee
+  - a negating word is among the two words immediately before it, whatever
+    punctuation sits between them. So `I'm afraid not, table for two is booked`
+    and `Not tonight; table for two is booked` do not verify;
+  - or a negating word appears earlier in the same clause, in the same callee
     turn. The negating words are `not`, `never`, `cannot`, `can't`, `won't`,
     `don't`, `isn't`, `unable`, `nobody`, `nothing`, `neither`, `nor`,
     `without`, `unsure`, `not sure` and `whether`. A clause ends at a comma,
@@ -187,7 +190,8 @@ Task codes name why the outcome is what it is:
     not true that your table for two is booked`. By contrast `Don't worry, your
     table for two is booked` verifies, because the comma ends the clause;
   - an n't contraction (see below), such as `didn't`, `couldn't`, `wasn't`,
-    `wouldn't` or `haven't`, appears in that window;
+    `wouldn't` or `haven't`, is among the two words immediately before the quote
+    or earlier in its clause;
   - the quote itself is negative: it contains a negation word or contraction, or
     `no` followed by a word with no comma or sentence punctuation between them.
     So `could not book a table for two` and `no table for two at eight` never
@@ -210,14 +214,18 @@ Task codes name why the outcome is what it is:
   `vs`. A `.` between two digits is part of a number. So `8 p.m. tonight`, `8.30`,
   `$12.50` and `Dr. Smith` do not end a sentence, but `We cannot. Book a table`
   and `Lunch is free. Book a table` do.
-- The clause scope is a heuristic, not a parser. Within a clause, any negating
-  word counts, even one that does not negate the quote. A real confirmation can
-  be marked unverified this way, and it is not a false success. The list of
-  negating words, including `unsure`, `not sure` and `whether`, is a judgment
-  call. An uncertain statement is not a confirmation, so those words fail safe.
-  For example `never mind book a table for two` does not verify a met criterion,
-  because `never` is in the same clause. `never mind, book a table for two` does
-  verify, because the comma ends the clause.
+- The negation scope is a heuristic, not a parser. It fails safe in one
+  direction: a negating word in the two-word window or earlier in the clause
+  counts, even when it does not negate the quote. A real confirmation can be
+  marked unverified this way, but it is never a false success. For example,
+  `never mind, book a table for two` does not verify a met criterion. `never` is
+  two words before the quote, so the window applies even though a comma sits
+  between them. This is the fail-safe over-block, and a reader could take the
+  sentence as a confirmation. `Don't worry, your table for two is booked`
+  verifies: `Don't` is outside the two-word window, and the comma ends its
+  clause. The list of negating words, including `unsure`, `not sure` and
+  `whether`, is a judgment call. An uncertain statement is not a confirmation, so
+  those words fail safe.
 - A quote for an unmet criterion, such as a refusal, is never checked for
   negation. Outcome-level quotes are not checked for negation under a failed
   outcome, because any verified quote supports failure.
