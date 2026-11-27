@@ -198,8 +198,7 @@ Refusals differ in what they record, so the audit trail is exact:
 
 What happens depends on the call's state. A queued call is failed without a
 dial. A dial in flight is ended when it returns. A live call's leg is hung up and
-its AI session is closed, and the call ends on Telnyx's `call.hangup`. Each
-successful or refused request writes one `call.hangup` audit row.
+its AI session is closed, and the call ends on Telnyx's `call.hangup`.
 
 ### Ring timeout
 
@@ -245,16 +244,21 @@ hangup is still resent, so a leg is never given up while it may still be live.
 
 These constants are fixed in code. They are not configuration.
 
-Every deadline is measured from the call's `created_at`, not from when the call
-started or was last updated. A leg's expiry deadline is `created_at` plus the
-Telnyx time limit (the call's cap clamped to 30 to 14400 seconds), plus the ring
-timeout and the grace. This is the cost-safe choice: a leg is never given up
-before Telnyx could have ended it, however long the call waited to start.
+The deadlines are measured from the call's `created_at`, not from when the dial
+was sent. Measuring from `created_at` is cost-safe for the overdue watchdog: it
+ends a live call early, never late. A call that waited in the queue therefore
+reaches its overdue deadline sooner than its leg's Telnyx time limit would.
 
-The orphan sweep covers only terminal calls whose expiry deadline has not passed.
-A terminal call from before the hangup markers existed, whose deadline is past,
-gets no hangup, because Telnyx has already ended its leg. A call still inside its
-window is hung up as before.
+The expiry cutoffs are different. `reconcile_expired`, and the orphan sweep's
+cutoff, use `created_at` plus the clamped time limit, the ring timeout and the
+grace. Telnyx's `time_limit_secs` starts when the dial is sent, which is after
+`created_at` by the queue wait. So these cutoffs can stop retrying a hangup early,
+by up to that queue wait. They never end a leg early, because Telnyx's
+`time_limit_secs` still caps the leg, whether or not the sweep keeps retrying.
+
+The orphan sweep therefore covers only terminal calls whose cutoff has not passed.
+A terminal call from before the hangup markers existed, whose cutoff is past, gets
+no further hangup. A call still inside its window is hung up as before.
 
 ### Cost
 

@@ -7,8 +7,9 @@ import (
 
 // TestHangupWithoutCSRFTokenIsForbiddenAndChangesNothing covers review
 // should-fix 2. A session hangup without the CSRF header must return 403, leave
-// the call active, and send no hangup to Telnyx. The refusal is audited, because
-// the session is authenticated, but no successful hangup row is written.
+// the call active, and send no hangup to Telnyx. The CSRF check runs in the REST
+// handler before the service, so the refusal writes no call.hangup audit row of
+// any outcome.
 func TestHangupWithoutCSRFTokenIsForbiddenAndChangesNothing(t *testing.T) {
 	const ctl = "v3:ctl-csrf"
 	env, tel, _, callID, _ := startOwnerCall(t, ctl, "csrf-hangup")
@@ -24,7 +25,20 @@ func TestHangupWithoutCSRFTokenIsForbiddenAndChangesNothing(t *testing.T) {
 	if n := len(tel.hangupsSeen()); n != 0 {
 		t.Fatalf("hangups sent to Telnyx after CSRF refusal = %d, want 0", n)
 	}
-	if n, _ := countHangupAudit(t, env.dataDir, callID, "success"); n != 0 {
-		t.Fatalf("successful hangup audit rows = %d, want 0", n)
+	if n := countAllHangupAudit(t, env.dataDir, callID); n != 0 {
+		t.Fatalf("call.hangup audit rows of any outcome = %d, want 0", n)
 	}
+}
+
+// countAllHangupAudit counts every call.hangup audit row for one call, of any
+// outcome.
+func countAllHangupAudit(t *testing.T, dataDir, callID string) int {
+	t.Helper()
+	db := openAppDB(t, dataDir)
+	var n int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM audit_events
+		WHERE action = 'call.hangup' AND resource_id = ?`, callID).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	return n
 }

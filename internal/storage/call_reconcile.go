@@ -67,8 +67,10 @@ func (s *Store) ListOverdueCalls(ctx context.Context, now time.Time, slackSecond
 // OrphanBounds limits the orphan sweep to legs that may still be up. The leg
 // deadline is created_at + the Telnyx time limit (clamped to [LimitMin,
 // LimitMax] as the dial sends it) + ExpiryPadSeconds (ring timeout and grace).
-// A call whose deadline has passed is not re-hung-up: Telnyx has ended its leg,
-// so a terminal call from before an upgrade is never hung up again.
+// Telnyx's time limit starts at dial, which is after created_at by the queue
+// wait, so this cutoff can stop retrying a hangup early by that wait. Telnyx's
+// own time limit still caps the leg. The bound keeps the sweep from retrying
+// terminal legs indefinitely, such as those from before the hangup markers.
 type OrphanBounds struct {
 	// LastHangupBefore is the earliest the next hangup for a call may be sent.
 	LastHangupBefore time.Time
