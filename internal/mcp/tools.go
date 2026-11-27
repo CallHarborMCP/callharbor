@@ -21,6 +21,7 @@ const (
 	ToolListCalls     = "list_calls"
 	ToolGetCall       = "get_call"
 	ToolGetTranscript = "get_transcript"
+	ToolGetRecording  = "get_recording"
 	ToolMakeCall      = "make_call"
 	ToolHangupCall    = "hangup_call"
 )
@@ -75,6 +76,11 @@ type GetCallInput struct {
 type GetTranscriptInput struct {
 	CallID string `json:"call_id"`
 	Cursor string `json:"cursor,omitempty"`
+}
+
+// GetRecordingInput names one call whose recording metadata is wanted.
+type GetRecordingInput struct {
+	CallID string `json:"call_id"`
 }
 
 // ListCallsOutput is one page of calls.
@@ -199,6 +205,24 @@ func registerTools(srv *mcp.Server, svc *service.Service, logger *slog.Logger) {
 		res, err := svc.HangupCall(ctx, actor, in.CallID)
 		if err != nil {
 			return nil, service.HangupResult{}, toolFailure(logger, err)
+		}
+		return nil, res, nil
+	})
+
+	addTool(srv, &mcp.Tool{
+		Name:         ToolGetRecording,
+		Description:  "Return the metadata of one call's recording owned by the caller: status, WAV byte count, duration, sample rate, channel layout, quality flags and timestamps. Metadata only; audio is read over authenticated REST at download_path. Foreign or missing calls, and calls with no servable recording, return not_found. A recording in progress is returned with status recording and byte_count 0.",
+		Annotations:  &mcp.ToolAnnotations{ReadOnlyHint: true},
+		InputSchema:  inputOf(ToolGetRecording),
+		OutputSchema: outputOf(ToolGetRecording),
+	}, func(ctx context.Context, req *mcp.CallToolRequest, in GetRecordingInput) (*mcp.CallToolResult, service.RecordingView, error) {
+		actor, err := actorFromRequest(req)
+		if err != nil {
+			return nil, service.RecordingView{}, toolFailure(logger, err)
+		}
+		res, err := svc.GetRecording(ctx, actor, in.CallID)
+		if err != nil {
+			return nil, service.RecordingView{}, toolFailure(logger, err)
 		}
 		return nil, res, nil
 	})

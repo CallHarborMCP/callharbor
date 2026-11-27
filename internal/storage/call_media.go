@@ -25,6 +25,10 @@ type MediaCall struct {
 	// TelephonyOwnerUserID owns the telephony profile and its secrets. It can
 	// differ from OwnerUserID when the call was made by a grantee.
 	TelephonyOwnerUserID string
+	// RecordEffective is true only when the call was accepted with recording
+	// requested AND the owner still has recording opted in at media start. The
+	// owner's opt-in is re-read here, so an opt-out takes effect on the next call.
+	RecordEffective bool
 }
 
 // LoadCallForMedia reads one call's media state. It is not owner-scoped: the
@@ -33,14 +37,17 @@ func (s *Store) LoadCallForMedia(ctx context.Context, callID string) (MediaCall,
 	var m MediaCall
 	var control sql.NullString
 	var key sql.NullString
+	var recordEffective, optIn int
 	err := s.db.QueryRowContext(ctx, `SELECT c.id, c.owner_user_id, c.ai_profile_id, c.status,
 		c.provider_call_control_id, c.max_duration_seconds, b.content_json,
-		tp.owner_user_id, tp.webhook_public_key_secret_id
+		tp.owner_user_id, tp.webhook_public_key_secret_id, c.record_effective, u.recording_opt_in
 		FROM calls c
 		JOIN call_briefs b ON b.call_id = c.id AND b.owner_user_id = c.owner_user_id
 		JOIN telephony_profiles tp ON tp.id = c.telephony_profile_id
+		JOIN users u ON u.id = c.owner_user_id
 		WHERE c.id = ?`, callID).Scan(&m.ID, &m.OwnerUserID, &m.AIProfileID, &m.Status,
-		&control, &m.MaxDurationSecs, &m.BriefJSON, &m.TelephonyOwnerUserID, &key)
+		&control, &m.MaxDurationSecs, &m.BriefJSON, &m.TelephonyOwnerUserID, &key,
+		&recordEffective, &optIn)
 	if errors.Is(err, sql.ErrNoRows) {
 		return MediaCall{}, ErrCallNotFound
 	}
@@ -49,6 +56,7 @@ func (s *Store) LoadCallForMedia(ctx context.Context, callID string) (MediaCall,
 	}
 	m.ControlID = control.String
 	m.WebhookKeySecretID = key.String
+	m.RecordEffective = recordEffective == 1 && optIn == 1
 	return m, nil
 }
 

@@ -63,6 +63,9 @@ type Media struct {
 	// Transcripts persists each call's transcript turns and event timeline.
 	// When nil, no transcript is recorded.
 	Transcripts transcript.Store
+	// Recording enables per-call two-party recording for calls that were
+	// accepted with it effective. When nil, no call is recorded.
+	Recording *Recording
 	// sessions holds the active media sessions: one per call id (m1), and the
 	// set shutdown cancels and waits for before the store closes (M2).
 	sessions sessions
@@ -261,6 +264,18 @@ func (m *Media) attach(sess realtime.Session, st storage.MediaCall, leg, provide
 		release()
 		return nil, err
 	}
+	// The recorder is started before the run, so the first media frame is never
+	// before its t0. One recorder per call: a second stream for a call that
+	// already has a recording row creates nothing.
+	recCall, err := startRecording(context.Background(), m.Recording, st, leg, m.Now())
+	if err != nil {
+		_ = sess.Close()
+		release()
+		return nil, err
+	}
+	if recCall != nil {
+		bridgeSink.Tap = recCall.rec
+	}
 	ab, err := voicecall.NewAudioBridge(bridgeSink)
 	if err != nil {
 		_ = sess.Close()
@@ -300,6 +315,15 @@ func (m *Media) attach(sess realtime.Session, st storage.MediaCall, leg, provide
 		// is freed only after the run and its local hangup have finished.
 		defer release()
 		defer stop()
+		if recCall != nil {
+			// Deferred before the transcript close, so it runs after it and before
+			// the claim is released. The recorder finishes only after the run ends.
+			defer func() {
+				if err := recCall.Finish(context.Background(), m.Now(), unconfirmedPlayout(bridgeSink), m.Now); err != nil && m.Logger != nil {
+					m.Logger.Error("recording finalize failed", "call_id", st.ID, "error", err.Error())
+				}
+			}()
+		}
 		if rec != nil {
 			// Deferred last, so it runs first: after the run and any local
 			// hangup, before the claim is released, so shutdown's wait covers

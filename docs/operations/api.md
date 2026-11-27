@@ -30,14 +30,44 @@ MCP and OAuth tokens are not accepted on `/api/v1`. The MCP endpoint has its own
 | `PUT` | `/api/v1/telephony-profiles/{profile_id}/grants/{user_id}` | Grant a user use of a profile (admin owner) |
 | `DELETE` | `/api/v1/telephony-profiles/{profile_id}/grants/{user_id}` | Revoke a grant (admin owner) |
 
-Only these operations are implemented. Other methods on these paths are not routed. Planned operations (recordings, tracked in later issues) are not exposed by this API.
+Only these operations are implemented. Other methods on these paths are not routed. The recording endpoints are described in [Call recordings](#call-recordings) below.
 
 Planned operations are listed in `api/openapi.json` with `x-callharbor-availability: planned`. They are never mounted as operations. Their responses are never a success and never start anything:
 
-- A planned `GET` path (the recording and recording audio paths) is answered by the API itself. A request needs a valid session, as every `/api/v1` path does. Anonymous requests get `401 unauthenticated`. A signed-in request gets `404` with the `not_found` envelope, `{"error":{"code":"not_found",...}}`. It never reaches the web UI, so the answer is the same whether or not the UI is built.
+- A planned `GET` path, if one is declared, is answered by the API itself. A request needs a valid session, as every `/api/v1` path does. Anonymous requests get `401 unauthenticated`. A signed-in request gets `404` with the `not_found` envelope, `{"error":{"code":"not_found",...}}`. It never reaches the web UI, so the answer is the same whether or not the UI is built. No planned REST route is declared at present.
 - A planned `POST` path returns `405 Method Not Allowed` from the router, plain text and not the JSON envelope. Because the web UI's `GET /` pattern matches every path, the router reports a wrong method as 405 rather than 404. For example, `POST /api/v1/calls/{call_id}/transcript` returns `405`, because that path is mounted for `GET` only.
 
 The planned `GET` list is derived from `PlannedRoutes` in `internal/api/v1.go`, and the app tests probe every planned route with a session.
+
+## Call recordings
+
+A call's recording is a two-channel 16-bit PCM WAV at the leg's sample rate. Channel 0 is the remote party and channel 1 is the agent audio that was played. The file is stored encrypted and decrypted only for an authorized read; see `docs/security/recording-encryption.md`.
+
+- `GET /api/v1/calls/{call_id}/recording` returns the recording metadata (`RecordingMetadata` in the OpenAPI document). It never returns audio and never returns a storage path. The MCP tool `get_recording` returns the same fields.
+- `GET /api/v1/calls/{call_id}/recording/audio` returns the WAV audio.
+
+Both need a session and are owner-scoped. A call owned by another user, and a call that does not exist, both return `404` `not_found` with the same body (`call not found`). A call with no servable recording returns `404` `not_found` with the body `recording not available`. That covers no recording row, a `failed` or `deleted` recording, and a finalized recording with no audio. Owners who have not opted in get the same response.
+
+**Status codes for the audio endpoint**
+
+- `200`: the full WAV. The body is a 44-byte header followed by the PCM.
+- `206`: one byte range, when a single-range `Range` header is sent. The response carries `Content-Range`. Multi-range requests are answered as `multipart/byteranges`, as Go's `http.ServeContent` does.
+- `416`: the range is not satisfiable. The response carries `Content-Range: bytes */<size>`.
+- `409` `conflict`: the recording is still in progress (`status` is `recording`). Metadata still returns `200` with `status: recording`.
+- `401`, `404` as above.
+- `500` `internal`: the audit write failed, or the file could not be read.
+
+**Headers on the audio response.** `Content-Type: audio/wav`, `Cache-Control: private, no-store`, `X-Content-Type-Options: nosniff`, `Accept-Ranges: bytes`. `Content-Length` is set by the standard library from the audio size. By default `Content-Disposition` is `inline`. With `?download=1` it is `attachment; filename="call-<id>.wav"`, where the call id is sanitized to letters, digits, `-` and `_`.
+
+**Mid-stream failure.** Audio is decrypted segment by segment. If a segment fails authentication after the response has started, the server aborts the connection. The client receives a truncated body and no error status. The server logs the cause without the audio. A client must check the byte count against `Content-Length` and not treat a short body as complete.
+
+**Audit.** Every metadata read and every audio read writes an audit event: `recording.read` for metadata and `recording.audio_read` for audio. Denied and refused reads are audited too, with `outcome` set to `denied`. The audit detail records a `reason` code and, for audio reads, the `Range` header truncated to 64 characters. It never records file paths or audio. An audit write failure fails the request with `500` and no body.
+
+**Recording flags.** `quality_flags` lists what degraded the recording. The vocabulary is `caller_gap_filled`, `caller_frames_dropped`, `agent_playout_estimated`, `agent_interrupted`, `agent_playout_unconfirmed`, `write_failed`, `backpressure` and `recovered_after_restart`. `agent_playout_estimated` is set on every recording, because agent timing comes from a model of the playout queue.
+
+**Preference endpoints.** The owner controls recording with `GET` and `PUT /api/preferences/recording`. These are session-authenticated and self-only. `PUT` requires the CSRF header. The body is strict JSON, `{"enabled": bool, "acknowledged": bool}`, and unknown fields are refused with `400`. Turning recording on needs `acknowledged: true`, or the request gets `400` `invalid_input`. Turning it off never needs an acknowledgement. The response is `{"enabled", "acknowledged_at", "retention_days"}`. Each change writes a `recording.preference_changed` audit event whose detail holds only `from_enabled` and `to_enabled`. An administrator cannot change another user's recording setting: the admin user update refuses the recording fields.
+
+These preference paths are not part of the OpenAPI document.
 
 ## Call transcripts
 
@@ -427,7 +457,7 @@ for the setting names.
 - A call's `details.cost` is `{"status", "amount", "currency", "source"}`. `status` is `known` (the provider's reported charge), `estimated` (the operator's rate times the duration) or `unavailable`. `amount` is a decimal string, never a float, and `currency` is an ISO 4217 code. `source` is `provider` or `estimate`. For `unavailable`, all three value fields are `null`. A known cost wins over an estimate. See the [calls guide](calls-telnyx.md#cost).
 - `get_profiles` (REST `GET /api/v1/profiles` and the MCP tool of the same name) lists telephony profiles the caller owns **or was granted**. A granted profile appears with `access: "granted"`, and it is listed only while its owner is an active admin and the caller is active. Demoting or deactivating the owner hides it from the grantee until the owner is restored.
 - `connectivity_status` on telephony profiles is the last read-only validation result: `"unknown"` until a validation runs (and again after any change to the profile), then `"verified"` or `"failed"`. `connectivity_reason` gives the fixed reason code for a failure. `access` is `"owner"` or `"granted"`. Validation checks the key, application and number with GET requests only; it never places a call.
-- A call's `transcript_available` is true only when a final transcript turn exists. `recording_available` is true only when the recording is complete. `transcript_available` means only that a final transcript turn exists. It does not mean the transcript is finalized or complete. Before treating a transcript as ready, check the transcript page: `finalized` must be `true`, and `quality_flags` must not include `transcript_in_progress` or `two_party_incomplete`. The transcript endpoint returns a page for any owned call, including one with no turns yet.
+- A call's `transcript_available` is true only when a final transcript turn exists. `recording_available` is true when the recording is `complete`, or `partial` with `byte_count` greater than zero. It is false for in-progress, failed and deleted recordings, and when no recording exists. `transcript_available` means only that a final transcript turn exists. It does not mean the transcript is finalized or complete. Before treating a transcript as ready, check the transcript page: `finalized` must be `true`, and `quality_flags` must not include `transcript_in_progress` or `two_party_incomplete`. The transcript endpoint returns a page for any owned call, including one with no turns yet.
 - Every `/api/v1` response carries `Cache-Control: no-store`.
 
 ## Verifying

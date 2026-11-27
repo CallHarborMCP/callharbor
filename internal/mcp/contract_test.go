@@ -111,7 +111,7 @@ func TestRegisteredToolsMatchManifest(t *testing.T) {
 			t.Errorf("registered tool %s is not implemented in the manifest", name)
 		}
 	}
-	want := []string{ToolGetCall, ToolGetProfiles, ToolGetTranscript, ToolHangupCall, ToolListCalls, ToolMakeCall}
+	want := []string{ToolGetCall, ToolGetProfiles, ToolGetRecording, ToolGetTranscript, ToolHangupCall, ToolListCalls, ToolMakeCall}
 	got := sortedKeys(registered)
 	if len(got) != len(want) {
 		t.Fatalf("registered = %v, want exactly %v", got, want)

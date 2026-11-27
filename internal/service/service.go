@@ -42,6 +42,7 @@ type Service struct {
 	store       Store
 	calls       *CallOperator
 	transcripts TranscriptStore
+	recordings  *recordingDeps
 	policies    PolicyStore
 	// policyInstall is the installation call policy the per-user overrides
 	// are combined with for the effective view.
@@ -293,7 +294,7 @@ func toCallView(c storage.Call) (CallView, error) {
 			Cost:               costView(c),
 		},
 		TranscriptAvailable: c.HasTranscript,
-		RecordingAvailable:  c.RecordingStatus == "complete",
+		RecordingAvailable:  recordingAvailable(c.RecordingStatus, c.RecordingBytes),
 		CreatedAt:           created,
 		UpdatedAt:           updated,
 	}
@@ -314,6 +315,21 @@ func toCallView(c storage.Call) (CallView, error) {
 		view.EndedAt = &ended
 	}
 	return view, nil
+}
+
+// recordingAvailable reports whether the call has audio the recording endpoints
+// can serve. A complete recording always does. A partial one does when some
+// audio was authenticated and written. Every other state, including an
+// in-progress or failed recording, is unavailable.
+func recordingAvailable(status string, byteCount int64) bool {
+	switch status {
+	case storage.RecordingStatusComplete:
+		return true
+	case storage.RecordingStatusPartial:
+		return byteCount > 0
+	default:
+		return false
+	}
 }
 
 // formatTimestamp converts a stored timestamp to RFC 3339 in UTC with a

@@ -99,6 +99,12 @@ func AsErrorWith(code Code, message string) *Error {
 	return newError(code, message)
 }
 
+// InternalWithCause wraps a transport-level failure as an internal error. The
+// cause is kept for server-side logs only, as with every internal error.
+func InternalWithCause(cause error) *Error {
+	return internal(cause)
+}
+
 // Envelope is the error body shared by REST and MCP tool errors. Its JSON form
 // is {"error":{"code":...,"message":...}}. Cause is never part of it.
 type Envelope struct {

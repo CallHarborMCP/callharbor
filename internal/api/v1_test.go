@@ -28,9 +28,23 @@ type fixture struct {
 	store   *storage.Store
 	aliceCk *http.Cookie
 	bobCk   *http.Cookie
+	// ring is the master keyring the recording read path decrypts with, and
+	// dataDir the root its files were written under.
+	ring    *secrets.Keyring
+	dataDir string
+	// raw is a second handle on the same database, for fixture rows and for
+	// tests that must break one table to force a failure.
+	raw *sql.DB
 }
 
 func newFixture(t *testing.T) *fixture {
+	t.Helper()
+	return newFixtureWithPlanned(t)
+}
+
+// newFixtureWithPlanned is newFixture with extra planned GET answers mounted.
+// Only the planned-route mechanism tests use it.
+func newFixtureWithPlanned(t *testing.T, planned ...Route) *fixture {
 	t.Helper()
 	ctx := context.Background()
 	path := filepath.Join(t.TempDir(), "db.sqlite")
@@ -81,8 +95,12 @@ func newFixture(t *testing.T) *fixture {
 		t.Fatalf("telephony service: %v", err)
 	}
 
+	f.ring = ring
+	f.raw = raw
+	f.dataDir = t.TempDir()
 	f.mux = http.NewServeMux()
-	NewHandler(idHandler, service.New(store).WithTranscripts(store), telSvc, nil).Register(f.mux)
+	svc := service.New(store).WithTranscripts(store).WithRecordings(store, ring, f.dataDir)
+	NewHandler(idHandler, svc, telSvc, nil).WithPlannedRoutes(planned...).Register(f.mux)
 	return f
 }
 

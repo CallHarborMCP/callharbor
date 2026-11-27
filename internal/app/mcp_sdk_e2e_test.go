@@ -4,7 +4,6 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
-	"errors"
 	"net/http"
 	"net/url"
 	"path/filepath"
@@ -13,7 +12,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/modelcontextprotocol/go-sdk/jsonrpc"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	_ "modernc.org/sqlite"
 )
@@ -218,7 +216,7 @@ func TestMCPSDKClientListsOnlyImplementedTools(t *testing.T) {
 		names = append(names, tool.Name)
 	}
 	sort.Strings(names)
-	want := []string{"get_call", "get_profiles", "get_transcript", "hangup_call", "list_calls", "make_call"}
+	want := []string{"get_call", "get_profiles", "get_recording", "get_transcript", "hangup_call", "list_calls", "make_call"}
 	if strings.Join(names, ",") != strings.Join(want, ",") {
 		t.Fatalf("tools = %v, want %v", names, want)
 	}
@@ -354,28 +352,21 @@ func TestMCPSDKGetProfilesOwnNonSecretOnly(t *testing.T) {
 	}
 }
 
-// TestMCPSDKPlannedToolsAreNotRegistered calls each planned operation. The SDK
-// must answer with its unknown-tool JSON-RPC error (code -32602, invalid
-// params, message "unknown tool"). That is the only acceptable outcome: a
-// transport or auth failure would hide a registration bug, and a result would
-// mean the tool exists. hangup_call is implemented now and is covered by the
-// hangup tests, so only the still-planned tools are listed here.
-func TestMCPSDKPlannedToolsAreNotRegistered(t *testing.T) {
+// TestMCPSDKGetRecordingRefusesWithoutServableAudio calls get_recording through
+// the SDK. The seeded calls have no recording row, so the owner's call is
+// refused as "recording not available", and a foreign call is refused with the
+// same not_found code as a missing one, under its own message.
+func TestMCPSDKGetRecordingRefusesWithoutServableAudio(t *testing.T) {
 	e, token := setupMCPData(t)
 	sess := e.sdkClient(t, token)
 
-	for _, name := range []string{"get_recording"} {
-		res, err := sess.CallTool(context.Background(), &mcp.CallToolParams{Name: name, Arguments: map[string]any{"call_id": "alice-c1"}})
-		if res != nil {
-			t.Fatalf("planned %s returned a result: %+v", name, res)
-		}
-		var wire *jsonrpc.Error
-		if !errors.As(err, &wire) {
-			t.Fatalf("planned %s error = %v (%T), want a JSON-RPC error", name, err, err)
-		}
-		if wire.Code != jsonrpc.CodeInvalidParams || !strings.Contains(wire.Message, "unknown tool") {
-			t.Fatalf("planned %s error = code %d %q, want code %d \"unknown tool\"", name, wire.Code, wire.Message, jsonrpc.CodeInvalidParams)
-		}
+	own := callTool(t, sess, "get_recording", map[string]any{"call_id": "alice-c1"})
+	if code := toolErrorCode(t, own); code != "not_found" {
+		t.Fatalf("owner call without recording code = %q, want not_found", code)
+	}
+	foreign := callTool(t, sess, "get_recording", map[string]any{"call_id": "bob-c1"})
+	if code := toolErrorCode(t, foreign); code != "not_found" {
+		t.Fatalf("foreign recording code = %q, want not_found", code)
 	}
 }
 

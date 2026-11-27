@@ -34,6 +34,9 @@ type Call struct {
 	HasTranscript bool
 	// RecordingStatus is the stored recording status, or "" when none exists.
 	RecordingStatus string
+	// RecordingBytes is the stored audio byte count of the recording row, 0 when
+	// none exists or no audio was written.
+	RecordingBytes int64
 	// Estimate is the pre-dial cost, as recorded at make_call. Its status is
 	// estimated or unavailable; a zero value means none was recorded.
 	Estimate CostFigure
@@ -67,6 +70,7 @@ const callReadColumns = `c.id, c.owner_user_id, c.telephony_profile_id, c.ai_pro
 	c.max_duration_seconds, c.created_at, c.updated_at, c.ended_at,
 	EXISTS (SELECT 1 FROM transcript_turns t WHERE t.call_id = c.id AND t.owner_user_id = c.owner_user_id AND t.finality = 'final'),
 	(SELECT r.status FROM recordings r WHERE r.call_id = c.id AND r.owner_user_id = c.owner_user_id),
+	(SELECT r.byte_count FROM recordings r WHERE r.call_id = c.id AND r.owner_user_id = c.owner_user_id),
 	c.cost_status, c.cost_amount_micros, c.cost_currency,
 	c.provider_cost_status, c.provider_cost_amount_micros, c.provider_cost_currency,
 	c.outcome_reason_codes, c.outcome_evidence, c.outcome_source, c.outcome_assessed_at`
@@ -130,6 +134,7 @@ func scanCall(r rowScanner) (Call, error) {
 	var (
 		c                                       Call
 		outcomeCol, reason, endedAt, recStatus  sql.NullString
+		recBytes                                sql.NullInt64
 		recordRequested, recordEffective        int
 		hasTranscript                           int
 		estStatus, estCur, provStatus, provCur  sql.NullString
@@ -139,7 +144,7 @@ func scanCall(r rowScanner) (Call, error) {
 	err := r.Scan(&c.ID, &c.OwnerUserID, &c.TelephonyProfileID, &c.AIProfileID, &c.ToNumber,
 		&c.Status, &outcomeCol, &reason, &recordRequested, &recordEffective,
 		&c.MaxDurationSeconds, &c.CreatedAt, &c.UpdatedAt, &endedAt,
-		&hasTranscript, &recStatus,
+		&hasTranscript, &recStatus, &recBytes,
 		&estStatus, &estAmt, &estCur, &provStatus, &provAmt, &provCur,
 		&reasonCodes, &evidence, &source, &assessed)
 	if err != nil {
@@ -155,6 +160,7 @@ func scanCall(r rowScanner) (Call, error) {
 	c.OutcomeReasonCode = reason.String
 	c.EndedAt = endedAt.String
 	c.RecordingStatus = recStatus.String
+	c.RecordingBytes = recBytes.Int64
 	c.RecordRequested = recordRequested == 1
 	c.RecordEffective = recordEffective == 1
 	c.HasTranscript = hasTranscript == 1
