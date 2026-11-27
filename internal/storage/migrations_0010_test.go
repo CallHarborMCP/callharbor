@@ -243,7 +243,7 @@ func TestRecordTaskOutcomeIsIdempotentAndTerminalOnly(t *testing.T) {
 		Outcome:     outcome.Success,
 		Source:      outcome.SourceVoiceSession,
 		ReasonCodes: []string{outcome.ReasonConfirmed},
-		Evidence:    []outcome.Evidence{{Kind: outcome.KindTranscriptTurn, Seq: 2, Quote: "booked", Speaker: "callee", Fidelity: "played"}},
+		Evidence:    []outcome.Evidence{{Kind: outcome.KindTranscriptTurn, Seq: 2, Speaker: "callee", Fidelity: "played"}},
 	}
 	if ok, err := s.RecordTaskOutcome(ctx, "alice-call", first, o10Now); err != nil || !ok {
 		t.Fatalf("first write: wrote=%v err=%v", ok, err)
@@ -263,7 +263,7 @@ func TestRecordTaskOutcomeIsIdempotentAndTerminalOnly(t *testing.T) {
 	if !slices.Equal(c.OutcomeReasonCodes, []string{outcome.ReasonConfirmed}) {
 		t.Fatalf("reason codes = %v", c.OutcomeReasonCodes)
 	}
-	if len(c.OutcomeEvidence) != 1 || c.OutcomeEvidence[0].Quote != "booked" || c.OutcomeEvidence[0].Seq != 2 {
+	if len(c.OutcomeEvidence) != 1 || c.OutcomeEvidence[0].Seq != 2 || c.OutcomeEvidence[0].Speaker != "callee" {
 		t.Fatalf("evidence = %+v", c.OutcomeEvidence)
 	}
 	if c.OutcomeReasonCode != "hangup" {

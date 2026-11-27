@@ -16,9 +16,10 @@ type TaskAssessment struct {
 	AssessedAt  string         `json:"assessed_at"`
 }
 
-// TaskEvidence is one reference that supports a task outcome. Empty optional
-// fields are omitted; criterion is omitted when the evidence supports no
-// particular success criterion.
+// TaskEvidence is one reference that supports a task outcome. It carries no
+// callee words: read the text at Seq through the audited transcript endpoint.
+// Empty optional fields are omitted; criterion is omitted when the evidence
+// supports no particular success criterion.
 type TaskEvidence struct {
 	Kind      string `json:"kind"`
 	Seq       int    `json:"seq"`
@@ -26,7 +27,6 @@ type TaskEvidence struct {
 	// Met is set only on transcript evidence that names a criterion. It is
 	// omitted for call_event evidence and outcome-level quotes.
 	Met      *bool  `json:"met,omitempty"`
-	Quote    string `json:"quote,omitempty"`
 	Speaker  string `json:"speaker,omitempty"`
 	Fidelity string `json:"fidelity,omitempty"`
 	Code     string `json:"code,omitempty"`
@@ -62,6 +62,6 @@ func taskAssessmentOf(c storage.Call) (*TaskAssessment, error) {
 func taskEvidenceOf(e outcome.Evidence) TaskEvidence {
 	return TaskEvidence{
 		Kind: e.Kind, Seq: e.Seq, Criterion: e.Criterion, Met: e.Met,
-		Quote: e.Quote, Speaker: e.Speaker, Fidelity: e.Fidelity, Code: e.Code,
+		Speaker: e.Speaker, Fidelity: e.Fidelity, Code: e.Code,
 	}
 }

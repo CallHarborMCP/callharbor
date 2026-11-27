@@ -26,7 +26,7 @@ func TestPopulatedTaskAssessmentValidatesAgainstMCPSchemas(t *testing.T) {
 			TaskAssessment: &service.TaskAssessment{
 				ReasonCodes: []string{"confirmed"},
 				Evidence: []service.TaskEvidence{
-					{Kind: outcome.KindTranscriptTurn, Seq: 2, Criterion: &crit, Quote: "booked for friday", Speaker: "callee", Fidelity: "model_derived"},
+					{Kind: outcome.KindTranscriptTurn, Seq: 2, Criterion: &crit, Speaker: "callee", Fidelity: "model_derived"},
 					{Kind: outcome.KindCallEvent, Seq: 1, Code: "answered", Fidelity: "exact"},
 				},
 				Source:     "voice_session",

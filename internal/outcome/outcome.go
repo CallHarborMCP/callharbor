@@ -120,6 +120,10 @@ type Input struct {
 	CallEvents []CallEventRef
 	// Assessments are the voice-session self-reports in arrival order.
 	Assessments []Assessment
+	// Prepared is optional. A caller that also resolves report quotes sets it to
+	// Prepare(Transcript.Turns), so each turn is tokenized once per evaluation.
+	// When nil, Evaluate prepares the transcript itself.
+	Prepared *Prepared
 	// InvalidAssessments counts stored self-reports that failed validation.
 	// They are skipped, and the result carries assessment_invalid.
 	InvalidAssessments int
@@ -177,12 +181,15 @@ type Claim struct {
 // Evidence is one reference that supports a result. Met is set only on
 // transcript evidence that backs a criterion; it is omitted for call events and
 // outcome-level quotes.
+//
+// Evidence is a reference, not content. It never carries the callee's words: a
+// reader gets the text from the audited transcript endpoint at Seq. The quote a
+// report cites is used only to verify the claim and is not stored.
 type Evidence struct {
 	Kind      string `json:"kind"`
 	Seq       int    `json:"seq"`
 	Criterion *int   `json:"criterion,omitempty"`
 	Met       *bool  `json:"met,omitempty"`
-	Quote     string `json:"quote,omitempty"`
 	Speaker   string `json:"speaker,omitempty"`
 	Fidelity  string `json:"fidelity,omitempty"`
 	Code      string `json:"code,omitempty"`
@@ -242,7 +249,7 @@ func Evaluate(in Input) Result {
 	}
 	codes = appendCode(codes, a.Reason)
 
-	verified, unverified := verifyClaims(in, a)
+	verified, unverified := verifyClaims(in, a, in.prepared())
 	if unverified {
 		codes = appendCode(codes, CodeEvidenceUnverified)
 	}
@@ -367,29 +374,69 @@ func allCriteriaMet(n int, met map[int]bool) bool {
 	return true
 }
 
+// evidenceKey identifies one reference. Evidence carries no quote, so two claims
+// that cite the same turn for the same criterion and met value are one reference.
+// preparedTurn is a final callee turn with its text tokenized once.
+type preparedTurn struct {
+	turn   Turn
+	tokens []token
+}
+
+// Prepared is a transcript's final callee turns, each tokenized once. Building
+// it once per evaluation keeps the cost to one tokenization per turn, however
+// many claims or report quotes are checked against it.
+type Prepared struct {
+	bySeq map[int]preparedTurn
+	// callee is the same turns in transcript order, for quote resolution.
+	callee []preparedTurn
+}
+
+// Prepare tokenizes the final callee turns of a transcript. A repeated seq keeps
+// its first turn, as verification always did.
+func Prepare(turns []Turn) *Prepared {
+	p := &Prepared{bySeq: map[int]preparedTurn{}}
+	for _, t := range turns {
+		if t.Speaker != "callee" || t.Finality != "final" {
+			continue
+		}
+		pt := preparedTurn{turn: t, tokens: tokenize(t.Text)}
+		p.callee = append(p.callee, pt)
+		if _, dup := p.bySeq[t.Seq]; !dup {
+			p.bySeq[t.Seq] = pt
+		}
+	}
+	return p
+}
+
+// turn returns the prepared callee turn with seq, and whether there is one.
+func (p *Prepared) turn(seq int) (preparedTurn, bool) {
+	pt, ok := p.bySeq[seq]
+	return pt, ok
+}
+
+// prepared returns the Input's prepared transcript, building it when the caller
+// did not supply one.
+func (in Input) prepared() *Prepared {
+	if in.Prepared != nil {
+		return in.Prepared
+	}
+	return Prepare(in.Transcript.Turns)
+}
+
 type evidenceKey struct {
 	seq       int
 	criterion int
-	quote     string
+	met       bool
 }
 
 // verifyClaims returns the evidence for every claim whose quote is supported by
 // a final callee turn with the claimed seq (see supportsTurn). Other claims are
 // dropped, and the bool reports whether any were dropped.
 //
-// Accepted deviation: the design said "normalized substring". Matching is
-// whole-word instead, so a quote such as "no" cannot match inside "not". The
-// owner accepted this; it is also documented in docs/operations/api.md.
-func verifyClaims(in Input, a Assessment) ([]Evidence, bool) {
-	turns := map[int]Turn{}
-	for _, t := range in.Transcript.Turns {
-		if t.Speaker != "callee" || t.Finality != "final" {
-			continue
-		}
-		if _, dup := turns[t.Seq]; !dup {
-			turns[t.Seq] = t
-		}
-	}
+// Matching is whole-word, not a normalized substring, so a quote such as "no"
+// cannot match inside "not". This is a documented design choice (see
+// docs/operations/api.md, Evidence semantics).
+func verifyClaims(in Input, a Assessment, p *Prepared) ([]Evidence, bool) {
 	var out []Evidence
 	seen := map[evidenceKey]bool{}
 	unverified := false
@@ -399,12 +446,12 @@ func verifyClaims(in Input, a Assessment) ([]Evidence, bool) {
 			// adds no evidence_unverified.
 			continue
 		}
-		ev, ok := verifyClaim(c, in.CriteriaCount, negationChecked(c, a.Outcome), turns)
+		ev, ok := verifyClaim(c, in.CriteriaCount, negationChecked(c, a.Outcome), p)
 		if !ok {
 			unverified = true
 			continue
 		}
-		key := evidenceKey{seq: ev.Seq, criterion: criterionOf(ev), quote: ev.Quote}
+		key := evidenceKey{seq: ev.Seq, criterion: criterionOf(ev), met: ev.Met != nil && *ev.Met}
 		if seen[key] {
 			continue
 		}
@@ -422,16 +469,21 @@ const (
 )
 
 // negations are tokens that flip the meaning of the words after them. A met
-// quote that matches just after one of them is unverified. "no" is handled
+// quote that matches later in the same clause is unverified. "no" is handled
 // separately by negatedAt, so "No problem, booked a table" is not negated.
+//
+// This list is a heuristic, not a parser. "whether" and "unsure" are judgment
+// calls: an uncertain statement is not a confirmation, so they fail safe.
 var negations = map[string]bool{
 	"not": true, "never": true, "cannot": true, "cant": true,
 	"wont": true, "dont": true, "isnt": true, "unable": true,
 	"nobody": true, "nothing": true, "neither": true, "nor": true, "without": true,
+	"unsure": true, "whether": true,
 }
 
-// clausePunct are the runes that end a clause. A "no" only negates the words
-// that follow it when no clause punctuation sits between them.
+// clausePunct are the runes that end a clause for the "no" rule. Dashes are not
+// in this set; they end a negation's clause through the clause flag instead
+// (see tokenize and negatedAt).
 const clausePunct = ",;:.!?"
 
 // abbreviations are words whose following full stop does not end a sentence,
@@ -449,6 +501,9 @@ const apostrophes = "'\u2019\u2018\u02bc\uff07\u2032`"
 // token is one word of a turn or a quote: lowercased, letters and digits only.
 //   - brk reports whether clause punctuation sits between this word and the one
 //     before it.
+//   - clause reports whether a clause break sits between them: clause
+//     punctuation other than an abbreviation's full stop, or a dash. A hyphen
+//     inside a word ("re-book") is not a break. A negation's scope ends here.
 //   - sent reports whether sentence-ending punctuation sits between them.
 //   - contraction reports whether the word was joined across an apostrophe and
 //     ends in "nt", such as "didn't" or "haven't". Such a word is a negation.
@@ -457,6 +512,7 @@ const apostrophes = "'\u2019\u2018\u02bc\uff07\u2032`"
 type token struct {
 	word        string
 	brk         bool
+	clause      bool
 	sent        bool
 	contraction bool
 }
@@ -473,7 +529,7 @@ func (t token) negating() bool {
 func tokenize(s string) []token {
 	var out []token
 	var cur strings.Builder
-	brk, sent, joined, pending := false, false, false, false
+	brk, clause, sent, joined, pending := false, false, false, false, false
 	// afterApos holds the letters that follow the last apostrophe in the word.
 	// It decides the n't rule: only the suffix "t" after an apostrophe, on a
 	// word ending in "nt", is a contraction.
@@ -487,13 +543,13 @@ func tokenize(s string) []token {
 		}
 		w := cur.String()
 		out = append(out, token{
-			word: w, brk: brk, sent: sent,
+			word: w, brk: brk, clause: clause, sent: sent,
 			contraction: joined && isNtContraction(w, afterApos.String()),
 		})
 		lastWord = w
 		cur.Reset()
 		afterApos.Reset()
-		brk, sent, joined, pending = false, false, false, false
+		brk, clause, sent, joined, pending = false, false, false, false, false
 	}
 	rs := []rune(s)
 	for i, r := range rs {
@@ -522,6 +578,17 @@ func tokenize(s string) []token {
 			flush()
 			if strings.ContainsRune(clausePunct, r) {
 				brk = true
+				// A full stop after an abbreviation or an initial ("Dr.", "p.m.")
+				// does not end a clause, so "not Dr. Lee booked" keeps its negation.
+				if r != '.' || !abbreviatedStop(lastWord) {
+					clause = true
+				}
+			}
+			// A dash ends a negation's clause, but a hyphen inside a word
+			// ("re-book") does not.
+			hyphenInWord := r == '-' && isWordRune(rs, i-1) && isWordRune(rs, i+1)
+			if isDash(r) && !hyphenInWord {
+				clause = true
 			}
 			if isSentenceEnd(rs, i, lastWord) {
 				sent = true
@@ -560,6 +627,23 @@ func isSentenceEnd(rs []rune, i int, prevWord string) bool {
 	return j > i+1 && unicode.IsUpper(rs[j])
 }
 
+// isDash reports whether r is a hyphen-minus, en dash or em dash.
+func isDash(r rune) bool {
+	return r == '-' || r == '\u2013' || r == '\u2014'
+}
+
+// isWordRune reports whether rs[i] exists and is a letter or digit.
+func isWordRune(rs []rune, i int) bool {
+	return i >= 0 && i < len(rs) && (unicode.IsLetter(rs[i]) || unicode.IsDigit(rs[i]))
+}
+
+// abbreviatedStop reports whether a full stop after word w is part of an
+// abbreviation or an initial, rather than a clause end.
+func abbreviatedStop(w string) bool {
+	rs := []rune(w)
+	return abbreviations[w] || (len(rs) == 1 && unicode.IsLetter(rs[0]))
+}
+
 // allDigits reports whether w is made only of digits.
 func allDigits(w string) bool {
 	for _, r := range w {
@@ -581,15 +665,15 @@ func isNtContraction(w, afterApos string) bool {
 // verifyClaim checks one claim against the turn it cites. The evidence is
 // returned only when the criterion is in range and the cited turn supports the
 // quote (see supportsTurn).
-func verifyClaim(c Claim, criteria int, negate bool, turns map[int]Turn) (Evidence, bool) {
+func verifyClaim(c Claim, criteria int, negate bool, p *Prepared) (Evidence, bool) {
 	if c.Criterion < 0 || c.Criterion > criteria {
 		return Evidence{}, false
 	}
-	t, ok := turns[c.Seq]
+	t, ok := p.turn(c.Seq)
 	if !ok || !supportsTurn(c.Quote, negate, t) {
 		return Evidence{}, false
 	}
-	ev := Evidence{Kind: KindTranscriptTurn, Seq: c.Seq, Quote: c.Quote, Speaker: t.Speaker, Fidelity: t.Fidelity}
+	ev := Evidence{Kind: KindTranscriptTurn, Seq: c.Seq, Speaker: t.turn.Speaker, Fidelity: t.turn.Fidelity}
 	if c.Criterion > 0 {
 		n := c.Criterion
 		ev.Criterion = &n
@@ -635,7 +719,7 @@ func negationChecked(c Claim, o string) bool {
 // The check is conservative and deterministic. It reads only the callee's own
 // turn, and the quote and the turn are matched by the same tokenizer, so
 // resolution and verification cannot disagree.
-func supportsTurn(quote string, negate bool, t Turn) bool {
+func supportsTurn(quote string, negate bool, t preparedTurn) bool {
 	if utf8.RuneCountInString(quote) > MaxQuoteRunes {
 		return false
 	}
@@ -643,7 +727,7 @@ func supportsTurn(quote string, negate bool, t Turn) bool {
 	if !strongQuote(qt) {
 		return false
 	}
-	tt := tokenize(t.Text)
+	tt := t.tokens
 	if negate && quoteIsNegative(qt) {
 		// A met quote that is itself a negative statement, such as "could not
 		// book a table", is never support for a met criterion.
@@ -701,13 +785,24 @@ func sameWords(a, b []token) bool {
 
 // negatedAt reports whether the occurrence that starts at token i is negated.
 // Two rules apply:
-//   - A negation token (not, cannot, can't, ...) among the two words before the
-//     quote negates it, whatever punctuation sits between.
+//   - A negating token (not, cannot, can't, unsure, whether, ...) anywhere
+//     after the last clause break and before the quote negates it. A clause
+//     break is a comma, sentence or clause punctuation, or a dash. So "I don't
+//     think your table for two is booked" is negated, but "Don't worry, your
+//     table for two is booked" is not, because the comma ends the clause.
 //   - "no" negates only when it is the word immediately before the quote, with
-//     no clause punctuation between them. "No problem, booked a table for two"
-//     is therefore a confirmation, and "No, booked..." is not negated either.
+//     no clause break between them. "No problem, booked a table for two" is
+//     therefore a confirmation, and "No, booked..." is not negated either.
+//
+// This is a documented heuristic, not a parser. Within a clause, any negation
+// word counts, even one that does not negate the quote, so the rule fails safe.
 func negatedAt(tt []token, i int) bool {
-	for j := i - 1; j >= 0 && j >= i-2; j-- {
+	for j := i - 1; j >= 0; j-- {
+		if tt[j+1].clause {
+			// A clause break sits between tt[j] and tt[j+1], so tt[j] is outside
+			// the clause of the quote.
+			break
+		}
 		if tt[j].negating() {
 			return true
 		}
@@ -772,10 +867,9 @@ func callEventEvidence(refs []CallEventRef) []Evidence {
 // finish assembles the result, bounding evidence to MaxEvidence. Technical
 // call events come first, then verified transcript evidence.
 //
-// Accepted deviation: verified transcript evidence is kept on unknown results
-// too, so a reader can see what was checked. The design did not say whether to
-// keep it. The owner accepted this; it is also documented in
-// docs/operations/api.md.
+// Verified transcript evidence is kept on unknown results too, so a reader can
+// see which references were checked. This is a documented design choice (see
+// docs/operations/api.md, Evidence semantics). The result stays unknown.
 func finish(o Outcome, src Source, codes []string, call, verified []Evidence) Result {
 	ev := make([]Evidence, 0, len(call)+len(verified))
 	ev = append(ev, call...)

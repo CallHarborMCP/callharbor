@@ -1325,7 +1325,7 @@
         }
       },
       "TaskEvidence": {
-        "description": "One reference supporting a task outcome: a final transcript turn (transcript_turn) or a technical call event (call_event). quote is the callee's words for transcript evidence only.",
+        "description": "One reference supporting a task outcome: a final transcript turn (transcript_turn) or a technical call event (call_event). It carries no transcript text. Read the callee's words at seq through the audited transcript endpoint.",
         "type": "object",
         "required": [
           "kind",
@@ -1355,10 +1355,6 @@
               "null"
             ],
             "description": "Whether the session reported the criterion met. Null or omitted for call_event evidence and outcome-level quotes, which name no criterion. Only met evidence counts toward success or partial. A quote for an unmet criterion is evidence of a refusal or failure."
-          },
-          "quote": {
-            "type": "string",
-            "maxLength": 500
           },
           "speaker": {
             "type": "string",

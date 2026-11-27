@@ -225,8 +225,13 @@ func (r Report) Payload() (string, error) {
 // AssessmentFromReport turns a validated report into an Assessment. A met
 // criterion's quote is resolved to the earliest final callee turn that contains
 // it as whole words. A quote that matches no such turn keeps Seq 0, so the
-// evaluator counts it as unverified. Unmet criteria make no claim.
+// evaluator counts it as unverified. Unmet criteria make no claim. The
+// transcript is tokenized once here, not once per claim.
 func AssessmentFromReport(r Report, turns []Turn) Assessment {
+	return assessmentFromReport(r, Prepare(turns))
+}
+
+func assessmentFromReport(r Report, p *Prepared) Assessment {
 	a := Assessment{Outcome: r.Outcome, Reason: r.Reason}
 	for _, c := range r.Constraints {
 		a.ConstraintsReported = append(a.ConstraintsReported, c.Index)
@@ -238,13 +243,13 @@ func AssessmentFromReport(r Report, turns []Turn) Assessment {
 		// An unmet criterion keeps its quote, so a refusal can be shown as
 		// evidence; the evaluator counts only met claims toward success.
 		claim := Claim{Criterion: c.Index, Quote: c.EvidenceQuote, Met: c.Met}
-		claim.Seq = resolveQuote(claim, Outcome(r.Outcome), turns)
+		claim.Seq = resolveQuote(claim, Outcome(r.Outcome), p)
 		a.Claims = append(a.Claims, claim)
 	}
 	for _, q := range r.EvidenceQuotes {
 		// Outcome-level quotes name no criterion. They count as met evidence.
 		claim := Claim{Criterion: 0, Quote: q, Met: true}
-		claim.Seq = resolveQuote(claim, Outcome(r.Outcome), turns)
+		claim.Seq = resolveQuote(claim, Outcome(r.Outcome), p)
 		a.Claims = append(a.Claims, claim)
 	}
 	return a
@@ -253,16 +258,14 @@ func AssessmentFromReport(r Report, turns []Turn) Assessment {
 // resolveQuote returns the earliest final callee turn seq that fully supports
 // the claim, using the same rule as verification (supportsTurn, with negation
 // checked under negationChecked). It returns 0 when no turn does, and the claim
-// then stays unverified.
-func resolveQuote(c Claim, o Outcome, turns []Turn) int {
+// then stays unverified. p holds the turns already tokenized, so resolving a
+// claim does not tokenize the transcript again.
+func resolveQuote(c Claim, o Outcome, p *Prepared) int {
 	best := 0
 	negate := negationChecked(c, string(o))
-	for _, t := range turns {
-		if t.Speaker != "callee" || t.Finality != "final" {
-			continue
-		}
-		if supportsTurn(c.Quote, negate, t) && (best == 0 || t.Seq < best) {
-			best = t.Seq
+	for _, t := range p.callee {
+		if supportsTurn(c.Quote, negate, t) && (best == 0 || t.turn.Seq < best) {
+			best = t.turn.Seq
 		}
 	}
 	return best
@@ -270,7 +273,9 @@ func resolveQuote(c Claim, o Outcome, turns []Turn) int {
 
 // AssessmentFromPayload reads one stored assessment.reported payload. It
 // reports false for the invalid marker and for any payload that does not parse.
-func AssessmentFromPayload(payload string, turns []Turn) (Assessment, bool) {
+// It takes the transcript already prepared, so a worker evaluation tokenizes
+// each turn once for all its stored reports.
+func AssessmentFromPayload(payload string, p *Prepared) (Assessment, bool) {
 	if payload == InvalidPayload {
 		return Assessment{}, false
 	}
@@ -278,5 +283,5 @@ func AssessmentFromPayload(payload string, turns []Turn) (Assessment, bool) {
 	if err != nil {
 		return Assessment{}, false
 	}
-	return AssessmentFromReport(r, turns), true
+	return assessmentFromReport(r, p), true
 }

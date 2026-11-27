@@ -111,6 +111,9 @@ func outcomeInput(f storage.OutcomeFacts) outcome.Input {
 			Seq: t.Seq, Speaker: t.Speaker, Finality: t.Finality, Text: t.Text, Fidelity: t.Fidelity,
 		})
 	}
+	// Tokenize the transcript once. Stored reports and the evaluator both read it.
+	prepared := outcome.Prepare(in.Transcript.Turns)
+	in.Prepared = prepared
 	// Call events are provider signals the state machine recorded, not speech that
 	// was heard or played, so no fidelity column exists for them in storage. They
 	// are exact records of what the provider reported, and are cited as such.
@@ -119,7 +122,7 @@ func outcomeInput(f storage.OutcomeFacts) outcome.Input {
 	}
 	for _, a := range f.Assessments {
 		// Invalid stored reports are skipped and counted, never trusted.
-		if as, ok := outcome.AssessmentFromPayload(a.PayloadJSON, in.Transcript.Turns); ok {
+		if as, ok := outcome.AssessmentFromPayload(a.PayloadJSON, prepared); ok {
 			in.Assessments = append(in.Assessments, as)
 		} else {
 			in.InvalidAssessments++

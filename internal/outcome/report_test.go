@@ -15,7 +15,7 @@ var reportTurns = []Turn{
 // Stored payloads are re-validated on read. A valid one becomes an assessment
 // whose quote resolves to the callee turn that says it.
 func TestAssessmentFromPayloadValidResolvesQuote(t *testing.T) {
-	a, ok := AssessmentFromPayload(validReport, reportTurns)
+	a, ok := AssessmentFromPayload(validReport, Prepare(reportTurns))
 	if !ok {
 		t.Fatal("valid payload rejected")
 	}
@@ -42,7 +42,7 @@ func TestAssessmentFromPayloadRejectsInvalidPayloads(t *testing.T) {
 		"not json":         `{"outcome":`,
 	}
 	for name, payload := range cases {
-		if _, ok := AssessmentFromPayload(payload, reportTurns); ok {
+		if _, ok := AssessmentFromPayload(payload, Prepare(reportTurns)); ok {
 			t.Errorf("%s: accepted", name)
 		}
 	}

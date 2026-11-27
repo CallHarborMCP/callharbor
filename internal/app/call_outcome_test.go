@@ -287,9 +287,19 @@ func TestOutcomeNoAnswerIsFailedWithCallEvidence(t *testing.T) {
 	}
 	m := waitTaskOutcome(t, env, h, callID)
 	ev := assertOutcome(t, m, "failed", "failed", "no_answer")
+	// The technical evidence names the no-answer code, and the outcome is
+	// technical, not voice-session. A bare seq check would pass for any event.
+	if d, _ := m["details"].(map[string]any); d == nil || d["task_assessment"] == nil {
+		t.Fatalf("no task_assessment in %v", m)
+	} else if src, _ := d["task_assessment"].(map[string]any)["source"].(string); src != "technical" {
+		t.Fatalf("no-answer source = %q, want technical", src)
+	}
 	calls := evidenceOfKind(ev, "call_event")
-	if len(calls) == 0 || calls[0]["seq"] == nil {
+	if len(calls) == 0 {
 		t.Fatalf("no call_event evidence in %v", ev)
+	}
+	if calls[0]["seq"] == nil || calls[0]["code"] != "no_answer" {
+		t.Fatalf("call_event evidence = %v, want seq and code no_answer", calls[0])
 	}
 	if n := len(evidenceOfKind(ev, "transcript_turn")); n != 0 {
 		t.Fatalf("no-answer call carries %d transcript evidence", n)
@@ -483,8 +493,24 @@ func TestOutcomeCrossUserAndRedaction(t *testing.T) {
 
 	// Owner MCP get_call reports the same assessment as REST.
 	ownerTok := oe.grant(env.admin, cid, redirect, "mcp:read").AccessToken
-	mo := structuredMap(t, callTool(t, oe.sdkClient(t, ownerTok), "get_call", map[string]any{"call_id": callID}))
+	ownerSess := oe.sdkClient(t, ownerTok)
+	mo := structuredMap(t, callTool(t, ownerSess, "get_call", map[string]any{"call_id": callID}))
 	assertOutcome(t, mo, "success", "ended", "confirmed")
+
+	// get_call and list_calls carry references only. The callee's words and
+	// the quote never appear in any read of the call, REST or MCP. The text is
+	// read through the audited transcript endpoint instead.
+	status, _, restCall := send(t, env.client, http.MethodGet, env.base+"/api/v1/calls/"+callID, nil, h)
+	if status != http.StatusOK {
+		t.Fatalf("owner REST get_call = %d %s", status, restCall)
+	}
+	mcpGet, _ := json.Marshal(mo)
+	mcpList, _ := json.Marshal(structuredMap(t, callTool(t, ownerSess, "list_calls", map[string]any{})))
+	for name, got := range map[string]string{"REST get_call": string(restCall), "MCP get_call": string(mcpGet), "MCP list_calls": string(mcpList)} {
+		if strings.Contains(got, `"quote"`) || strings.Contains(got, quote) || strings.Contains(got, calleeText) {
+			t.Fatalf("%s carries quote or callee text: %s", name, got)
+		}
+	}
 
 	// Log redaction: nothing the call handled may appear in the captured logs.
 	for _, secret := range []string{objective, criterion, quote, calleeText} {

@@ -576,7 +576,7 @@ func TestMetQuoteWithNegationTokenIsNotSuccess(t *testing.T) {
 	} {
 		// The control: the quote's words occur in the turn, with negation switched
 		// off. Without this, a quote that never matched would also be not success.
-		if !supportsTurn(c.quote, false, Turn{Text: c.turn}) {
+		if !supportsTurn(c.quote, false, Prepare([]Turn{{Seq: 2, Speaker: "callee", Finality: "final", Text: c.turn}}).callee[0]) {
 			t.Fatalf("control: quote %q does not occur in %q, so the negated check proves nothing", c.quote, c.turn)
 		}
 		if got := metSuccess(c.turn, c.quote); got.Outcome == Success {
@@ -688,7 +688,7 @@ func TestNewNegationWordsNegateMetQuote(t *testing.T) {
 		{"Neither can book a table for two tonight.", "Either can book a table for two tonight."},
 		{"We can do it without book a table for two tonight.", "We can do it, book a table for two tonight."},
 		{"We can do it nor book a table for two tonight.", "We can do it and book a table for two tonight."},
-		{"Nothing, book a table for two tonight.", "Something, book a table for two tonight."},
+		{"We can do nothing book a table for two tonight.", "We can do something book a table for two tonight."},
 	} {
 		negatedVsControl(t, c.negated, c.control, quote)
 	}
@@ -774,5 +774,53 @@ func TestDecimalIsOneWord(t *testing.T) {
 	}
 	if got := metSuccess("Your table is booked at 8.30 for two", "booked at 8.30 for two"); got.Outcome != Success {
 		t.Fatalf("positive decimal control = %s %v, want success", got.Outcome, got.ReasonCodes)
+	}
+}
+
+// A negation anywhere after the last clause break and before the quote
+// negates it. These statements negate the quote, so none is success. The quote
+// is the same in each, and it is a real match, so the failure is the negation.
+func TestNegationAcrossClauseIsNotSuccess(t *testing.T) {
+	const quote = "table for two is booked"
+	for _, turn := range []string{
+		"I don't think your table for two is booked yet.",
+		"I am not sure your table for two is booked.",
+		"We can't confirm whether your table for two is booked.",
+		"It's not true that your table for two is booked.",
+	} {
+		// Control: the quote occurs in the turn, so the negated check is what
+		// stops success.
+		if !supportsTurn(quote, false, Prepare([]Turn{{Seq: 2, Speaker: "callee", Finality: "final", Text: turn}}).callee[0]) {
+			t.Fatalf("control: quote %q does not occur in %q", quote, turn)
+		}
+		if got := metSuccess(turn, quote); got.Outcome == Success {
+			t.Fatalf("%q: negated met quote produced success: %+v", turn, got)
+		}
+	}
+}
+
+// A comma ends the clause, so a negation before it does not reach the quote.
+// "Don't worry, your table for two is booked." confirms the booking.
+func TestNegationEndedByCommaStillSuccess(t *testing.T) {
+	if got := metSuccess("Don't worry, your table for two is booked.", "table for two is booked"); got.Outcome != Success {
+		t.Fatalf("comma-separated negation = %s %v, want success", got.Outcome, got.ReasonCodes)
+	}
+}
+
+// A dash ends the clause too, so a negation before a dash does not reach a
+// quote after it. A hyphen inside a word does not end the clause, so a negation
+// in "can't re-book" still reaches the quote.
+func TestNegationEndedByDashAndHyphenWithin(t *testing.T) {
+	if got := metSuccess("Don't worry \u2014 your table for two is booked.", "table for two is booked"); got.Outcome != Success {
+		t.Fatalf("dash-separated negation = %s %v, want success", got.Outcome, got.ReasonCodes)
+	}
+	// The control has no negation, so the quote matches. The negated form, with
+	// the hyphenated word between the negation and the quote, must not match.
+	const turn = "We can't re-book a table for two tonight."
+	if !supportsTurn("re book a table for two", false, Prepare([]Turn{{Seq: 2, Speaker: "callee", Finality: "final", Text: turn}}).callee[0]) {
+		t.Fatalf("control: quote does not occur in %q", turn)
+	}
+	if got := metSuccess(turn, "re book a table for two"); got.Outcome == Success {
+		t.Fatalf("hyphenated word ended the negation clause: %+v", got)
 	}
 }

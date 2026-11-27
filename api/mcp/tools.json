@@ -169,7 +169,6 @@
               "seq": { "type": "integer", "minimum": 0 },
               "criterion": { "type": "integer", "minimum": 1, "maximum": 20 },
               "met": { "type": ["boolean", "null"] },
-              "quote": { "type": "string", "maxLength": 500 },
               "speaker": { "type": "string", "enum": ["assistant", "callee", "system"] },
               "fidelity": { "type": "string" },
               "code": { "type": "string" }
@@ -232,7 +231,6 @@
                       "seq": { "type": "integer", "minimum": 0 },
                       "criterion": { "type": "integer", "minimum": 1, "maximum": 20 },
                       "met": { "type": ["boolean", "null"] },
-                      "quote": { "type": "string", "maxLength": 500 },
                       "speaker": { "type": "string", "enum": ["assistant", "callee", "system"] },
                       "fidelity": { "type": "string" },
                       "code": { "type": "string" }

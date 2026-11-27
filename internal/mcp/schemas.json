@@ -119,10 +119,6 @@
                         ],
                         "type": "string"
                       },
-                      "quote": {
-                        "maxLength": 500,
-                        "type": "string"
-                      },
                       "seq": {
                         "minimum": 0,
                         "type": "integer"
@@ -848,10 +844,6 @@
                 "transcript_turn",
                 "call_event"
               ],
-              "type": "string"
-            },
-            "quote": {
-              "maxLength": 500,
               "type": "string"
             },
             "seq": {

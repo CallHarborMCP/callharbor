@@ -34,7 +34,7 @@ func TestAssessedCallMapsTaskAssessment(t *testing.T) {
 	c.OutcomeAssessedAt = assessedAt
 	crit := 1
 	c.OutcomeEvidence = []outcome.Evidence{
-		{Kind: outcome.KindTranscriptTurn, Seq: 2, Criterion: &crit, Quote: "booked for friday", Speaker: "callee", Fidelity: "model_derived"},
+		{Kind: outcome.KindTranscriptTurn, Seq: 2, Criterion: &crit, Speaker: "callee", Fidelity: "model_derived"},
 		{Kind: outcome.KindCallEvent, Seq: 1, Code: "answered", Fidelity: "exact"},
 	}
 	v, err := toCallView(c)
@@ -56,12 +56,43 @@ func TestAssessedCallMapsTaskAssessment(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, key := range []string{`"criterion"`, `"quote"`, `"speaker"`} {
+	for _, key := range []string{`"criterion"`, `"speaker"`} {
 		if strings.Contains(string(b), key) {
 			t.Fatalf("empty optional %s serialized: %s", key, b)
 		}
 	}
 }
+
+// Regression for the read surface: a recorded transcript evidence reference
+// serialises with no quote key and no callee words, even when the stored
+// evidence came from a verified quote. The text is read through the audited
+// transcript endpoint, not from the call view.
+func TestCallViewCarriesNoQuoteOrCalleeText(t *testing.T) {
+	c := sampleCall("c1", "alice", ts)
+	c.Status = "ended"
+	c.Outcome = "success"
+	c.OutcomeReasonCodes = []string{"confirmed"}
+	c.OutcomeSource = "voice_session"
+	c.OutcomeAssessedAt = assessedAt
+	crit := 1
+	const callee = "zebra-callee-words-7"
+	c.OutcomeEvidence = []outcome.Evidence{
+		{Kind: outcome.KindTranscriptTurn, Seq: 2, Criterion: &crit, Met: ptrTo(true), Speaker: "callee", Fidelity: "model_derived"},
+	}
+	v, err := toCallView(c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := json.Marshal(v)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(b), `"quote"`) || strings.Contains(string(b), callee) {
+		t.Fatalf("call view carries quote or callee text: %s", b)
+	}
+}
+
+func ptrTo[T any](v T) *T { return &v }
 
 // A recorded outcome with no assessment timestamp is corrupt. Storage writes the
 // four supporting fields together, so the read reports an error instead of

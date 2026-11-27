@@ -360,9 +360,11 @@ func (w *Worker) Tick(ctx context.Context) error {
 			first = err
 		}
 	}
-	// Dialing is never blocked by outcome evaluation: the outcome pass runs after
-	// the dials, so a slow or failing evaluation cannot delay a queued call. Its
-	// errors are logged once by evaluateOutcomes and returned here for the caller.
+	// The outcome pass runs after the dials in the same tick. It cannot delay a
+	// queued call from being dialed in this tick, but it does share the tick: a
+	// slow evaluation delays the next tick's reconciliation and dials, and the
+	// evaluation is bounded by BatchSize calls per tick. Its errors are logged
+	// once by evaluateOutcomes and returned here for the caller.
 	queued, err := w.store.ListQueuedCalls(ctx, w.opts.BatchSize)
 	if err != nil {
 		return errors.Join(first, fmt.Errorf("list queued: %w", err))

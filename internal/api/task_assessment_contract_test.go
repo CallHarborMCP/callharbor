@@ -79,7 +79,7 @@ func populatedCallView(t *testing.T, criterion *int) service.CallView {
 			TaskAssessment: &service.TaskAssessment{
 				ReasonCodes: []string{"confirmed"},
 				Evidence: []service.TaskEvidence{
-					{Kind: outcome.KindTranscriptTurn, Seq: 2, Criterion: criterion, Quote: "booked for friday", Speaker: "callee", Fidelity: "model_derived"},
+					{Kind: outcome.KindTranscriptTurn, Seq: 2, Criterion: criterion, Speaker: "callee", Fidelity: "model_derived"},
 					{Kind: outcome.KindCallEvent, Seq: 1, Code: "answered", Fidelity: "exact"},
 				},
 				Source: "voice_session", AssessedAt: at,

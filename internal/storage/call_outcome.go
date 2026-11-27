@@ -13,8 +13,8 @@ import (
 )
 
 // AssessmentReportedKind is the call event that stores one voice-session
-// self-report. Its payload is parsed by the caller, not by storage. No writer
-// emits it yet; the realtime recorder pass adds it.
+// self-report. Its payload is parsed by the caller, not by storage. The realtime
+// recorder writes it (see transcript.Recorder.taskReportLocked).
 const AssessmentReportedKind = "assessment.reported"
 
 // Stored call-event kinds the task-outcome read depends on. Each one matches the
@@ -35,9 +35,11 @@ const (
 )
 
 // mediaFailedReason is the reason_code of a call ended because its media run
-// failed. It is written by callstream (ReasonMediaFailed) through
-// BeginLocalHangup. callstream imports storage, so the value is repeated here
-// and the media-failure test checks it end to end.
+// failed. callstream writes it (ReasonMediaFailed) through BeginLocalHangup.
+// callstream imports storage, so the value is repeated here. The storage-level
+// test TestBeginLocalHangupMediaFailedSetsMediaFailed pins it: it writes the
+// call.ending event through BeginLocalHangup and checks that LoadOutcomeFacts
+// reads MediaFailed. callstream's own tests pin its constant separately.
 const mediaFailedReason = "media_failed"
 
 // notConnectedNoAnswerOrBusy reports whether an effective reason says the callee
