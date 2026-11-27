@@ -102,7 +102,7 @@
       "post": {
         "operationId": "createCall",
         "summary": "Start a call",
-        "description": "Queue one outbound call and return 202 with the queued call. The dial happens asynchronously in a bounded worker. Requires a session cookie with the CSRF token (403 forbidden on a bad token) and an Idempotency-Key header. Only a scoped OAuth token lacking mcp:call is refused 403 insufficient_scope; a browser session carries that scope. The same key with the same request returns the current call and its created_at; a different request under the same key is 409 idempotency_conflict. Refusals: invalid_input (400; malformed JSON, a body over 300 KiB, a missing Idempotency-Key, or out-of-range fields, including an E.164 to number); brief_too_large (the full session text, the AI profile's instructions with the brief and the callee notice, exceeds CALLHARBOR_MAX_CALL_BRIEF_BYTES; it is refused before queueing and never truncated); ai_profile_required (no AI profile is owned by the caller); ai_profile_ambiguous (more than one is owned; no request field selects one); not_found (unknown or ungranted telephony profile, with the same response for both); telephony_not_verified, telephony_connection_missing and telephony_webhook_key_missing (the profile is not ready for new calls); unavailable with reason calls_unavailable (HTTP 503) when the server is not running the call worker, because CALLHARBOR_PUBLIC_URL or the master key is missing. A refusal never writes a queued row.",
+        "description": "Queue one outbound call and return 202 with the queued call. The dial happens asynchronously in a bounded worker. Requires a session cookie with the CSRF token (403 forbidden on a bad token) and an Idempotency-Key header. Only a scoped OAuth token lacking mcp:call is refused 403 insufficient_scope; a browser session carries that scope. The same key with the same request returns the current call and its created_at; a different request under the same key is 409 idempotency_conflict. Refusals: invalid_input (400; malformed JSON, a body over 300 KiB, a missing Idempotency-Key, or out-of-range fields, including an E.164 to number); brief_too_large (the full session text, the AI profile's instructions with the brief and the callee notice, exceeds CALLHARBOR_MAX_CALL_BRIEF_BYTES; it is refused before queueing and never truncated); ai_profile_required (no AI profile is owned by the caller); ai_profile_ambiguous (more than one is owned; no request field selects one); not_found (unknown or ungranted telephony profile, with the same response for both); telephony_not_verified, telephony_connection_missing and telephony_webhook_key_missing (the profile is not ready for new calls); unavailable with reason calls_unavailable (HTTP 503) when the server is not running the call worker, because CALLHARBOR_PUBLIC_URL or the master key is missing. Call policy refusals, each with a stable machine prefix in the error message and no row written: destination_denied and destination_not_allowed (403; the number matches a deny prefix, or misses an allow list); max_duration_exceeds_policy (400; an explicit max_duration_seconds is above the installation or owner limit, while an omitted duration is clamped to that limit); cost_unavailable (409; a cost limit is set but no estimate rate is configured, so the cost is unknown); cost_limit_exceeded (403; the estimate for the call's duration is above the cost limit); concurrency_limit (409; the caller has the maximum number of calls in progress); global_concurrency_limit (409; the installation has the maximum in progress); rate_limited (429; the caller placed the maximum calls in the trailing hour). A refusal never writes a queued row, and a refused call is never dialed. A replay of an existing key returns the stored call even if policy has since tightened.",
         "security": [
           {
             "sessionCookie": []
@@ -151,6 +151,9 @@
             "$ref": "#/components/responses/Error"
           },
           "503": {
+            "$ref": "#/components/responses/Error"
+          },
+          "429": {
             "$ref": "#/components/responses/Error"
           }
         },
@@ -382,9 +385,8 @@
     "/api/v1/calls/{call_id}/hangup": {
       "post": {
         "operationId": "hangupCall",
-        "summary": "Hang up a call (planned)",
-        "description": "Planned. Not mounted yet: the operation is not implemented. Requests return 404, or 405 when the path is mounted for another method. Explicit user-authorized emergency stop. Returns the call's status and outcome.",
-        "x-callharbor-availability": "planned",
+        "summary": "Hang up a call",
+        "description": "Ends a call on request. The owner or an administrator may hang up; other callers get not_found. A queued call is failed without a dial. A dial in flight is ended when it returns. A live call's leg is hung up and its AI session closed. Repeating the request is safe and returns the current state. Returns the call's status and outcome.",
         "security": [
           {
             "sessionCookie": []
@@ -399,17 +401,6 @@
               "type": "string",
               "minLength": 1,
               "maxLength": 64
-            }
-          },
-          {
-            "name": "Idempotency-Key",
-            "in": "header",
-            "required": true,
-            "description": "Client-chosen key that makes a retried create return the same call.",
-            "schema": {
-              "type": "string",
-              "minLength": 1,
-              "maxLength": 128
             }
           }
         ],
@@ -872,6 +863,143 @@
           }
         }
       }
+    },
+    "/api/v1/call-policy": {
+      "get": {
+        "operationId": "getOwnCallPolicy",
+        "summary": "Read the caller's effective call policy",
+        "description": "Any signed-in user. Returns the effective policy that applies to the caller. Never returns another user's overrides.",
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Effective policy",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EffectiveCallPolicy"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Error"
+          },
+          "500": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
+    "/api/v1/users/{user_id}/call-policy": {
+      "get": {
+        "operationId": "getUserCallPolicy",
+        "summary": "Read a user's call policy overrides",
+        "description": "Administrator only. Returns the stored overrides and the effective policy.",
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Overrides and effective policy",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UserCallPolicy"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Error"
+          },
+          "403": {
+            "$ref": "#/components/responses/Error"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error"
+          },
+          "500": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "parameters": [
+          {
+            "name": "user_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64
+            }
+          }
+        ]
+      },
+      "put": {
+        "operationId": "putUserCallPolicy",
+        "summary": "Set a user's call policy overrides",
+        "description": "Administrator only. Requires the CSRF token. Replaces the overrides for the user and writes an audit event. Values are validated before the write; an invalid value is refused with invalid_input and nothing is stored.",
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CallPolicyOverrides"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Stored overrides and effective policy",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UserCallPolicy"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Error"
+          },
+          "401": {
+            "$ref": "#/components/responses/Error"
+          },
+          "403": {
+            "$ref": "#/components/responses/Error"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error"
+          },
+          "500": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "parameters": [
+          {
+            "name": "user_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64
+            }
+          }
+        ]
+      }
     }
   },
   "components": {
@@ -930,6 +1058,7 @@
           "invalid_input",
           "conflict",
           "unavailable",
+          "rate_limited",
           "internal"
         ]
       },
@@ -1081,7 +1210,8 @@
         "required": [
           "max_duration_seconds",
           "record_requested",
-          "record_effective"
+          "record_effective",
+          "cost"
         ],
         "additionalProperties": false,
         "properties": {
@@ -1098,6 +1228,52 @@
           },
           "record_effective": {
             "type": "boolean"
+          },
+          "cost": {
+            "type": "object",
+            "description": "The call's cost. known is the provider's reported charge; estimated is the pre-dial figure from the operator's rate; unavailable means neither exists. known wins over estimated. amount is a decimal string, never a float.",
+            "required": [
+              "status",
+              "amount",
+              "currency",
+              "source"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "status": {
+                "type": "string",
+                "enum": [
+                  "known",
+                  "estimated",
+                  "unavailable"
+                ]
+              },
+              "amount": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "pattern": "^[0-9]{1,12}(\\.[0-9]{1,6})?$"
+              },
+              "currency": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "pattern": "^[A-Z]{3}$"
+              },
+              "source": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "enum": [
+                  "provider",
+                  "estimate",
+                  null
+                ]
+              }
+            }
           }
         }
       },
@@ -1710,6 +1886,133 @@
             "items": {
               "$ref": "#/components/schemas/TelephonyGrant"
             }
+          }
+        }
+      },
+      "CallPolicyOverrides": {
+        "type": "object",
+        "additionalProperties": false,
+        "description": "Administrator overrides for one user. A null numeric field inherits the installation value. An override can only tighten the installation policy. Money is a decimal string in the installation cost currency.",
+        "properties": {
+          "max_concurrent_calls": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "minimum": 1,
+            "maximum": 1000
+          },
+          "max_calls_per_hour": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "minimum": 1,
+            "maximum": 10000
+          },
+          "max_duration_seconds": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "minimum": 30,
+            "maximum": 7200
+          },
+          "max_cost_amount": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "pattern": "^[0-9]{1,12}(\\.[0-9]{1,6})?$"
+          },
+          "allow_prefixes": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "pattern": "^\\+[1-9][0-9]{0,14}$"
+            }
+          },
+          "deny_prefixes": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "pattern": "^\\+[1-9][0-9]{0,14}$"
+            }
+          }
+        }
+      },
+      "EffectiveCallPolicy": {
+        "type": "object",
+        "required": [
+          "max_concurrent_calls",
+          "max_calls_per_hour",
+          "max_duration_seconds",
+          "allow_prefixes",
+          "deny_prefixes"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "max_concurrent_calls": {
+            "type": "integer"
+          },
+          "max_calls_per_hour": {
+            "type": "integer"
+          },
+          "max_duration_seconds": {
+            "type": "integer"
+          },
+          "max_cost_amount": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "cost_currency": {
+            "type": "string"
+          },
+          "estimate_rate_per_minute": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "allow_prefixes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "deny_prefixes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      "UserCallPolicy": {
+        "type": "object",
+        "required": [
+          "user_id",
+          "overrides",
+          "effective"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "user_id": {
+            "type": "string"
+          },
+          "overrides": {
+            "$ref": "#/components/schemas/CallPolicyOverrides"
+          },
+          "effective": {
+            "$ref": "#/components/schemas/EffectiveCallPolicy"
+          },
+          "updated_at": {
+            "$ref": "#/components/schemas/Timestamp"
+          },
+          "updated_by": {
+            "type": "string"
           }
         }
       }

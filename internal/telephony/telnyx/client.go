@@ -145,6 +145,42 @@ func (c *Client) Hangup(ctx context.Context, callControlID, commandID string) er
 	return err
 }
 
+// CallStatus is the subset of a Telnyx call status that reconciliation reads.
+// IsAlive is false once the leg has ended at Telnyx.
+type CallStatus struct {
+	CallControlID string
+	IsAlive       bool
+}
+
+type callStatusResponse struct {
+	Data *struct {
+		CallControlID string `json:"call_control_id"`
+		IsAlive       *bool  `json:"is_alive"`
+	} `json:"data"`
+}
+
+// GetCallStatus reads one leg's status (GET /v2/calls/{call_control_id}). It
+// is read-only and never dials. A 404 is reported as ErrNotFound. The caller
+// decides what a not-found leg means; reconciliation treats it as not alive.
+func (c *Client) GetCallStatus(ctx context.Context, callControlID string) (CallStatus, error) {
+	if callControlID == "" {
+		return CallStatus{}, fmt.Errorf("%w: call_control_id required", ErrInvalidClient)
+	}
+	raw, err := c.do(ctx, http.MethodGet, "/calls/"+url.PathEscape(callControlID), nil)
+	if err != nil {
+		return CallStatus{}, mapNotFound(err)
+	}
+	var resp callStatusResponse
+	if err := json.Unmarshal(raw, &resp); err != nil || resp.Data == nil || resp.Data.IsAlive == nil {
+		return CallStatus{}, fmt.Errorf("%w: call status response", ErrBadResponse)
+	}
+	id := resp.Data.CallControlID
+	if id == "" {
+		id = callControlID
+	}
+	return CallStatus{CallControlID: id, IsAlive: *resp.Data.IsAlive}, nil
+}
+
 func (c *Client) do(ctx context.Context, method, path string, body []byte) ([]byte, error) {
 	req, err := http.NewRequestWithContext(ctx, method, c.baseURL+path, bytes.NewReader(body))
 	if err != nil {

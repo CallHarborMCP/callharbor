@@ -21,6 +21,7 @@ Dependency updates use [Renovate](https://github.com/apps/renovate). `renovate.j
 - Docker deployment (single image, volume, health endpoints): `docs/operations/docker.md`
 - Secrets and the master key (generation, file permissions, backup, loss, rotation): `docs/operations/secrets.md`
 - Remote MCP authorization (built-in OAuth 2.1, `CALLHARBOR_PUBLIC_URL`, verification status): `docs/operations/oauth-mcp.md`
+- Outbound calls, Telnyx setup, call limits, cost semantics and live-unverified behavior: `docs/operations/calls-telnyx.md`
 - Canonical product contract: `.agents/PRODUCT_SCOPE.md`
 - System design: `.agents/ARCHITECTURE.md`
 - Security: `.agents/SECURITY.md`

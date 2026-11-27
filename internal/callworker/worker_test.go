@@ -17,16 +17,17 @@ var fixedNow = time.Date(2026, 11, 25, 12, 0, 0, 0, time.UTC)
 // fakeStore is an in-memory Store. Its claim is a conditional update, so a
 // second claim of the same call reports not claimable, as the real store does.
 type fakeStore struct {
-	mu        sync.Mutex
-	queued    []storage.QueuedCallRef
-	status    map[string]string
-	controlID map[string]string
-	reasons   map[string]string
-	unconf    []string
+	mu         sync.Mutex
+	queued     []storage.QueuedCallRef
+	status     map[string]string
+	controlID  map[string]string
+	reasons    map[string]string
+	hangupSent map[string]int
+	unconf     []string
 }
 
 func newFakeStore(calls ...storage.QueuedCallRef) *fakeStore {
-	s := &fakeStore{status: map[string]string{}, controlID: map[string]string{}, reasons: map[string]string{}}
+	s := &fakeStore{status: map[string]string{}, controlID: map[string]string{}, reasons: map[string]string{}, hangupSent: map[string]int{}}
 	for _, c := range calls {
 		s.queued = append(s.queued, c)
 		s.status[c.ID] = "queued"
@@ -57,7 +58,7 @@ func (s *fakeStore) ListLiveCallLegs(context.Context) ([]storage.LiveCallLeg, er
 	defer s.mu.Unlock()
 	var out []storage.LiveCallLeg
 	for id, st := range s.status {
-		if cid := s.controlID[id]; cid != "" && (st == "ringing" || st == "active") {
+		if cid := s.controlID[id]; cid != "" && (st == "initiating" || st == "ringing" || st == "active" || st == "ending") {
 			out = append(out, storage.LiveCallLeg{ID: id, OwnerUserID: "owner", ControlID: cid})
 		}
 	}
@@ -85,14 +86,64 @@ func (s *fakeStore) MarkCallFailed(_ context.Context, id, reason string, _ time.
 	return nil
 }
 
-func (s *fakeStore) RecordProviderCallControlID(_ context.Context, id, _, control string, _ time.Time) error {
+func (s *fakeStore) RecordProviderCallControlID(_ context.Context, id, _, control string, _ time.Time) (storage.LiveCallLeg, string, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.status[id] != "initiating" {
-		return errors.New("not initiating")
+	st := s.status[id]
+	if st != "initiating" && st != "ending" {
+		return storage.LiveCallLeg{}, "", errors.New("not initiating")
 	}
 	s.controlID[id] = control
+	return storage.LiveCallLeg{ID: id, OwnerUserID: "owner", ControlID: control}, st, nil
+}
+
+// BeginLocalHangup mirrors the storage contract for the fake: a live call moves
+// to ending with the reason, and the leg is returned only when it had a
+// control id.
+func (s *fakeStore) BeginLocalHangup(_ context.Context, id, reason string, _ time.Time) (storage.LiveCallLeg, bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	st := s.status[id]
+	if st != "initiating" && st != "ringing" && st != "active" {
+		return storage.LiveCallLeg{}, false, nil
+	}
+	s.status[id] = "ending"
+	s.reasons[id] = reason
+	return storage.LiveCallLeg{ID: id, OwnerUserID: "owner", ControlID: s.controlID[id]}, true, nil
+}
+
+// RecordHangupSent counts hangups sent per call, so tests can assert the
+// marker is written for every send.
+func (s *fakeStore) RecordHangupSent(_ context.Context, id string, _ time.Time) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.hangupSent[id]++
 	return nil
+}
+
+func (s *fakeStore) ListEndingForReconcile(context.Context, time.Time, int) ([]storage.ReconcileCall, error) {
+	return nil, nil
+}
+
+func (s *fakeStore) ListOverdueCalls(context.Context, time.Time, int, int) ([]storage.ReconcileCall, error) {
+	return nil, nil
+}
+
+func (s *fakeStore) ListOrphanedTerminal(context.Context, time.Time, int, int) ([]storage.ReconcileCall, error) {
+	return nil, nil
+}
+
+func (s *fakeStore) MarkReconcileEnded(_ context.Context, id, reason string, _ time.Time) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.status[id] != "ending" {
+		return false, nil
+	}
+	s.status[id] = "ended"
+	if reason != "" {
+		s.reasons[id] = reason
+	}
+	return true, nil
 }
 
 // fakeDialer counts dials and can be told to fail.

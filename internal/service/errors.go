@@ -21,6 +21,7 @@ const (
 	CodeInvalidInput      Code = "invalid_input"
 	CodeConflict          Code = "conflict"
 	CodeUnavailable       Code = "unavailable"
+	CodeRateLimited       Code = "rate_limited"
 	CodeInternal          Code = "internal"
 )
 
@@ -44,6 +45,8 @@ func (c Code) HTTPStatus() int {
 		return http.StatusConflict
 	case CodeUnavailable:
 		return http.StatusServiceUnavailable
+	case CodeRateLimited:
+		return http.StatusTooManyRequests
 	default:
 		return http.StatusInternalServerError
 	}

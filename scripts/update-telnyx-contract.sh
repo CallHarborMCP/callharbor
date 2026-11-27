@@ -38,7 +38,7 @@ jq -S --arg sha "$TELNYX_OPENAPI_SHA" --arg sum "$TELNYX_OPENAPI_SHA256" --arg u
       },
       webhooks: (.webhooks | with_entries(select(.key | IN(
         "callInitiated", "callAnswered", "callHangup", "callMachineDetectionEnded",
-        "callStreamingStarted", "callStreamingStopped", "callStreamingFailed"))))
+        "callStreamingStarted", "callStreamingStopped", "callStreamingFailed", "callCost"))))
     } as $sel
   | {seen: [], todo: ($sel | refs | unique)}
   | until(.todo | length == 0;

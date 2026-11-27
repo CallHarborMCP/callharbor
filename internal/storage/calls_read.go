@@ -32,6 +32,19 @@ type Call struct {
 	HasTranscript bool
 	// RecordingStatus is the stored recording status, or "" when none exists.
 	RecordingStatus string
+	// Estimate is the pre-dial cost, as recorded at make_call. Its status is
+	// estimated or unavailable; a zero value means none was recorded.
+	Estimate CostFigure
+	// Provider is the cost the provider reported through call.cost. Its status
+	// is success or error; amount is set only for a known success.
+	Provider CostFigure
+}
+
+// CostFigure is one stored cost figure. Amount is nil when none is known.
+type CostFigure struct {
+	Status       string
+	AmountMicros *int64
+	Currency     string
 }
 
 // CallCursor is the keyset position after the last call of a page. Calls are
@@ -45,7 +58,9 @@ const callReadColumns = `c.id, c.owner_user_id, c.telephony_profile_id, c.ai_pro
 	c.status, c.outcome, c.outcome_reason_code, c.record_requested, c.record_effective,
 	c.max_duration_seconds, c.created_at, c.updated_at, c.ended_at,
 	EXISTS (SELECT 1 FROM transcript_turns t WHERE t.call_id = c.id AND t.owner_user_id = c.owner_user_id AND t.finality = 'final'),
-	(SELECT r.status FROM recordings r WHERE r.call_id = c.id AND r.owner_user_id = c.owner_user_id)`
+	(SELECT r.status FROM recordings r WHERE r.call_id = c.id AND r.owner_user_id = c.owner_user_id),
+	c.cost_status, c.cost_amount_micros, c.cost_currency,
+	c.provider_cost_status, c.provider_cost_amount_micros, c.provider_cost_currency`
 
 // ListCalls returns up to limit of the owner's calls, newest first. An empty
 // status matches every status; otherwise the caller must have validated it
@@ -104,15 +119,18 @@ type rowScanner interface {
 
 func scanCall(r rowScanner) (Call, error) {
 	var (
-		c                                   Call
-		outcome, reason, endedAt, recStatus sql.NullString
-		recordRequested, recordEffective    int
-		hasTranscript                       int
+		c                                      Call
+		outcome, reason, endedAt, recStatus    sql.NullString
+		recordRequested, recordEffective       int
+		hasTranscript                          int
+		estStatus, estCur, provStatus, provCur sql.NullString
+		estAmt, provAmt                        sql.NullInt64
 	)
 	err := r.Scan(&c.ID, &c.OwnerUserID, &c.TelephonyProfileID, &c.AIProfileID, &c.ToNumber,
 		&c.Status, &outcome, &reason, &recordRequested, &recordEffective,
 		&c.MaxDurationSeconds, &c.CreatedAt, &c.UpdatedAt, &endedAt,
-		&hasTranscript, &recStatus)
+		&hasTranscript, &recStatus,
+		&estStatus, &estAmt, &estCur, &provStatus, &provAmt, &provCur)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return Call{}, err
@@ -126,5 +144,17 @@ func scanCall(r rowScanner) (Call, error) {
 	c.RecordRequested = recordRequested == 1
 	c.RecordEffective = recordEffective == 1
 	c.HasTranscript = hasTranscript == 1
+	c.Estimate = costFigure(estStatus, estAmt, estCur)
+	c.Provider = costFigure(provStatus, provAmt, provCur)
 	return c, nil
+}
+
+// costFigure builds a stored cost figure from its nullable columns.
+func costFigure(status sql.NullString, amount sql.NullInt64, currency sql.NullString) CostFigure {
+	f := CostFigure{Status: status.String, Currency: currency.String}
+	if amount.Valid {
+		v := amount.Int64
+		f.AmountMicros = &v
+	}
+	return f
 }

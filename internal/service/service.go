@@ -7,6 +7,7 @@ import (
 	"sort"
 	"time"
 
+	"github.com/CallHarborMCP/callharbor/internal/config"
 	"github.com/CallHarborMCP/callharbor/internal/storage"
 )
 
@@ -41,6 +42,10 @@ type Service struct {
 	store       Store
 	calls       *CallOperator
 	transcripts TranscriptStore
+	policies    PolicyStore
+	// policyInstall is the installation call policy the per-user overrides
+	// are combined with for the effective view.
+	policyInstall config.CallPolicy
 	// now is the clock for audit timestamps. Tests replace it.
 	now func() time.Time
 }
@@ -48,6 +53,14 @@ type Service struct {
 // New returns a Service backed by store.
 func New(store Store) *Service {
 	return &Service{store: store, now: time.Now}
+}
+
+// WithCallPolicy attaches the per-user policy store and the installation call
+// policy. The app sets it at startup; without it the policy routes refuse.
+func (s *Service) WithCallPolicy(policies PolicyStore, install config.CallPolicy) *Service {
+	s.policies = policies
+	s.policyInstall = install
+	return s
 }
 
 // WithCalls attaches the call write path. The app sets it only when calls are
@@ -66,6 +79,17 @@ func (s *Service) MakeCall(ctx context.Context, actor Actor, in MakeCallInput) (
 			ReasonCallsUnavailable+": calls need CALLHARBOR_PUBLIC_URL and the secrets master key")
 	}
 	return s.calls.MakeCall(ctx, actor, in)
+}
+
+// HangupCall ends a call on request. REST and MCP both use it. Without the call
+// write path it refuses with calls_unavailable, as MakeCall does, so a hangup
+// cannot succeed when no worker or media path exists to end the leg.
+func (s *Service) HangupCall(ctx context.Context, actor Actor, callID string) (HangupResult, error) {
+	if s.calls == nil {
+		return HangupResult{}, AsErrorWith(CodeUnavailable,
+			ReasonCallsUnavailable+": calls need CALLHARBOR_PUBLIC_URL and the secrets master key")
+	}
+	return s.calls.HangupCall(ctx, actor, callID)
 }
 
 // TelephonyProfileView is one telephony profile as the API exposes it. Secret
@@ -105,10 +129,11 @@ const PrimaryTransportWebSocket = "websocket"
 
 // CallDetails carries the non-state facts of a call.
 type CallDetails struct {
-	OutcomeReasonCode  string `json:"outcome_reason_code,omitempty"`
-	MaxDurationSeconds int    `json:"max_duration_seconds"`
-	RecordRequested    bool   `json:"record_requested"`
-	RecordEffective    bool   `json:"record_effective"`
+	OutcomeReasonCode  string   `json:"outcome_reason_code,omitempty"`
+	MaxDurationSeconds int      `json:"max_duration_seconds"`
+	RecordRequested    bool     `json:"record_requested"`
+	RecordEffective    bool     `json:"record_effective"`
+	Cost               CostView `json:"cost"`
 }
 
 // CallView is one call as the API exposes it. The same shape is used for
@@ -263,6 +288,7 @@ func toCallView(c storage.Call) (CallView, error) {
 			MaxDurationSeconds: c.MaxDurationSeconds,
 			RecordRequested:    c.RecordRequested,
 			RecordEffective:    c.RecordEffective,
+			Cost:               costView(c),
 		},
 		TranscriptAvailable: c.HasTranscript,
 		RecordingAvailable:  c.RecordingStatus == "complete",

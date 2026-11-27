@@ -58,6 +58,8 @@ type Config struct {
 	TrustedProxies []netip.Prefix
 	// MaxCallBriefBytes is the largest accepted canonical call brief, in bytes.
 	MaxCallBriefBytes int
+	// CallPolicy is the installation-wide outbound call policy.
+	CallPolicy CallPolicy
 }
 
 func Load(getenv func(string) string) (Config, error) {
@@ -128,6 +130,10 @@ func Load(getenv func(string) string) (Config, error) {
 			cfg.MaxCallBriefBytes = n
 		}
 	}
+
+	policy, policyErrs := loadCallPolicy(getenv)
+	errs = append(errs, policyErrs...)
+	cfg.CallPolicy = policy
 
 	if err := errors.Join(errs...); err != nil {
 		return Config{}, fmt.Errorf("invalid configuration: %w", err)

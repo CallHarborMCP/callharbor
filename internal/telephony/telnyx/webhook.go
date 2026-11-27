@@ -39,6 +39,8 @@ type WebhookEvent struct {
 	SIPCause      string
 	StreamID      string
 	FailureReason string
+	// Cost is set for a call.cost event only. It is not a state transition.
+	Cost *CostReport
 }
 
 type webhookEnvelope struct {
@@ -70,6 +72,7 @@ var ErrInvalidWebhook = errors.New("telnyx: invalid webhook")
 var knownEvents = map[string]bool{
 	EventCallInitiated: true, EventCallAnswered: true, EventCallHangup: true,
 	EventStreamingStarted: true, EventStreamingStopped: true, EventStreamingFailed: true,
+	EventCallCost: true,
 }
 
 // ParseWebhook decodes an already signature-verified webhook body.
@@ -109,6 +112,18 @@ func ParseWebhook(raw []byte) (WebhookEvent, error) {
 	}
 	if p.CallControlID == "" {
 		return WebhookEvent{}, fmt.Errorf("%w: missing call_control_id", ErrInvalidWebhook)
+	}
+	if d.EventType == EventCallCost {
+		rep, err := parseCost(d.Payload)
+		if err != nil {
+			return WebhookEvent{}, err
+		}
+		ev.CallControlID = p.CallControlID
+		ev.CallLegID = p.CallLegID
+		ev.CallSessionID = p.CallSessionID
+		ev.ClientState = p.ClientState
+		ev.Cost = &rep
+		return ev, nil
 	}
 	if p.CallLegID == "" && p.CallControlID == "" {
 		return WebhookEvent{}, fmt.Errorf("%w: missing call identifiers", ErrInvalidWebhook)

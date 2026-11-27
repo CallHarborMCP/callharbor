@@ -116,6 +116,21 @@ func TestDialRequestMatchesOfficialSchema(t *testing.T) {
 	}
 }
 
+// TestCallStatusResponseMatchesOfficialSchema checks the body GetCallStatus
+// reads against the pinned Call schema. The 200 response wraps Call in data,
+// so the fixture is validated as data's value.
+func TestCallStatusResponseMatchesOfficialSchema(t *testing.T) {
+	s := compileSchema(t, "/components/schemas/Call")
+	for name, body := range map[string]string{
+		"alive": `{"call_control_id":"v3:abc","call_leg_id":"leg-1","call_session_id":"sess-1","is_alive":true,"record_type":"call"}`,
+		"ended": `{"call_control_id":"v3:abc","call_leg_id":"leg-1","call_session_id":"sess-1","is_alive":false,"record_type":"call","end_time":"2026-11-27T10:00:00.000Z"}`,
+	} {
+		if err := s.Validate(instance(t, []byte(body))); err != nil {
+			t.Errorf("%s: status body violates Telnyx Call: %v", name, err)
+		}
+	}
+}
+
 func TestOfficialSchemaRejectsCorruptedDial(t *testing.T) {
 	s := compileSchema(t, "/components/schemas/CallRequest")
 	r, err := BuildDialRequest(validDial())

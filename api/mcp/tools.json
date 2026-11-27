@@ -17,7 +17,7 @@
           "properties": {
             "code": {
               "type": "string",
-              "enum": ["unauthenticated", "forbidden", "insufficient_scope", "not_found", "invalid_input", "conflict", "unavailable", "internal"]
+              "enum": ["unauthenticated", "forbidden", "insufficient_scope", "not_found", "invalid_input", "conflict", "unavailable", "rate_limited", "internal"]
             },
             "message": { "type": "string" }
           }
@@ -138,13 +138,14 @@
           },
           "callDetails": {
             "type": "object",
-            "required": ["max_duration_seconds", "record_requested", "record_effective"],
+            "required": ["max_duration_seconds", "record_requested", "record_effective", "cost"],
             "additionalProperties": false,
             "properties": {
               "outcome_reason_code": { "type": "string" },
               "max_duration_seconds": { "type": "integer" },
               "record_requested": { "type": "boolean" },
-              "record_effective": { "type": "boolean" }
+              "record_effective": { "type": "boolean" },
+              "cost": {"type": "object", "required": ["status", "amount", "currency", "source"], "additionalProperties": false, "properties": {"status": {"type": "string", "enum": ["known", "estimated", "unavailable"]}, "amount": {"type": ["string", "null"], "pattern": "^[0-9]{1,12}(\\.[0-9]{1,6})?$"}, "currency": {"type": ["string", "null"], "pattern": "^[A-Z]{3}$"}, "source": {"type": ["string", "null"], "enum": ["provider", "estimate", null]}}}
             }
           }
         }
@@ -181,13 +182,14 @@
           "task_outcome": { "type": ["string", "null"], "enum": ["success", "partial", "failed", "unknown", null] },
           "details": {
             "type": "object",
-            "required": ["max_duration_seconds", "record_requested", "record_effective"],
+            "required": ["max_duration_seconds", "record_requested", "record_effective", "cost"],
             "additionalProperties": false,
             "properties": {
               "outcome_reason_code": { "type": "string" },
               "max_duration_seconds": { "type": "integer" },
               "record_requested": { "type": "boolean" },
-              "record_effective": { "type": "boolean" }
+              "record_effective": { "type": "boolean" },
+              "cost": {"type": "object", "required": ["status", "amount", "currency", "source"], "additionalProperties": false, "properties": {"status": {"type": "string", "enum": ["known", "estimated", "unavailable"]}, "amount": {"type": ["string", "null"], "pattern": "^[0-9]{1,12}(\\.[0-9]{1,6})?$"}, "currency": {"type": ["string", "null"], "pattern": "^[A-Z]{3}$"}, "source": {"type": ["string", "null"], "enum": ["provider", "estimate", null]}}}
             }
           },
           "transcript_available": { "type": "boolean" },
@@ -320,9 +322,9 @@
     },
     {
       "name": "hangup_call",
-      "status": "planned",
+      "status": "implemented",
       "scope": "mcp:call",
-      "description": "Planned. Not registered. Calling it returns an unknown-tool error and never ends a call.",
+      "description": "End one call owned by the caller on request. A queued call is failed without a dial; a dial in flight is ended when it returns; a live call's leg is hung up and its AI session closed. Repeating the request is safe and returns the current state. Foreign or missing calls return not_found.",
       "inputSchema": {
         "type": "object",
         "required": ["call_id"],

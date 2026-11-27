@@ -100,6 +100,15 @@ type fakeCallStore struct {
 	inserts int
 	// conflictOnInsert simulates a concurrent winner for the same key.
 	conflictOnInsert bool
+	// policies holds per-user overrides returned by GetUserCallPolicy.
+	policies map[string]storage.UserCallPolicy
+	// limitErr, when set, is returned by InsertCall before any write, as the
+	// real store does when a concurrency or rate limit refuses the call.
+	limitErr error
+	// lastCost is the cost record of the most recent insert attempt.
+	lastCost storage.CallCost
+	// audits collects the audit rows written through RequestHangup and InsertAudit.
+	audits []storage.AuditEvent
 }
 
 func newFakeCallStore(ais ...storage.AIProfile) *fakeCallStore {
@@ -120,6 +129,10 @@ func (f *fakeCallStore) GetCall(context.Context, string, string) (storage.Call, 
 }
 func (f *fakeCallStore) InsertCall(_ context.Context, c storage.CallInsert) error {
 	f.inserts++
+	if f.limitErr != nil {
+		return f.limitErr
+	}
+	f.lastCost = c.Cost
 	if f.conflictOnInsert {
 		return storage.ErrCallIdempotencyConflict
 	}
@@ -148,6 +161,39 @@ func (f *fakeCallStore) GetCallByIdempotencyKey(_ context.Context, owner, key st
 	}
 	return storage.Call{}, storage.ErrCallNotFound
 }
+func (f *fakeCallStore) GetUserCallPolicy(_ context.Context, userID string) (storage.UserCallPolicy, error) {
+	if p, ok := f.policies[userID]; ok {
+		return p, nil
+	}
+	return storage.UserCallPolicy{UserID: userID}, nil
+}
+
+// CallOwner reads the owner from the stored calls, as the real store does.
+func (f *fakeCallStore) CallOwner(_ context.Context, callID string) (string, error) {
+	c, ok := f.calls[callID]
+	if !ok {
+		return "", storage.ErrCallNotFound
+	}
+	return c.OwnerUserID, nil
+}
+
+// RequestHangup is a minimal stand-in: it records the audit row and reports the
+// call's current status. The full transitions are tested in the storage package.
+func (f *fakeCallStore) RequestHangup(_ context.Context, callID string, audit storage.AuditEvent, _ time.Time) (storage.HangupDecision, error) {
+	c, ok := f.calls[callID]
+	if !ok {
+		return storage.HangupDecision{}, storage.ErrCallNotFound
+	}
+	f.audits = append(f.audits, audit)
+	return storage.HangupDecision{Action: storage.HangupActionNone, Status: c.Status, Outcome: c.Outcome}, nil
+}
+
+// InsertAudit appends an audit row for inspection.
+func (f *fakeCallStore) InsertAudit(_ context.Context, e storage.AuditEvent) error {
+	f.audits = append(f.audits, e)
+	return nil
+}
+
 func (f *fakeCallStore) GetCallBrief(_ context.Context, _, callID string) (storage.CallBrief, error) {
 	b, ok := f.briefs[callID]
 	if !ok {

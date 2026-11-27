@@ -32,12 +32,28 @@ type CallInsert struct {
 	BriefSHA256        string
 	BriefVersion       int
 	CreatedAt          time.Time
+	// Limits are checked in the same transaction as the insert. A refused call
+	// writes nothing.
+	Limits CallLimits
+	// Cost is the pre-dial estimate or unavailable marker recorded with the call.
+	// A zero CostStatus records no cost columns.
+	Cost CallCost
+}
+
+// CallCost is the cost record written with a new call. Status is one of
+// known, estimated or unavailable. Amount and currency are set only when a
+// figure exists.
+type CallCost struct {
+	Status       string
+	AmountMicros *int64
+	Currency     string
 }
 
 // InsertCall writes the call row, its immutable brief, and the queued event in
 // one transaction. It returns ErrCallIdempotencyConflict when the owner's key is
-// already used. Nothing is dialed here, so a failed write leaves no provider
-// side effect.
+// already used, and a limit error when a concurrency or rate limit refuses the
+// call. Nothing is dialed here, so a failed write leaves no provider side
+// effect.
 func (s *Store) InsertCall(ctx context.Context, c CallInsert) error {
 	if err := validateCallInsert(c); err != nil {
 		return err
@@ -49,16 +65,22 @@ func (s *Store) InsertCall(ctx context.Context, c CallInsert) error {
 	}
 	defer func() { _ = tx.Rollback() }()
 
+	if err := checkCallLimits(ctx, tx, c.OwnerUserID, c.CreatedAt, c.Limits); err != nil {
+		return err
+	}
+
 	record := 0
 	if c.RecordRequested {
 		record = 1
 	}
 	_, err = tx.ExecContext(ctx, `INSERT INTO calls
 		(id, owner_user_id, telephony_profile_id, ai_profile_id, idempotency_key, to_number,
-		 status, record_requested, record_effective, max_duration_seconds, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, 'queued', ?, 0, ?, ?, ?)`,
+		 status, record_requested, record_effective, max_duration_seconds, created_at, updated_at,
+		 cost_status, cost_amount_micros, cost_currency)
+		VALUES (?, ?, ?, ?, ?, ?, 'queued', ?, 0, ?, ?, ?, ?, ?, ?)`,
 		c.ID, c.OwnerUserID, c.TelephonyProfileID, c.AIProfileID, c.IdempotencyKey, c.ToNumber,
-		record, c.MaxDurationSeconds, ts, ts)
+		record, c.MaxDurationSeconds, ts, ts,
+		nullableString(c.Cost.Status), nullableInt(c.Cost.AmountMicros), nullableString(c.Cost.Currency))
 	if err != nil {
 		if isUniqueViolation(err) {
 			return ErrCallIdempotencyConflict
@@ -194,7 +216,9 @@ func (s *Store) MarkCallFailed(ctx context.Context, callID, reasonCode string, n
 	ts := now.UTC().Format(storageTime)
 	res, err := tx.ExecContext(ctx, `UPDATE calls SET status = 'failed', outcome_reason_code = ?,
 		ended_at = ?, updated_at = ?
-		WHERE id = ? AND status IN ('queued', 'initiating') AND ended_at IS NULL`,
+		WHERE id = ? AND ended_at IS NULL
+		  AND (status IN ('queued', 'initiating')
+		       OR (status = 'ending' AND provider_call_control_id IS NULL))`,
 		reasonCode, ts, ts, callID)
 	if err != nil {
 		return fmt.Errorf("mark call failed: %w", err)
@@ -220,49 +244,64 @@ func (s *Store) MarkCallFailed(ctx context.Context, callID, reasonCode string, n
 
 // RecordProviderCallControlID stores the Telnyx call_control_id returned by the
 // dial command. The column is unique, so an id can belong to one call only.
-// A second call to the same call id with a different value is refused.
-func (s *Store) RecordProviderCallControlID(ctx context.Context, callID, ownerUserID, controlID string, now time.Time) error {
+// It is written while the call is initiating, or ending because a hangup was
+// requested during the dial. A repeat with the same value is not an error.
+//
+// It returns the call's leg and status after the write, so a caller that
+// finds the call ending can send the hangup for the id it just recorded.
+func (s *Store) RecordProviderCallControlID(ctx context.Context, callID, ownerUserID, controlID string, now time.Time) (LiveCallLeg, string, error) {
 	if controlID == "" {
-		return errors.New("storage: empty provider call control id")
+		return LiveCallLeg{}, "", errors.New("storage: empty provider call control id")
 	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
-		return fmt.Errorf("begin record control id: %w", err)
+		return LiveCallLeg{}, "", fmt.Errorf("begin record control id: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
 	ts := now.UTC().Format(storageTime)
 	// Only a call with no control id yet is written. A repeat with the same
 	// value matches no row, so it appends no event and is not an error.
 	res, err := tx.ExecContext(ctx, `UPDATE calls SET provider_call_control_id = ?, updated_at = ?
-		WHERE id = ? AND owner_user_id = ? AND status = 'initiating'
+		WHERE id = ? AND owner_user_id = ? AND status IN ('initiating', 'ending')
 		  AND provider_call_control_id IS NULL`,
 		controlID, ts, callID, ownerUserID)
 	if err != nil {
 		if isUniqueViolation(err) {
-			return ErrCallNotClaimable
+			return LiveCallLeg{}, "", ErrCallNotClaimable
 		}
-		return fmt.Errorf("record control id: %w", err)
+		return LiveCallLeg{}, "", fmt.Errorf("record control id: %w", err)
 	}
 	n, err := res.RowsAffected()
 	if err != nil {
-		return fmt.Errorf("record control id rows: %w", err)
+		return LiveCallLeg{}, "", fmt.Errorf("record control id rows: %w", err)
 	}
 	if n == 0 {
 		var existing sql.NullString
 		err := tx.QueryRowContext(ctx, `SELECT provider_call_control_id FROM calls WHERE id = ? AND owner_user_id = ?`,
 			callID, ownerUserID).Scan(&existing)
 		if err == nil && existing.String == controlID {
-			return nil
+			leg, status, err := readCallLeg(ctx, tx, callID)
+			if err != nil {
+				return LiveCallLeg{}, "", err
+			}
+			return leg, status, tx.Commit()
 		}
-		return ErrCallNotClaimable
+		return LiveCallLeg{}, "", ErrCallNotClaimable
+	}
+	leg, status, err := readCallLeg(ctx, tx, callID)
+	if err != nil {
+		return LiveCallLeg{}, "", err
 	}
 	if err := appendCallEvent(ctx, tx, CallEvent{
-		CallID: callID, OwnerUserID: ownerUserID, Kind: "call.dial_accepted", State: "initiating",
+		CallID: callID, OwnerUserID: ownerUserID, Kind: "call.dial_accepted", State: status,
 		Provider: "telnyx", OccurredAt: ts,
 	}); err != nil {
-		return err
+		return LiveCallLeg{}, "", err
 	}
-	return tx.Commit()
+	if err := tx.Commit(); err != nil {
+		return LiveCallLeg{}, "", fmt.Errorf("commit record control id: %w", err)
+	}
+	return leg, status, nil
 }
 
 // transitionCall is the single conditional status change. The WHERE clause

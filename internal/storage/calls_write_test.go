@@ -102,23 +102,23 @@ func TestRecordControlIDAndSingleCallOwnership(t *testing.T) {
 	if err := s.ClaimQueuedCall(ctx, "c-1", now); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.RecordProviderCallControlID(ctx, "c-1", "alice", "v3:abc", now); err != nil {
+	if _, _, err := s.RecordProviderCallControlID(ctx, "c-1", "alice", "v3:abc", now); err != nil {
 		t.Fatalf("record control id: %v", err)
 	}
 	// Re-recording the same id is allowed; a different id is refused.
-	if err := s.RecordProviderCallControlID(ctx, "c-1", "alice", "v3:abc", now); err != nil {
+	if _, _, err := s.RecordProviderCallControlID(ctx, "c-1", "alice", "v3:abc", now); err != nil {
 		t.Fatalf("idempotent re-record: %v", err)
 	}
 	if err := s.ClaimQueuedCall(ctx, "c-2", now); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.RecordProviderCallControlID(ctx, "c-1", "alice", "v3:other", now); !errors.Is(err, ErrCallNotClaimable) {
+	if _, _, err := s.RecordProviderCallControlID(ctx, "c-1", "alice", "v3:other", now); !errors.Is(err, ErrCallNotClaimable) {
 		t.Fatalf("different id on c-1 = %v, want refused", err)
 	}
-	if err := s.RecordProviderCallControlID(ctx, "c-2", "alice", "v3:abc", now); err == nil {
+	if _, _, err := s.RecordProviderCallControlID(ctx, "c-2", "alice", "v3:abc", now); err == nil {
 		t.Fatal("control id reused across calls was accepted")
 	}
-	if err := s.RecordProviderCallControlID(ctx, "c-2", "bob", "v3:new", now); !errors.Is(err, ErrCallNotClaimable) {
+	if _, _, err := s.RecordProviderCallControlID(ctx, "c-2", "bob", "v3:new", now); !errors.Is(err, ErrCallNotClaimable) {
 		t.Fatalf("foreign owner record = %v, want refused", err)
 	}
 	if n := scalarInt(t, s, "SELECT COUNT(*) FROM call_events WHERE call_id = 'c-1' AND kind = 'call.dial_accepted'"); n != 1 {
