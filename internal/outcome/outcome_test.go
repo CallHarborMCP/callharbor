@@ -103,6 +103,18 @@ func TestEvaluate(t *testing.T) {
 			codes: []string{ReasonConfirmed, CodeEvidenceUnverified, CodeEvidenceMissing},
 		},
 		{
+			// Documented fail-safe over-block (api.md, negation scope): "never" is
+			// two words before the quote, so the window applies across the comma.
+			name: "never mind, book a table for two is not success",
+			in: func() Input {
+				i := base()
+				i.Transcript.Turns[1].Text = "never mind, book a table for two"
+				return withAssessment(i, confirmed(1, "book a table for two"))
+			}(),
+			outcome: Unknown, source: SourceVoiceSession,
+			codes: []string{ReasonConfirmed, CodeEvidenceUnverified, CodeEvidenceMissing},
+		},
+		{
 			name: "alternative accepted within constraints is success",
 			in: func() Input {
 				i := base()

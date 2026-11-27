@@ -151,7 +151,7 @@ Task codes name why the outcome is what it is:
 | `wrong_party` | The callee was not the intended party. |
 | `other` | None of the above. |
 | `assessment_missing` | No voice-session report was made. |
-| `assessment_unsupported` | The protocol cannot report an assessment (`live_ws`). |
+| `assessment_unsupported` | The protocol has no model report channel (`live_ws`; see FEASIBILITY R20). |
 | `assessment_invalid` | A stored report failed validation and was skipped. |
 | `assessment_contradictory` | The report's outcome and reason disagree. For example, a failed or partial outcome with a success reason (`confirmed`, `alternative_accepted`). The result is `unknown`. |
 | `assessment_conflicting` | Valid reports for the same call name different outcomes. The result is `unknown`. The latest report does not win. |
