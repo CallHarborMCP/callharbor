@@ -169,6 +169,21 @@ type BridgeSink struct {
 	// OnCallerSpeech receives caller speech edges from the local detector.
 	// It runs on the inbound read loop and must not block.
 	OnCallerSpeech func(ev SpeechEvent)
+	// Tap, when set, receives the call's audio as it crosses the bridge. It is
+	// optional and must not block: the recorder queues and never waits on disk.
+	Tap AudioTap
+}
+
+// AudioTap receives caller audio as it arrives and agent audio as it is handed
+// to the leg. Payloads are in the leg's negotiated format. The sink calls the
+// tap under its lock, so calls come in media order.
+type AudioTap interface {
+	// CallerPayload is one inbound frame with its RTP timestamp and arrival time.
+	CallerPayload(ts uint32, payload []byte, at time.Time)
+	// AgentPayload is one agent chunk and the time it starts playing on the leg.
+	AgentPayload(playStart time.Time, payload []byte, at time.Time)
+	// Cut is an interruption at the given time.
+	Cut(at time.Time)
 }
 
 // MaxPendingMarks caps playout marks awaiting an echo. Telnyx echoes every
@@ -238,6 +253,9 @@ func (s *BridgeSink) Media(f Frame) error {
 	p, err := s.bridge.CallerAudio(f.Payload)
 	edges := s.bridge.TakeSpeech()
 	now := s.now()
+	if err == nil && s.Tap != nil {
+		s.Tap.CallerPayload(f.Timestamp, f.Payload, now)
+	}
 	// Each edge is stamped with its turn and, for a Start, with whether agent
 	// audio is audible at this instant. Both are decided under s.mu, so a later
 	// InterruptTurn sees exactly the state this edge saw.
@@ -357,6 +375,12 @@ func (s *BridgeSink) AgentAudio(ctx context.Context, src audio.SourceRef, provid
 		return ErrPlayoutBackpressure
 	}
 	s.last, s.hasLast = src, true
+	// The chunk starts when the leg's queue drains or now, whichever is later.
+	// Read before the send under the same lock, it is the play start Send uses.
+	playStart := s.bridge.PlayoutEnd()
+	if playStart.Before(now) {
+		playStart = now
+	}
 	payload, mark, err := s.bridge.AgentAudio(src, provider, now)
 	s.mu.Unlock()
 	if err != nil {
@@ -368,6 +392,12 @@ func (s *BridgeSink) AgentAudio(ctx context.Context, src audio.SourceRef, provid
 	}
 	if err := s.send(ctx, media); err != nil {
 		return err
+	}
+	// Tapped only once the media is on the wire. wmu is still held, so a Cut
+	// cannot interleave between the send and the tap, and audio the provider
+	// never received is not recorded as played.
+	if s.Tap != nil {
+		s.Tap.AgentPayload(playStart, payload, now)
 	}
 	markMsg, err := MarkMessage(mark)
 	if err != nil {
@@ -411,6 +441,9 @@ func (s *BridgeSink) InterruptTurn(ctx context.Context, turn uint64) (Cut, bool,
 // cutLocked records and performs the cut. The caller holds wmu and mu.
 func (s *BridgeSink) cutLocked() Cut {
 	var cut Cut
+	if s.Tap != nil {
+		s.Tap.Cut(s.now())
+	}
 	if s.hasLast {
 		cut.ItemID, cut.ContentIndex, cut.Source = s.last.ItemID, s.last.ContentIndex, s.last
 		if s.last.ItemID != "" {
@@ -435,6 +468,19 @@ func (s *BridgeSink) PlayoutEnd() time.Time {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.bridge.PlayoutEnd()
+}
+
+// AnyUnconfirmed reports whether any agent item has playout the leg never
+// echoed. It takes the sink lock, so it is safe after the stream has ended.
+func (s *BridgeSink) AnyUnconfirmed() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, it := range s.bridge.Items() {
+		if it.Unconfirmed > 0 {
+			return true
+		}
+	}
+	return false
 }
 
 // Playout returns the playout accounting for one source. It takes the sink

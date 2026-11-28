@@ -24,6 +24,7 @@ type Store interface {
 	LoadCallForMedia(ctx context.Context, callID string) (storage.MediaCall, error)
 	BeginLocalHangup(ctx context.Context, callID, reasonCode string, now time.Time) (storage.LiveCallLeg, bool, error)
 	BindStreamControlID(ctx context.Context, callID, controlID string, now time.Time) (bool, error)
+	ClearRecordEffective(ctx context.Context, callID string) (bool, error)
 }
 
 // LegHangup ends one live Telnyx leg with the owner's key. app.go builds it
@@ -63,6 +64,9 @@ type Media struct {
 	// Transcripts persists each call's transcript turns and event timeline.
 	// When nil, no transcript is recorded.
 	Transcripts transcript.Store
+	// Recording enables per-call two-party recording for calls that were
+	// accepted with it effective. When nil, no call is recorded.
+	Recording *Recording
 	// sessions holds the active media sessions: one per call id (m1), and the
 	// set shutdown cancels and waits for before the store closes (M2).
 	sessions sessions
@@ -156,6 +160,14 @@ func (m *Media) sinkFactory(upgrade storage.MediaCall) telnyx.SinkFactory {
 			if _, err := m.Store.BindStreamControlID(ctx, st.ID, start.CallControlID, m.Now()); err != nil {
 				return nil, fmt.Errorf("record stream control id: %w", err)
 			}
+		}
+		// The owner may have opted out since the call was accepted. The stored
+		// effective flag is cleared here, after the stream is authenticated and
+		// bound, so the read paths before it stay read-only. The recording
+		// decision already uses st.RecordEffective, so a failed clear is logged
+		// and the stream continues.
+		if _, err := m.Store.ClearRecordEffective(ctx, st.ID); err != nil && m.Logger != nil {
+			m.Logger.Error("could not clear record_effective", "call_id", st.ID, "error", err.Error())
 		}
 		release, err := m.sessions.claim(st.ID)
 		if err != nil {
@@ -261,6 +273,9 @@ func (m *Media) attach(sess realtime.Session, st storage.MediaCall, leg, provide
 		release()
 		return nil, err
 	}
+	// One clock for the call: the recorder stamps frames with m.Now, so the sink
+	// must read the same clock for its own timing and taps to agree.
+	bridgeSink.SetClock(m.Now)
 	ab, err := voicecall.NewAudioBridge(bridgeSink)
 	if err != nil {
 		_ = sess.Close()
@@ -285,6 +300,24 @@ func (m *Media) attach(sess realtime.Session, st storage.MediaCall, leg, provide
 		sink = ab.EventSink(rec.Observe)
 		rec.Start()
 	}
+	// The recording starts only after every fallible setup step above, so a
+	// later error can never leave a live writer goroutine or a row stuck in
+	// 'recording'. It starts before the run, so the first media frame is never
+	// before its t0. One recorder per call: a second stream for a call that
+	// already has a recording row creates nothing. A recording setup failure
+	// never refuses the call: it runs untapped, and the failure is logged
+	// without any call content. No media reaches the Tap before this returns,
+	// because media is delivered only after the sink is returned.
+	recCall, err := startRecording(context.Background(), m.Recording, st, leg, m.Now())
+	if err != nil {
+		recCall = nil
+		if m.Logger != nil {
+			m.Logger.Error("recording setup failed; call continues unrecorded", "call_id", st.ID, "error", err.Error())
+		}
+	}
+	if recCall != nil {
+		bridgeSink.Tap = recCall.rec
+	}
 	// The run is bound to the stream. Closing the stream cancels it, and
 	// voice.Run always closes the session, so the provider connection ends
 	// with the stream.
@@ -300,6 +333,15 @@ func (m *Media) attach(sess realtime.Session, st storage.MediaCall, leg, provide
 		// is freed only after the run and its local hangup have finished.
 		defer release()
 		defer stop()
+		if recCall != nil {
+			// Deferred before the transcript close, so it runs after it and before
+			// the claim is released. The recorder finishes only after the run ends.
+			defer func() {
+				if err := recCall.Finish(context.Background(), m.Now(), unconfirmedPlayout(bridgeSink), m.Now); err != nil && m.Logger != nil {
+					m.Logger.Error("recording finalize failed", "call_id", st.ID, "error", err.Error())
+				}
+			}()
+		}
 		if rec != nil {
 			// Deferred last, so it runs first: after the run and any local
 			// hangup, before the claim is released, so shutdown's wait covers

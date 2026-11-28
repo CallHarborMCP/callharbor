@@ -73,13 +73,18 @@ func (s *Store) InsertCall(ctx context.Context, c CallInsert) error {
 	if c.RecordRequested {
 		record = 1
 	}
+	// record_effective is decided here, in the insert transaction, from the
+	// owner's own opt-in. A request without the opt-in is accepted and stored
+	// with record_effective=0: the caller's request never enables recording.
 	_, err = tx.ExecContext(ctx, `INSERT INTO calls
 		(id, owner_user_id, telephony_profile_id, ai_profile_id, idempotency_key, to_number,
 		 status, record_requested, record_effective, max_duration_seconds, created_at, updated_at,
 		 cost_status, cost_amount_micros, cost_currency)
-		VALUES (?, ?, ?, ?, ?, ?, 'queued', ?, 0, ?, ?, ?, ?, ?, ?)`,
+		VALUES (?, ?, ?, ?, ?, ?, 'queued', ?,
+		 CASE WHEN ? = 1 AND COALESCE((SELECT recording_opt_in FROM users WHERE id = ?), 0) = 1 THEN 1 ELSE 0 END,
+		 ?, ?, ?, ?, ?, ?)`,
 		c.ID, c.OwnerUserID, c.TelephonyProfileID, c.AIProfileID, c.IdempotencyKey, c.ToNumber,
-		record, c.MaxDurationSeconds, ts, ts,
+		record, record, c.OwnerUserID, c.MaxDurationSeconds, ts, ts,
 		nullableString(c.Cost.Status), nullableInt(c.Cost.AmountMicros), nullableString(c.Cost.Currency))
 	if err != nil {
 		if isUniqueViolation(err) {

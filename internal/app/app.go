@@ -114,6 +114,21 @@ func newTelephonyProfileID() string {
 	return "tp_" + base64.RawURLEncoding.EncodeToString(b[:])
 }
 
+// recordingRing builds the keyring recordings derive their keys from. It uses the
+// same master key as the stream tokens and is nil when no key is configured, so
+// a missing key disables recording while the rest of the app runs.
+func recordingRing(getenv func(string) string) *secrets.Keyring {
+	key, err := secrets.LoadMasterKey(getenv)
+	if err != nil {
+		return nil
+	}
+	ring, err := secrets.NewKeyring(1, map[int][]byte{1: key})
+	if err != nil {
+		return nil
+	}
+	return ring
+}
+
 // callStreamTokens derives the per-call stream tokens from the master key. Calls
 // need it, so without a key calls stay off and the caller sees why.
 func callStreamTokens(getenv func(string) string) (*callstream.Tokens, error) {
@@ -195,6 +210,14 @@ func newCallIngress(store *storage.Store, sec *secrets.Service, tokens *callstre
 		Verifier: webhooks.Verifier,
 		// Every call's transcript and event timeline go to the same store.
 		Transcripts: store,
+		// Recording uses the same master key as the stream tokens: calls only
+		// run with one configured, so recording is available whenever calls are.
+		Recording: &callstream.Recording{
+			Store:   store,
+			Ring:    recordingRing(os.Getenv),
+			DataDir: cfg.DataDir,
+			Now:     opts.Now,
+		},
 		// The URL was validated above, so the only error here is one the
 		// startup check already ruled out.
 		StreamURL: func(callID, token string) string {
@@ -320,6 +343,13 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger, ln net.Lis
 	if err := store.Migrate(ctx); err != nil {
 		return fmt.Errorf("migrate database: %w", err)
 	}
+	// Settle recordings a previous process left in 'recording'. This runs after
+	// migration and before any listener, so no live recorder can race it.
+	if settled, err := callstream.RecoverInterrupted(ctx, store, recordingRing(os.Getenv), cfg.DataDir, time.Now, logger); err != nil {
+		return fmt.Errorf("recover interrupted recordings: %w", err)
+	} else if settled > 0 {
+		logger.Info("recovered interrupted recordings", "count", settled)
+	}
 	identitySvc, err := identity.NewService(store, time.Now)
 	if err != nil {
 		return fmt.Errorf("identity service: %w", err)
@@ -340,7 +370,10 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger, ln net.Lis
 	// Calls need a public origin for the provider's webhook and media URLs.
 	// Without one, MakeCall fails closed instead of queuing a call that can
 	// never be dialed.
-	svc := service.New(store).WithTranscripts(store).WithCallPolicy(store, cfg.CallPolicy)
+	// Recording reads need the same master key as the recorder. Without it the
+	// audio path is unavailable, and metadata still answers from the row.
+	svc := service.New(store).WithTranscripts(store).WithCallPolicy(store, cfg.CallPolicy).
+		WithRecordings(store, recordingRing(os.Getenv), cfg.DataDir)
 	var worker *callworker.Worker
 	var legResolver callworker.LegResolver
 	var callRoutes []func(*http.ServeMux)

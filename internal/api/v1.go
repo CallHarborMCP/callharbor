@@ -33,6 +33,8 @@ var Routes = []Route{
 	{Method: http.MethodPost, Path: "/api/v1/calls"},
 	{Method: http.MethodGet, Path: "/api/v1/calls/{call_id}"},
 	{Method: http.MethodGet, Path: "/api/v1/calls/{call_id}/transcript"},
+	{Method: http.MethodGet, Path: "/api/v1/calls/{call_id}/recording"},
+	{Method: http.MethodGet, Path: "/api/v1/calls/{call_id}/recording/audio"},
 	{Method: http.MethodPost, Path: "/api/v1/calls/{call_id}/hangup"},
 	{Method: http.MethodGet, Path: "/api/v1/telephony-profiles"},
 	{Method: http.MethodPost, Path: "/api/v1/telephony-profiles"},
@@ -51,11 +53,10 @@ var Routes = []Route{
 // PlannedRoutes lists REST operations documented in api/openapi.json with
 // x-callharbor-availability: planned. They are never mounted, so a request to
 // one returns 404 from the mux. Routes holds only available paths; the two
-// lists are disjoint, and the tests enforce that.
-var PlannedRoutes = []Route{
-	{Method: http.MethodGet, Path: "/api/v1/calls/{call_id}/recording"},
-	{Method: http.MethodGet, Path: "/api/v1/calls/{call_id}/recording/audio"},
-}
+// lists are disjoint, and the tests enforce that. It is empty today: every
+// documented REST operation is implemented. The mechanism stays so a future
+// operation can be documented before it is mounted.
+var PlannedRoutes = []Route{}
 
 // Handler serves the /api/v1 routes.
 type Handler struct {
@@ -63,6 +64,8 @@ type Handler struct {
 	svc    *service.Service
 	tel    *telephonyprofile.Service
 	logger *slog.Logger
+	// extraPlanned are planned answers added by tests through WithPlannedRoutes.
+	extraPlanned []Route
 }
 
 // NewHandler returns the REST v1 handler. tel serves the telephony profile
@@ -83,12 +86,14 @@ func NewHandler(auth *identity.Handler, svc *service.Service, tel *telephonyprof
 // source. They grant nothing: each one is the same 404 an unknown call gets.
 func (h *Handler) Register(mux *http.ServeMux) {
 	handlers := map[string]http.HandlerFunc{
-		"GET /api/v1/profiles":                   h.getProfiles,
-		"GET /api/v1/calls":                      h.listCalls,
-		"POST /api/v1/calls":                     h.createCall,
-		"GET /api/v1/calls/{call_id}":            h.getCall,
-		"GET /api/v1/calls/{call_id}/transcript": h.getCallTranscript,
-		"POST /api/v1/calls/{call_id}/hangup":    h.hangupCall,
+		"GET /api/v1/profiles":                        h.getProfiles,
+		"GET /api/v1/calls":                           h.listCalls,
+		"POST /api/v1/calls":                          h.createCall,
+		"GET /api/v1/calls/{call_id}":                 h.getCall,
+		"GET /api/v1/calls/{call_id}/transcript":      h.getCallTranscript,
+		"GET /api/v1/calls/{call_id}/recording":       h.getCallRecording,
+		"GET /api/v1/calls/{call_id}/recording/audio": h.getCallRecordingAudio,
+		"POST /api/v1/calls/{call_id}/hangup":         h.hangupCall,
 
 		"GET /api/v1/telephony-profiles":                                  h.listTelephonyProfiles,
 		"POST /api/v1/telephony-profiles":                                 h.createTelephonyProfile,
@@ -120,6 +125,13 @@ func (h *Handler) Register(mux *http.ServeMux) {
 		pattern := r.Method + " " + r.Path
 		if _, mounted := handlers[pattern]; mounted {
 			// The two lists are disjoint; this guards a future edit.
+			panic("api: planned route is also mounted: " + pattern)
+		}
+		mux.HandleFunc(pattern, h.planned)
+	}
+	for _, r := range h.extraPlanned {
+		pattern := r.Method + " " + r.Path
+		if _, mounted := handlers[pattern]; mounted {
 			panic("api: planned route is also mounted: " + pattern)
 		}
 		mux.HandleFunc(pattern, h.planned)

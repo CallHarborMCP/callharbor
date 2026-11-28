@@ -12,52 +12,55 @@ func plannedProbe(pattern string) string {
 	return strings.ReplaceAll(pattern, "{call_id}", "probe-call")
 }
 
-// TestPlannedOperationsAreNotMounted sends every planned method and path with
-// a valid session. A planned operation is documented, not implemented, so the
-// real mux must answer 404 and never reach a handler.
-func TestPlannedOperationsAreNotMounted(t *testing.T) {
-	f := newFixture(t)
+// TestNoOpenAPIOperationIsPlanned asserts the current contract: every documented
+// REST operation is implemented, so there is nothing to probe as planned. If an
+// operation is documented as planned later, the mechanism tests below still
+// cover its path, and this test must be updated with it.
+func TestNoOpenAPIOperationIsPlanned(t *testing.T) {
 	d, _ := loadOpenAPI(t)
-	probed := 0
 	for path, ops := range d.Paths {
 		for method, raw := range ops {
 			op, ok := raw.(map[string]any)
-			if !ok || op["x-callharbor-availability"] != "planned" {
-				continue
-			}
-			probed++
-			verb := strings.ToUpper(method)
-			req := httptest.NewRequest(verb, plannedProbe(path), strings.NewReader("{}"))
-			req.AddCookie(f.aliceCk)
-			req.Header.Set("Content-Type", "application/json")
-			req.Header.Set("Idempotency-Key", "probe-key")
-			rec := httptest.NewRecorder()
-			f.mux.ServeHTTP(rec, req)
-			// A planned operation must never succeed or reach a handler. The
-			// mux answers 404 for an unmounted path, and 405 when the path is
-			// mounted only for another method (for example POST on GET /calls).
-			if rec.Code != http.StatusNotFound && rec.Code != http.StatusMethodNotAllowed {
-				t.Fatalf("planned %s %s = %d %s, want 404 or 405", verb, path, rec.Code, rec.Body.String())
-			}
-			if rec.Code == http.StatusMethodNotAllowed && !mountedPath(path) {
-				t.Fatalf("planned %s %s answered 405 but its path is not mounted", verb, path)
+			if ok && op["x-callharbor-availability"] == "planned" {
+				t.Fatalf("%s %s is documented as planned; update PlannedRoutes and this test", strings.ToUpper(method), path)
 			}
 		}
-	}
-	if probed == 0 {
-		t.Fatal("no planned operations found in openapi.json")
 	}
 }
 
-// mountedPath reports whether some available route uses this path, under any
-// method.
-func mountedPath(path string) bool {
-	for _, r := range Routes {
-		if r.Path == path {
-			return true
-		}
+// TestPlannedRouteIsNotMounted exercises the planned-route mechanism with a
+// synthetic planned GET. The mux must answer it through the planned handler: a
+// signed-in request gets 404 not_found in the JSON envelope, and an anonymous
+// one gets 401 before any answer. A wrong method on that path is 405 from the
+// mux, and the path has no handler behind it.
+func TestPlannedRouteIsNotMounted(t *testing.T) {
+	planned := Route{Method: http.MethodGet, Path: "/api/v1/planned-probe/{call_id}"}
+	f := newFixtureWithPlanned(t, planned)
+	probe := plannedProbe(planned.Path)
+
+	req := httptest.NewRequest(http.MethodGet, probe, nil)
+	req.AddCookie(f.aliceCk)
+	rec := httptest.NewRecorder()
+	f.mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusNotFound || errCode(t, rec) != "not_found" {
+		t.Fatalf("planned GET = %d %s, want 404 not_found", rec.Code, rec.Body.String())
 	}
-	return false
+	validateBody(t, compileComponent(t, "Error"), rec)
+
+	anon := httptest.NewRequest(http.MethodGet, probe, nil)
+	anonRec := httptest.NewRecorder()
+	f.mux.ServeHTTP(anonRec, anon)
+	if anonRec.Code != http.StatusUnauthorized {
+		t.Fatalf("anonymous planned GET = %d %s, want 401", anonRec.Code, anonRec.Body.String())
+	}
+
+	post := httptest.NewRequest(http.MethodPost, probe, strings.NewReader("{}"))
+	post.AddCookie(f.aliceCk)
+	postRec := httptest.NewRecorder()
+	f.mux.ServeHTTP(postRec, post)
+	if postRec.Code != http.StatusMethodNotAllowed && postRec.Code != http.StatusNotFound {
+		t.Fatalf("planned POST = %d %s, want 404 or 405", postRec.Code, postRec.Body.String())
+	}
 }
 
 // TestRoutesAndPlannedRoutesAreDisjoint keeps the available and planned sets

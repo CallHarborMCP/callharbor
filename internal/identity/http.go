@@ -40,6 +40,48 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	mux.HandleFunc("PUT /api/users/{id}/password", h.resetPassword)
 	mux.HandleFunc("GET /api/preferences/appearance", h.getAppearance)
 	mux.HandleFunc("PUT /api/preferences/appearance", h.setAppearance)
+	mux.HandleFunc("GET /api/preferences/recording", h.getRecordingPreference)
+	mux.HandleFunc("PUT /api/preferences/recording", h.setRecordingPreference)
+}
+
+// recordingPreferenceRequest is the strict PUT body. Unknown fields are refused
+// by decode, so no other field, a user id included, can ride along.
+type recordingPreferenceRequest struct {
+	Enabled      bool `json:"enabled"`
+	Acknowledged bool `json:"acknowledged"`
+}
+
+// getRecordingPreference returns the caller's own recording opt-in.
+func (h *Handler) getRecordingPreference(w http.ResponseWriter, r *http.Request) {
+	p, ok := h.authenticate(w, r)
+	if !ok {
+		return
+	}
+	pref, err := h.svc.GetRecordingPreference(r.Context(), p)
+	if err != nil {
+		writeServiceError(w, err)
+		return
+	}
+	writeOK(w, http.StatusOK, pref)
+}
+
+// setRecordingPreference changes the caller's own opt-in. OFF to ON needs
+// acknowledged=true; ON to OFF is always allowed.
+func (h *Handler) setRecordingPreference(w http.ResponseWriter, r *http.Request) {
+	p, ok := h.authenticateMutating(w, r)
+	if !ok {
+		return
+	}
+	var in recordingPreferenceRequest
+	if !decode(w, r, &in) {
+		return
+	}
+	pref, err := h.svc.SetRecordingPreference(r.Context(), p, in.Enabled, in.Acknowledged)
+	if err != nil {
+		writeServiceError(w, err)
+		return
+	}
+	writeOK(w, http.StatusOK, pref)
 }
 
 func (h *Handler) getAppearance(w http.ResponseWriter, r *http.Request) {

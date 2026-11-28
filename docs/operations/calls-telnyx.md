@@ -332,8 +332,12 @@ Be clear about these when relying on calls in production:
 - **Instruction ordering is proven against fakes only.** The tests show the
   instructions reach the AI provider before any caller audio. Real providers have
   not been tested for this ordering.
-- **`record_effective` is always false until issue #70.** A requested recording
-  is stored as `record_requested` only. Nothing records audio yet.
+- **Recording is two-party and timing is estimated.** `record_effective` is set
+  only when the call requested recording and the owner has opted in. A request
+  without the owner's opt-in is accepted and stored with `record_effective`
+  false. The agent channel's timing is estimated from a model of the playout
+  queue, not from confirmed playout, so agent audio can sit a little off its
+  true position. Live Telnyx has not been used to verify the recording path.
 - **Local hangup is verified against fakes only.** The hangup request, its
   command id, and the `ending` to `ended` path are tested against the fake
   Telnyx. Whether live Telnyx ends the leg as expected is unverified.

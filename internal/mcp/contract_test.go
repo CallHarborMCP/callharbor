@@ -111,7 +111,7 @@ func TestRegisteredToolsMatchManifest(t *testing.T) {
 			t.Errorf("registered tool %s is not implemented in the manifest", name)
 		}
 	}
-	want := []string{ToolGetCall, ToolGetProfiles, ToolGetTranscript, ToolHangupCall, ToolListCalls, ToolMakeCall}
+	want := []string{ToolGetCall, ToolGetProfiles, ToolGetRecording, ToolGetTranscript, ToolHangupCall, ToolListCalls, ToolMakeCall}
 	got := sortedKeys(registered)
 	if len(got) != len(want) {
 		t.Fatalf("registered = %v, want exactly %v", got, want)
@@ -123,31 +123,35 @@ func TestRegisteredToolsMatchManifest(t *testing.T) {
 	}
 }
 
-// TestPlannedToolsAreUnknownAndNeverSucceed calls each planned operation by name.
-// The SDK must report the tool as unknown, which is an error, not a success.
-func TestPlannedToolsAreUnknownAndNeverSucceed(t *testing.T) {
+// TestUnknownToolNeverSucceeds calls a synthetic tool name that no manifest
+// entry lists, planned or implemented. The SDK must report it as unknown, which
+// is an error, not a success. The name is checked against the manifest first,
+// so the test cannot pass by accident if a planned tool is ever renamed to it.
+// No planned tools exist today, so this is the only call path this test covers.
+func TestUnknownToolNeverSucceeds(t *testing.T) {
 	ctx := context.Background()
 	h := New(service.New(&fakeStore{}), "test", nil)
 	ct, st := mcp.NewInMemoryTransports()
 	if _, err := h.srv.Connect(ctx, st, nil); err != nil {
 		t.Fatal(err)
 	}
-	client := mcp.NewClient(&mcp.Implementation{Name: "planned", Version: "1"}, nil)
+	client := mcp.NewClient(&mcp.Implementation{Name: "unknown", Version: "1"}, nil)
 	sess, err := client.Connect(ctx, ct, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer func() { _ = sess.Close() }()
 
+	const synthetic = "callharbor_contract_probe_no_such_tool"
 	m := loadManifest(t)
 	for _, tool := range m.Tools {
-		if tool.Status != "planned" {
-			continue
+		if tool.Name == synthetic {
+			t.Fatalf("synthetic probe name %q is a manifest tool", synthetic)
 		}
-		res, err := sess.CallTool(ctx, &mcp.CallToolParams{Name: tool.Name, Arguments: map[string]any{"call_id": "x"}})
-		if err == nil && (res == nil || !res.IsError) {
-			t.Fatalf("planned tool %s succeeded: %+v", tool.Name, res)
-		}
+	}
+	res, err := sess.CallTool(ctx, &mcp.CallToolParams{Name: synthetic, Arguments: map[string]any{"call_id": "x"}})
+	if err == nil && (res == nil || !res.IsError) {
+		t.Fatalf("unknown tool %s succeeded: %+v", synthetic, res)
 	}
 }
 

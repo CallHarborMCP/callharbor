@@ -345,9 +345,9 @@
     },
     {
       "name": "get_recording",
-      "status": "planned",
+      "status": "implemented",
       "scope": "mcp:read",
-      "description": "Planned. Not registered. Calling it returns an unknown-tool error. Returns metadata only; audio is read over authenticated REST.",
+      "description": "Return the metadata of one call's recording owned by the caller: status, WAV byte count, duration, sample rate, channel layout, quality flags and timestamps. Metadata only; audio is read over authenticated REST at download_path. Foreign or missing calls, and calls with no servable recording, return not_found. A recording in progress is returned with status recording and byte_count 0.",
       "inputSchema": {
         "type": "object",
         "required": ["call_id"],
@@ -358,17 +358,25 @@
       },
       "outputSchema": {
         "type": "object",
-        "required": ["call_id", "status", "content_type", "duration_ms", "byte_count", "download_path"],
+        "required": ["call_id", "status", "content_type", "duration_ms", "byte_count", "download_path", "sample_rate", "channels", "channel_layout", "quality_flags", "partial", "created_at", "finalized_at"],
         "additionalProperties": false,
         "properties": {
           "call_id": { "type": "string" },
           "status": { "type": "string", "enum": ["recording", "complete", "partial", "failed", "deleted"] },
           "content_type": { "const": "audio/wav" },
           "duration_ms": { "type": "integer", "minimum": 0 },
-          "byte_count": { "type": "integer", "minimum": 0 },
-          "download_path": { "type": "string", "description": "Authenticated REST path, not a public URL." }
+          "byte_count": { "type": "integer", "minimum": 0, "description": "Size of the WAV the audio endpoint serves: the 44-byte header plus the PCM bytes. 0 while the recording is in progress or when no audio was written." },
+          "download_path": { "type": "string", "description": "Authenticated REST path, not a public URL." },
+          "sample_rate": { "type": "integer", "minimum": 0, "description": "Sample rate of both channels, in hertz. 0 until the writer has fixed the format." },
+          "channels": { "const": 2 },
+          "channel_layout": { "type": "array", "items": { "type": "string", "enum": ["remote_party", "agent"] }, "description": "Channel 0 is the remote party and channel 1 the agent." },
+          "quality_flags": { "type": "array", "items": { "type": "string", "enum": ["caller_gap_filled", "caller_frames_dropped", "agent_playout_estimated", "agent_interrupted", "agent_playout_unconfirmed", "write_failed", "backpressure", "recovered_after_restart", "agent_overlap_dropped", "stream_reconnected_not_recorded", "recording_damaged"] }, "description": "Why the audio may differ from the live call. Empty when none apply." },
+          "partial": { "type": "boolean", "description": "True unless status is complete." },
+          "created_at": { "type": "string", "format": "date-time" },
+          "finalized_at": { "type": ["string", "null"], "format": "date-time", "description": "Null until the recording is finalized." }
         }
-      }
+      },
+      "readOnly": true
     },
     {
       "name": "hangup_call",
