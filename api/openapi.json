@@ -1831,7 +1831,8 @@
                 "backpressure",
                 "recovered_after_restart",
                 "agent_overlap_dropped",
-                "stream_reconnected_not_recorded"
+                "stream_reconnected_not_recorded",
+                "recording_damaged"
               ]
             },
             "description": "Why the audio may differ from the live call. Empty when none apply."

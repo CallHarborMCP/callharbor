@@ -37,6 +37,9 @@ const (
 	FlagWriteFailed             = "write_failed"
 	FlagBackpressure            = "backpressure"
 	FlagRecoveredAfterRestart   = "recovered_after_restart"
+	// FlagRecordingDamaged: recovery found a full segment after the first that
+	// failed to authenticate. The audio before it is kept; the rest is not.
+	FlagRecordingDamaged = "recording_damaged"
 	// FlagAgentOverlapDropped: agent audio that overlapped audio already
 	// written, or arrived after its channel was flushed, was not recorded.
 	FlagAgentOverlapDropped = "agent_overlap_dropped"

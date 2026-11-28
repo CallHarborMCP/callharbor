@@ -163,10 +163,11 @@ func (m *Media) sinkFactory(upgrade storage.MediaCall) telnyx.SinkFactory {
 		}
 		// The owner may have opted out since the call was accepted. The stored
 		// effective flag is cleared here, after the stream is authenticated and
-		// bound, so the read paths before it stay read-only. A failure to clear
-		// refuses the stream rather than recording a call the owner opted out of.
-		if _, err := m.Store.ClearRecordEffective(ctx, st.ID); err != nil {
-			return nil, fmt.Errorf("clear record effective: %w", err)
+		// bound, so the read paths before it stay read-only. The recording
+		// decision already uses st.RecordEffective, so a failed clear is logged
+		// and the stream continues.
+		if _, err := m.Store.ClearRecordEffective(ctx, st.ID); err != nil && m.Logger != nil {
+			m.Logger.Error("could not clear record_effective", "call_id", st.ID, "error", err.Error())
 		}
 		release, err := m.sessions.claim(st.ID)
 		if err != nil {

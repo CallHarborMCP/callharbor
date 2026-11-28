@@ -29,9 +29,18 @@ import (
 // segment written by the writer. Flag 2 is an empty final segment sealed by
 // recovery or reseal after an authenticated prefix. Flags 1 and 2 are valid
 // only on the last segment, and flag 2 is never valid elsewhere. So a
-// truncation at a segment boundary cannot pass as complete, segments cannot be
-// reordered, and no (counter, flag) pair is sealed twice. AAD: magic || header || 0x00 || recording id || 0x00 || owner id,
-// so a file moved to another recording or owner fails authentication.
+// truncation at a segment boundary cannot pass as complete, and segments cannot
+// be reordered.
+//
+// A flag-2 reseal can repeat at the same counter: recovery of an already
+// resealed file, or a second reseal, seals the same empty final again. That
+// reuses a nonce, but only with identical plaintext (empty), the same key and
+// the same AAD, so the output bytes are identical and no keystream is reused
+// with different data. Flag 1 and flag 2 differ in the nonce, so a writer final
+// and a resealed final never share a nonce.
+//
+// AAD: magic || header || 0x00 || recording id || 0x00 || owner id, so a file
+// moved to another recording or owner fails authentication.
 const (
 	magic       = "CHRECv01"
 	HeaderSize  = 8 + 4 + SaltSize + 4 + 1 + 4

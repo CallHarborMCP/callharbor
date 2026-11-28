@@ -370,7 +370,7 @@
           "sample_rate": { "type": "integer", "minimum": 0, "description": "Sample rate of both channels, in hertz. 0 until the writer has fixed the format." },
           "channels": { "const": 2 },
           "channel_layout": { "type": "array", "items": { "type": "string", "enum": ["remote_party", "agent"] }, "description": "Channel 0 is the remote party and channel 1 the agent." },
-          "quality_flags": { "type": "array", "items": { "type": "string", "enum": ["caller_gap_filled", "caller_frames_dropped", "agent_playout_estimated", "agent_interrupted", "agent_playout_unconfirmed", "write_failed", "backpressure", "recovered_after_restart", "agent_overlap_dropped", "stream_reconnected_not_recorded"] }, "description": "Why the audio may differ from the live call. Empty when none apply." },
+          "quality_flags": { "type": "array", "items": { "type": "string", "enum": ["caller_gap_filled", "caller_frames_dropped", "agent_playout_estimated", "agent_interrupted", "agent_playout_unconfirmed", "write_failed", "backpressure", "recovered_after_restart", "agent_overlap_dropped", "stream_reconnected_not_recorded", "recording_damaged"] }, "description": "Why the audio may differ from the live call. Empty when none apply." },
           "partial": { "type": "boolean", "description": "True unless status is complete." },
           "created_at": { "type": "string", "format": "date-time" },
           "finalized_at": { "type": ["string", "null"], "format": "date-time", "description": "Null until the recording is finalized." }

@@ -44,9 +44,13 @@ type recAgentTiming struct {
 	// reached the stream. It is the earliest the audio could have started
 	// playing, so the bounds are taken from it rather than from firstSend.
 	firstMedia time.Time
-	queued     time.Time // after the server has sent every chunk
-	trigger    time.Time // immediately before the barge-in is sent
-	wire       time.Time // when the cut's clear frame arrived at the stream
+	// gapBlocks is the RTP distance, in 20 ms blocks, from the last loud caller
+	// frame before the gap to the first loud caller frame after it. It is set by
+	// recRunMedia from the timestamps it sends.
+	gapBlocks int
+	queued    time.Time // after the server has sent every chunk
+	trigger   time.Time // immediately before the barge-in is sent
+	wire      time.Time // when the cut's clear frame arrived at the stream
 }
 
 // recSetPreference sets the signed-in user's recording preference through the
@@ -164,7 +168,9 @@ func recRunMedia(t *testing.T, env *callTestEnv, tel *fakeTelnyx, ai *fakeAI, pr
 		ts += recFrameSamples
 		time.Sleep(20 * time.Millisecond)
 	}
+	var lastLoudBeforeGap uint32
 	for i := 0; i < 10; i++ {
+		lastLoudBeforeGap = ts
 		emit(loud)
 		if i == 0 {
 			// Instructions and the first audio event must reach the provider
@@ -209,7 +215,12 @@ func recRunMedia(t *testing.T, env *callTestEnv, tel *fakeTelnyx, ai *fakeAI, pr
 	}
 	// Live cuts on the local detector's onset, which the first of these loud
 	// frames triggers. The cut's clear frame reaches the stream after either
-	// trigger, so the wire time is the measured cut.
+	// trigger, so the wire time is the measured cut. The first of these frames
+	// is the post-gap onset, so its RTP position sets the gap distance. The
+	// playout-wait quiet frames advance RTP time too, so the distance is taken
+	// from this frame, not from the start of the gap.
+	firstPostGapTS := ts
+	timing.gapBlocks = int(firstPostGapTS-lastLoudBeforeGap) / recFrameSamples
 	for i := 0; i < 10; i++ {
 		emit(loud)
 	}
@@ -444,18 +455,49 @@ func recCheckAudioShape(t *testing.T, w recWAV, timing recAgentTiming, t0 time.T
 	if loudAfter < 8 {
 		t.Fatalf("caller speech after the gap = %d blocks, want at least 8", loudAfter)
 	}
+	// WAV-relative check: the onset after the silent run should sit where the
+	// caller's own RTP clock puts it, relative to the last loud block before the
+	// gap. The distance in blocks should equal the RTP distance between those
+	// two frames, within two blocks either side. The RTP distance is taken from
+	// timing.gapBlocks, which recRunMedia measures from the timestamps it sends.
+	// A larger forward shift is allowed only after a recorder re-anchor forward
+	// on sustained lag, which is logged, not failed.
+	lastLoudBefore := -1
+	for i := 0; i < bestStart; i++ {
+		if recIsLoud(rms0[i]) {
+			lastLoudBefore = i
+		}
+	}
+	firstLoudAfter := bestStart + bestLen
+	for firstLoudAfter < len(rms0) && !recIsLoud(rms0[firstLoudAfter]) {
+		firstLoudAfter++
+	}
+	if lastLoudBefore < 0 || firstLoudAfter >= len(rms0) {
+		t.Fatal("no loud caller block on one side of the gap")
+	}
+	gotBlocks := firstLoudAfter - lastLoudBefore
+	wantBlocks := timing.gapBlocks
+	if gotBlocks < wantBlocks-2 {
+		t.Fatalf("post-gap onset is %d blocks after the last loud block before the gap, want at least %d (RTP distance %d blocks, minus 2)",
+			gotBlocks, wantBlocks-2, wantBlocks)
+	}
+	if gotBlocks > wantBlocks+2 {
+		t.Logf("post-gap onset is %d blocks after the pre-gap speech (RTP distance %d): a forward re-anchor is allowed after a sustained lag",
+			gotBlocks, wantBlocks)
+	}
 
 	recCheckAgentAudio(t, w, timing, t0)
 }
 
 // recCheckAgentAudio checks the agent channel against the measured script times.
 //
-// The agent queues recAgentQueued chunks of one 20 ms block each, starting at
-// firstSend. Each chunk plays from its wall-clock play start, and the recorder
-// keeps the audio that played before the cut. The cut happened at some moment
-// between the barge-in trigger and the clear frame reaching the stream. So the
-// audible agent audio is at least the trigger minus firstSend, and at most the
-// clear's wire time minus firstSend. Both are measured, so the bounds are too.
+// The agent queues recAgentQueued chunks of one 20 ms block each. The first
+// chunk reaches the stream at firstMedia, after its send at firstSend, and it
+// plays from that arrival. The recorder keeps the audio that played before the
+// cut. The cut happened at some moment between the barge-in trigger and the
+// clear frame reaching the stream. So the audible agent audio is at least the
+// trigger minus firstMedia, and at most the clear's wire time minus firstMedia.
+// Both are measured, so the bounds are too.
 //
 // The ±3 blocks of slack on the count are: one block for the 20 ms quantization
 // of counting whole blocks, one for the cut-signal latency between the trigger
@@ -510,14 +552,19 @@ func recCheckAgentAudio(t *testing.T, w recWAV, timing recAgentTiming, t0 time.T
 	// Positions are sample offsets from the recording start, the clock the
 	// recorder uses for agent chunks. The recorder's t0 is read from created_at
 	// at millisecond precision, so each position is off by at most 8 samples.
+	firstSendPos := recSampleAt(timing.firstSend.Sub(t0), w.rate)
 	firstMediaPos := recSampleAt(timing.firstMedia.Sub(t0), w.rate)
 	cutPos := recSampleAt(timing.wire.Sub(t0), w.rate)
 	startPos := first * recFrameSamples
 	endPos := (last + 1) * recFrameSamples
 	t.Logf("agent positions: firstMedia=%d start=%d end=%d cut=%d (samples from t0, block=%d)",
 		firstMediaPos, startPos, endPos, cutPos, recFrameSamples)
-	if startPos < firstMediaPos-recFrameSamples {
-		t.Fatalf("agent audio starts at sample %d, earlier than the first outbound frame at %d by more than one block", startPos, firstMediaPos)
+	// The start lies within one block either side of the first outbound frame's
+	// arrival. Earlier than that is impossible; later than that means the chunk
+	// was delayed past its arrival, which is a playout defect.
+	if startPos < firstSendPos-recFrameSamples || startPos > firstMediaPos+recFrameSamples {
+		t.Fatalf("agent audio starts at sample %d, outside [firstSend %d - 1 block, firstMedia %d + 1 block]",
+			startPos, firstSendPos, firstMediaPos)
 	}
 	if endPos > cutPos+recFrameSamples {
 		t.Fatalf("agent audio ends at sample %d, after the cut at %d by more than one block", endPos, cutPos)

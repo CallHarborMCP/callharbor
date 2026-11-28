@@ -36,9 +36,19 @@ type RecoverResult struct {
 	// recording had been finalized in the file but not in the database.
 	Complete bool
 	// Damaged is true when a full segment after the first failed to
-	// authenticate. The audio before it is kept; the rest is not recoverable.
-	Damaged    bool
-	SampleRate int
+	// authenticate. The authenticated audio before it is kept and resealed. The
+	// bytes from the damaged segment on are discarded from the working file, and
+	// when more than a tail's worth of bytes followed the damage, the original
+	// file is preserved as DamagedCopy before any truncation.
+	Damaged bool
+	// DiscardedBytes is the number of file bytes removed from the working file
+	// after the authenticated prefix. It is logged, never content.
+	DiscardedBytes int64
+	// DamagedCopy is the path of the preserved original, set only when Damaged
+	// and the damage was not confined to the tail. The copy is never served and
+	// is purged by the retention work tracked in #72.
+	DamagedCopy string
+	SampleRate  int
 }
 
 // Recover authenticates an interrupted .chrec file as far as it is intact and
@@ -87,17 +97,31 @@ func Recover(in RecoverInput) (RecoverResult, error) {
 	if err != nil {
 		return RecoverResult{}, err
 	}
+	stride := int64(SegmentSize + TagSize)
+	res := RecoverResult{PlainBytes: sc.plain, Complete: sc.complete, SampleRate: h.SampleRate, Damaged: sc.damaged}
 	// Truncate only when some segment authenticated. With none, a short tail is
 	// indistinguishable from a wrong key over a torn write, so the file is kept.
 	// A complete file is trimmed only after its authentic final, so the trim
 	// never removes it.
 	if sc.keep > HeaderSize && sc.keep != st.Size() {
+		res.DiscardedBytes = st.Size() - sc.keep
+		if sc.damaged && st.Size()-sc.keep > stride {
+			// The damage is not a torn tail: more than one segment's worth of
+			// bytes follows it, and those bytes may be authentic audio that
+			// cannot be read past the damaged segment. Preserve the original
+			// before truncating, so no evidence is lost.
+			copyPath, err := preserveDamaged(path, f, st.Size())
+			if err != nil {
+				return RecoverResult{}, err
+			}
+			res.DamagedCopy = copyPath
+		}
 		if err := f.Truncate(sc.keep); err != nil {
 			return RecoverResult{}, fmt.Errorf("recording: truncate tail: %w", err)
 		}
 	}
 	if sc.complete {
-		return RecoverResult{PlainBytes: sc.plain, Complete: true, SampleRate: h.SampleRate}, nil
+		return res, nil
 	}
 	// The authenticated prefix has no final segment, so the reader could not
 	// open it. Seal an empty resealed final (flag 2) after the prefix, at the
@@ -108,7 +132,32 @@ func Recover(in RecoverInput) (RecoverResult, error) {
 			return RecoverResult{}, err
 		}
 	}
-	return RecoverResult{PlainBytes: sc.plain, Complete: false, SampleRate: h.SampleRate, Damaged: sc.damaged}, nil
+	return res, nil
+}
+
+// preserveDamaged copies the original file to <path>.damaged before any
+// truncation, so bytes after a mid-file failure are kept as evidence. The copy
+// is 0600 in the same directory, is never served, and is removed only by the
+// purge tracked in #72. It is written, synced, and closed before it is returned.
+func preserveDamaged(path string, src *os.File, size int64) (string, error) {
+	dst := path + ".damaged"
+	// #nosec G304 -- dst is the recording path with a fixed suffix, under the same data directory.
+	out, err := os.OpenFile(dst, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o600)
+	if err != nil {
+		return "", fmt.Errorf("recording: create damaged copy: %w", err)
+	}
+	if _, err := io.Copy(out, io.NewSectionReader(src, 0, size)); err != nil {
+		_ = out.Close()
+		return "", fmt.Errorf("recording: copy damaged file: %w", err)
+	}
+	if err := out.Sync(); err != nil {
+		_ = out.Close()
+		return "", fmt.Errorf("recording: sync damaged copy: %w", err)
+	}
+	if err := out.Close(); err != nil {
+		return "", fmt.Errorf("recording: close damaged copy: %w", err)
+	}
+	return dst, nil
 }
 
 // sealPrefixFinal appends an empty final segment at counter segments and syncs
@@ -124,10 +173,6 @@ func sealPrefixFinal(f *os.File, off int64, counter uint64, aead cipher.AEAD, aa
 	return nil
 }
 
-// scanSegments walks the segments and returns the byte offset just past the
-// last authenticated segment, the plaintext it covers, whether the final flag
-// authenticated, and the counter the next segment would carry. A non-final
-// segment is always full, so a short segment is the tail and ends the walk.
 // scanResult is the authenticated content of a walk over one file.
 type scanResult struct {
 	// keep is the byte offset just past the last authenticated segment. Bytes
@@ -135,25 +180,33 @@ type scanResult struct {
 	keep int64
 	// plain is the PCM length the authenticated segments cover.
 	plain int64
-	// complete is true when an authentic final segment (flag 1) ends the file,
-	// so no resealing is needed. Trailing bytes after it are trimmed.
+	// complete is true when an authentic final segment ends the file, flag 1 from
+	// the writer or flag 2 from an earlier reseal. No resealing is needed, and
+	// trailing bytes after it are trimmed.
 	complete bool
 	// next is the counter the next segment would carry.
 	next uint64
 	// damaged is true when a full-size segment after segment 0 failed to
-	// authenticate. The prefix before it is kept and resealed; the damage is
-	// real and the row is settled as partial with the recovered flag.
+	// authenticate. The prefix before it is kept and resealed, and the row is
+	// settled as partial with the recording_damaged flag.
 	damaged bool
 }
 
 // scanSegments walks the segments in order and reports the authenticated
-// prefix. Segment 0 failing returns ErrCorrupt: with no authenticated segment,
-// the key or file cannot be trusted, so the row stays unsettled. Any later
-// failure is treated as damage, and the walk stops before it.
+// prefix. A non-final segment is always full, so a short window is the tail.
+// Segment 0 failing returns ErrCorrupt: with no authenticated segment, the key
+// or file cannot be trusted, so the row stays unsettled. Any later full-size
+// failure is damage, and the walk stops before it.
 //
-// A complete file ends in an authentic flag-1 final. The tail is tried as that
-// final before it is treated as torn, so a complete file with trailing junk
+// A complete file ends in an authentic final, flag 1 or flag 2. The tail is tried
+// as a final before it is treated as torn, so a complete file with trailing junk
 // keeps its authentic final segment and only the junk is trimmed.
+//
+// Cost: when a window is not a full non-final segment, findFinal tries every
+// length from one tag up to the window, with two flags each. That is roughly
+// SegmentSize × 2 AEAD opens per window, and it runs for the torn tail and for
+// the first damaged segment only. Both are at most one segment, so the walk is
+// linear in the file, with one quadratic-in-segment-size search at its end.
 func scanSegments(f io.ReaderAt, size int64, aead cipher.AEAD, aad []byte) (scanResult, error) {
 	stride := int64(SegmentSize + TagSize)
 	off := int64(HeaderSize)
@@ -189,16 +242,18 @@ func scanSegments(f io.ReaderAt, size int64, aead cipher.AEAD, aad []byte) (scan
 			res.keep, res.plain, res.complete, res.next = off+int64(cl), res.plain+int64(pl), true, idx+1
 			return res, nil
 		}
+		if idx == 0 {
+			// Nothing authenticated as segment 0, neither a full non-final nor a
+			// final. Bytes beyond the header are present, so this is a wrong key,
+			// a rotated key, or damage to the first segment, not a torn write of
+			// an empty recording. The row must stay unsettled, so nothing is kept.
+			return res, ErrCorrupt
+		}
 		if n < stride {
 			// No final authenticates in a short tail: a torn write. Keep what
 			// authenticated before it.
 			res.keep, res.next = off, idx
 			return res, nil
-		}
-		if idx == 0 {
-			// Segment 0 failing is a wrong key, a rotated key, or damage to the
-			// first segment. Nothing authenticates, so nothing is kept.
-			return res, ErrCorrupt
 		}
 		// A later full-size segment failing is damage after authenticated audio.
 		// A crash only leaves a shorter tail, so the prefix before it is real.
@@ -211,9 +266,13 @@ func scanSegments(f io.ReaderAt, size int64, aead cipher.AEAD, aad []byte) (scan
 // final is shorter than a full segment and its length is not stored, so every
 // length from one tag up to the window is tried with each final flag. The first
 // that authenticates is the final, and bytes after it are not part of the
-// recording. It returns the sealed and plaintext lengths. The cost is bounded
-// by one segment: about SegmentSize authentication attempts per call, made only
-// for a window that is a torn tail or a damaged segment.
+// recording. It returns the sealed and plaintext lengths.
+//
+// Cost (N6): each candidate length is one AEAD open over up to a full segment,
+// so one call is quadratic in SegmentSize: about SegmentSize × 2 opens, each
+// costing up to SegmentSize bytes of work. It runs only for a window that is a
+// torn tail or the first damaged segment, so it is bounded by one segment per
+// recovery, not by the file length.
 func findFinal(aead cipher.AEAD, aad []byte, idx uint64, window []byte) (sealedLen, plainLen int, ok bool) {
 	scratch := make([]byte, 0, len(window))
 	for l := TagSize; l <= len(window); l++ {

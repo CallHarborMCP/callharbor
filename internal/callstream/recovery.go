@@ -26,7 +26,9 @@ type RecoveryStore interface {
 // For each row the file is authenticated as far as it is intact. A torn tail is
 // truncated, and damage after the first segment keeps the authenticated prefix
 // before it. Either way the prefix is resealed, and the row becomes 'partial'
-// with the authenticated audio and the recovered_after_restart flag. A missing
+// with the authenticated audio and the recovered_after_restart flag. Damage also
+// adds recording_damaged, and the original file is preserved as <id>.chrec.damaged
+// when more than a tail's worth of bytes followed the damage. A missing
 // file becomes 'failed'. When segment 0 does not authenticate, the key version
 // is unknown, or the header is bad, nothing is proven: the row stays
 // 'recording' and the file is left untouched for a run with the right key.
@@ -49,7 +51,7 @@ func RecoverInterrupted(ctx context.Context, store RecoveryStore, ring *secrets.
 	}
 	settled := 0
 	for _, r := range rows {
-		if err := recoverOne(ctx, store, ring, dataDir, now, r); err != nil {
+		if err := recoverOne(ctx, store, ring, dataDir, now, logger, r); err != nil {
 			if logger != nil {
 				logger.Error("recording recovery failed", "recording_id", r.ID, "error", err.Error())
 			}
@@ -60,7 +62,17 @@ func RecoverInterrupted(ctx context.Context, store RecoveryStore, ring *secrets.
 	return settled, nil
 }
 
-func recoverOne(ctx context.Context, store RecoveryStore, ring *secrets.Keyring, dataDir string, now func() time.Time, r storage.Recording) error {
+// logDamaged warns that recovery kept a prefix and discarded bytes after
+// damage. It logs the id and byte counts only, never content or paths.
+func logDamaged(logger *slog.Logger, id string, res recording.RecoverResult) {
+	if logger == nil {
+		return
+	}
+	logger.Warn("recording damaged after segment 0; kept the authenticated prefix",
+		"recording_id", id, "bytes_kept", res.PlainBytes, "bytes_discarded", res.DiscardedBytes)
+}
+
+func recoverOne(ctx context.Context, store RecoveryStore, ring *secrets.Keyring, dataDir string, now func() time.Time, logger *slog.Logger, r storage.Recording) error {
 	// The stored path must be the one the id derives. A row that names any
 	// other file is skipped and left untouched: the sweep never recovers or
 	// finalizes a file it cannot place.
@@ -89,6 +101,10 @@ func recoverOne(ctx context.Context, store RecoveryStore, ring *secrets.Keyring,
 		return err
 	default:
 		bytes = res.PlainBytes
+		if res.Damaged {
+			flags = append(flags, recording.FlagRecordingDamaged)
+			logDamaged(logger, r.ID, res)
+		}
 		if res.SampleRate > 0 {
 			sampleRate = res.SampleRate
 		}
